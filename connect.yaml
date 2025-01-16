@@ -49,8 +49,6 @@ deployAs:
         - key: MERCHANT_RETURN_URL
           description: Merchant return URL
           required: true
-        - key: STRIPE_APPLE_PAY_WELL_KNOWN
-          description: Domain association file from Stripe. (example - https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret.
