@@ -23,9 +23,10 @@ export const config = {
   stripeCaptureMethod: process.env.STRIPE_CAPTURE_METHOD || 'automatic',
   stripePaymentElementAppearance: process.env.STRIPE_APPEARANCE_PAYMENT_ELEMENT,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+  stripeApplePayWellKnown: process.env.STRIPE_APPLE_PAY_WELL_KNOWN || 'mockWellKnown',
 
   // Payment Providers config
-  returnUrl: process.env.RETURN_URL,
+  merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',
 };
 
 export const getConfig = () => {

@@ -163,6 +163,7 @@ N/A
 #### Response Parameters
 - **sClientSecret**: The client secret is used to complete the payment from your frontend. 
 - **paymentReference**: The payment reference of the current process.
+- **merchantReturnUrl**: The return url used in the parameter return_url of the Stripe [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment).
 
 ### Confirm the Payment Intent to commercetools
 This endpoint update the initial payment transaction in commercetools. It is called after the Stripe confirm the payment submit was successful.
@@ -198,6 +199,18 @@ The [Event object](https://docs.stripe.com/api/events) sent to your webhook endp
 
 #### Response Parameters
 The endpoint returns a 200 response to indicate the successful processing of the webhook event.
+
+### Apple pay well-know file
+This endpoint return the string of the .well-know call domain [file from Stripe](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association).
+
+#### Endpoint
+`GET /.well-known/apple-developer-merchantid-domain-association`
+
+#### Query Parameters
+N/A
+
+#### Response Parameters
+- **string**: The string value of the well-know domain file.
 
 ### Get supported payment components
 Private endpoint protected by JSON Web Token that exposes the payment methods supported by the connector so that checkout application can retrieve the available payment components.

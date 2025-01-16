@@ -542,6 +542,7 @@ export const mockEvent__paymentIntent_canceled: Stripe.Event = {
 export const mockRoute__payments_succeed: PaymentResponseSchemaDTO = {
   sClientSecret: 'mock_paymentReference',
   paymentReference: 'mock_paymentReference',
+  merchantReturnUrl: 'mock_merchantReturnUrl',
 };
 
 export const mockRoute__paymentsComponents_succeed: SupportedPaymentComponentsSchemaDTO = {
@@ -770,3 +771,5 @@ export const mockModifyPayment__payment_intent_canceled: ModifyPayment = {
     ],
   },
 };
+
+export const mockRoute__well_know__succeed: string = 'mockWellKnowString';

@@ -64,7 +64,11 @@ export class DropinComponents implements DropinComponent {
         return;
       }
 
-      let { errors : processorError, sClientSecret : client_secret, paymentReference: paymentReference } = await fetch(`${this.baseOptions.processorUrl}/payments`,{
+      let {
+        errors : processorError,
+        sClientSecret : client_secret,
+        paymentReference: paymentReference,
+        merchantReturnUrl: merchantReturnUrl } = await fetch(`${this.baseOptions.processorUrl}/payments`,{
         method : "GET",
         headers : {
           "Content-Type": "application/json",
@@ -82,7 +86,7 @@ export class DropinComponents implements DropinComponent {
         elements: this.baseOptions.elements,
         clientSecret: client_secret,
         confirmParams : {
-          return_url : 'https://example.com'
+          return_url : merchantReturnUrl
         },
         redirect : "if_required"
       });
@@ -109,9 +113,6 @@ export class DropinComponents implements DropinComponent {
         .catch((error)=> {
           this.baseOptions.onError?.(error);
         });
-
-
-
     }
 
   }
