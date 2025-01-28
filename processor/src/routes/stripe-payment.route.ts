@@ -20,7 +20,7 @@ import {
   PaymentIntentResponseSchema,
   PaymentModificationStatus,
 } from '../dtos/operations/payment-intents.dto';
-import {StripeEvent} from "../services/types/stripe-payment.type";
+import { StripeEvent } from '../services/types/stripe-payment.type';
 
 type PaymentRoutesOptions = {
   paymentService: StripePaymentService;
