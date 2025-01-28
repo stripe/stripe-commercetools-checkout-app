@@ -47,8 +47,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     options: EnablerOptions
   ): Promise<{ baseOptions: BaseOptions }> => {
 
-    // MVP accept this value from the enabler, so we can render other options.
-    const paymentMethodType : string = 'payment'//options.paymentMethod.type.toLowerCase().toString()
+    const paymentMethodType : string = 'payment'
 
     const [cartInfoResponse, configEnvResponse]: [ConfigElementResponseSchemaDTO, ConfigResponseSchemaDTO]
       = await MockPaymentEnabler.fetchConfigData(paymentMethodType, options);
