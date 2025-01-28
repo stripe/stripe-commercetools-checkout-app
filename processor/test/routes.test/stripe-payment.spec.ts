@@ -23,7 +23,7 @@ import {
   mockEvent__paymentIntent_canceled,
   mockRoute__payments_succeed,
   mockRoute__get_config_element_succeed,
-  mockEvent__charge_succeeded_notCaptured,
+  mockEvent__charge_capture_succeeded_notCaptured,
   mockEvent__paymentIntent_requiresAction,
   mockRoute__well_know__succeed,
 } from '../utils/mock-routes-data';
@@ -36,7 +36,7 @@ jest.mock('stripe', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => ({
     webhooks: {
-      constructEvent: jest.fn<() => Stripe.Event>().mockReturnValue(mockEvent__charge_succeeded_notCaptured),
+      constructEvent: jest.fn<() => Stripe.Event>().mockReturnValue(mockEvent__charge_capture_succeeded_notCaptured),
     },
   })),
 }));
@@ -414,15 +414,15 @@ describe('Stripe Payment APIs', () => {
     });
   });
 
-  describe('GET /.well-known/apple-developer-merchantid-domain-association', () => {
-    test('should call /.well-known/apple-developer-merchantid-domain-association', async () => {
+  describe('GET /applePayConfig', () => {
+    test('should call /applePayConfig', async () => {
       //Given
       jest.spyOn(spiedPaymentService, 'applePayConfig').mockReturnValue(mockRoute__well_know__succeed);
 
       //When
       const responseGetConfig = await fastifyApp.inject({
         method: 'GET',
-        url: `/.well-known/apple-developer-merchantid-domain-association`,
+        url: `/applePayConfig`,
       });
 
       //Then
