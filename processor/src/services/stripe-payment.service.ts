@@ -272,6 +272,7 @@ export class StripePaymentService extends AbstractPaymentService {
       sClientSecret: paymentIntent.client_secret ?? '',
       paymentReference: ctPayment.id,
       merchantReturnUrl: merchantReturnUrl,
+      cartId: ctCart.id,
     };
   }
 
@@ -373,7 +374,7 @@ export class StripePaymentService extends AbstractPaymentService {
   public async processStripeEvent(event: Stripe.Event): Promise<void> {
     log.info('Processing notification', { event: JSON.stringify(event.id) });
     try {
-      const updateData = await this.stripeEventConverter.convert(event);
+      const updateData = this.stripeEventConverter.convert(event);
 
       for (const tx of updateData.transactions) {
         const updatedPayment = await this.ctPaymentService.updatePayment({

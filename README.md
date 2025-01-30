@@ -57,10 +57,10 @@ Regarding the development of processor module, please refer to the following doc
 The following webhooks are currently supported and the payment transactions in commercetools are:
 - **payment_intent.canceled**: Modified the payment transaction Authorization to Failure and create a payment transaction CancelAuthorization: Success
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success.
-- **payment_intent.requires_action**: Modify the payment transaction Authorization to Pending.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
+- **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
 - **charge.refunded**: Create a payment transaction Refund to Success, and a Chargeback to Success.
-- **charge.succeeded**: Logs the information in the connector app inside the Processor logs.
+- **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
 - **charge.captured**: Logs the information in the connector app inside the Processor logs.
 
 
@@ -197,7 +197,7 @@ Here you can see the details about various variables in configuration
 - `STRIPE_WEBHOOK_ID`: Stripe unique identifier for the [Webhook Endpoints](https://docs.stripe.com/api/webhook_endpoints)
 - `STRIPE_WEBHOOK_SIGNING_SECRET`: Stripe Secret key to verify webhook signatures using the official libraries. This key is created in the [Stripe dashboard Webhook](https://docs.stripe.com/webhooks).
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can found more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
-- `MERCHANT_RETURN_URL` : Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter.
+- `MERCHANT_RETURN_URL` : Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the url, the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`.
 
 ## Development
 

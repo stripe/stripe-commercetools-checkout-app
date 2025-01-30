@@ -132,6 +132,18 @@ Token can be found in response
 
 Use the token to authenticate requests protected by JWT: `Authorization: Bearer <token>`.
 
+### Merchant Return URL
+
+The `MERCHANT_RETURN_URL` plays a key role during the payment confirmation process using [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment). This URL is used as the `return_url` parameter in the confirmation step.
+
+For **Buy Now Pay Later (BNPL)** payment methods, Stripe appends the `payment_intent` to the return URL after the payment process is completed. Upon redirection to the merchant's site, the following steps are necessary to ensure proper integration with commercetools Checkout SDK:
+
+1. Retrieve the `payment_intent` from the URL parameters.
+2. Extract the `ct_payment_id` from the `payment_intent` metadata.
+3. Use the `ct_payment_id` to update the `paymentReference` in the commercetools Checkout SDK to properly link the payment.
+
+By implementing this workflow, seamless integration of BNPL payment methods with commercetools Checkout is achieved.
+
 ## APIs
 The processor exposes the following endpoints to execute various operations with the Stripe platform:
 
@@ -163,7 +175,8 @@ N/A
 #### Response Parameters
 - **sClientSecret**: The client secret is used to complete the payment from your frontend. 
 - **paymentReference**: The payment reference of the current process.
-- **merchantReturnUrl**: The return url used in the parameter return_url of the Stripe [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment).
+- **merchantReturnUrl**: The URL used as the `return_url` parameter in Stripe's [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) process. This URL will have the `paymentReference` and `cartId` appended to it after payment confirmation.
+- **cartId**: The cartId of the current proccess.
 
 ### Confirm the Payment Intent to commercetools
 This endpoint update the initial payment transaction in commercetools. It is called after the Stripe confirm the payment submit was successful.
@@ -185,10 +198,10 @@ The conversion of the webhook event to a transaction is converted in hte `/src/s
 The following webhooks currently supported and transformed to different payment transactions in commercetools are:
 - **payment_intent.canceled**: Modified the payment transaction Authorization to Failure and create a payment transaction CancelAuthorization: Success 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success. 
-- **payment_intent.requires_action**: Modify the payment transaction Authorization to Pending.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
+- **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
 - **charge.refunded**: Create a payment transaction Refund to Success, and a Chargeback to Success.
-- **charge.succeeded**: Logs the information in the connector app inside the Processor logs.
+- **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
 - **charge.captured**: Logs the information in the connector app inside the Processor logs.
 
 #### Endpoint
@@ -204,7 +217,7 @@ The endpoint returns a 200 response to indicate the successful processing of the
 This endpoint return the string of the .well-know call domain [file from Stripe](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association).
 
 #### Endpoint
-`GET /.well-known/apple-developer-merchantid-domain-association`
+`GET /applePayConfig`
 
 #### Query Parameters
 N/A
