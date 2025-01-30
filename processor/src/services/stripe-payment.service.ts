@@ -272,6 +272,7 @@ export class StripePaymentService extends AbstractPaymentService {
       sClientSecret: paymentIntent.client_secret ?? '',
       paymentReference: ctPayment.id,
       merchantReturnUrl: merchantReturnUrl,
+      cartId: ctCart.id,
     };
   }
 

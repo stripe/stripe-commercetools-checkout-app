@@ -175,7 +175,8 @@ N/A
 #### Response Parameters
 - **sClientSecret**: The client secret is used to complete the payment from your frontend. 
 - **paymentReference**: The payment reference of the current process.
-- **merchantReturnUrl**: The return url used in the parameter return_url of the Stripe [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment).
+- **merchantReturnUrl**: The URL used as the `return_url` parameter in Stripe's [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) process. This URL will have the `paymentReference` and `cartId` appended to it after payment confirmation.
+- **cartId**: The cartId of the current proccess.
 
 ### Confirm the Payment Intent to commercetools
 This endpoint update the initial payment transaction in commercetools. It is called after the Stripe confirm the payment submit was successful.
