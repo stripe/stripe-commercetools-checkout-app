@@ -6,6 +6,8 @@ import {
 } from "./payment-enabler";
 import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
 import {
+  Appearance,
+  LayoutObject,
   loadStripe,
   Stripe,
   StripeElements,
@@ -34,7 +36,14 @@ export type BaseOptions = {
   elements: StripeElements; // MVP https://docs.stripe.com/js/elements_object
 };
 
-
+interface ElementsOptions {
+  type: string;
+  options: Record<string, any>;
+  onComplete: (result: PaymentResult) => void;
+  onError: (error?: any) => void;
+  layout: LayoutObject;
+  appearance: Appearance;
+} 
 
 export class MockPaymentEnabler implements PaymentEnabler {
   setupData: Promise<{ baseOptions: BaseOptions }>;
@@ -123,7 +132,10 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
-  private static getElements(stripeSDK: Stripe | null, cartInfoResponse): StripeElements | null {
+  private static getElements(
+    stripeSDK: Stripe | null,
+    cartInfoResponse: ConfigElementResponseSchemaDTO
+  ): StripeElements | null {
     if (!stripeSDK) return null;
     try {
       return stripeSDK.elements?.({
@@ -163,8 +175,11 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
-  private static getElementsOptions(options: EnablerOptions, config: any): object {
-    // MVP options from the Stripe element appareance can be here. https://docs.stripe.com/js/elements_object/create
+  private static getElementsOptions(
+    options: EnablerOptions,
+    config: ConfigElementResponseSchemaDTO
+  ): ElementsOptions {
+    const { appearance, layout } = config;
     let appOptions;
     if(config.appearance !== undefined)
       appOptions = config.appearance
@@ -173,12 +188,30 @@ export class MockPaymentEnabler implements PaymentEnabler {
       options: {},
       onComplete: options.onComplete,
       onError: options.onError,
-      layout: {
-        type: 'tabs',
-        defaultCollapsed: false
-      },
-      ...(appOptions!== undefined && {appearance : appOptions}),
+      layout: this.getLayoutObject(layout),
+      appearance: JSON.parse(appearance || '{}'),
     }
   }
 
+  private static getLayoutObject(layout: string): LayoutObject {
+    const defaultLayout: LayoutObject = {
+      type: 'tabs',
+      defaultCollapsed: false,
+    };
+
+    if (layout) {
+      const parsedObject = JSON.parse(layout);
+      const isValid = this.validateLayoutObject(parsedObject);
+      if (isValid) {
+        return parsedObject;
+      }
+    }
+    return defaultLayout;
+  }
+
+  private static validateLayoutObject(layout: LayoutObject): boolean {
+    if (!layout) return false;
+    const validLayouts = ['tabs', 'accordion', 'auto'];
+    return validLayouts.includes(layout.type);
+  }
 }
