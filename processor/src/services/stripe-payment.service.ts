@@ -291,7 +291,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const ctPayment = await this.ctPaymentService.getPayment({
       id: paymentReference,
     });
-    const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+    const amountPlanned = ctPayment.amountPlanned;
 
     log.info(`PaymentIntent confirmed.`, {
       ctCartId: ctCart.id,
@@ -301,6 +301,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
+      pspReference: paymentIntentId,
       transaction: {
         interactionId: paymentIntentId,
         type: PaymentTransactions.AUTHORIZATION,
