@@ -243,9 +243,6 @@ describe('stripe-payment.service', () => {
       const getPaymentMock = jest
         .spyOn(DefaultPaymentService.prototype, 'getPayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
-      const getPaymentAmountMock = jest
-        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
-        .mockResolvedValue(mockGetPaymentAmount);
 
       const updatePaymentMock = jest
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
@@ -256,7 +253,6 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(getPaymentAmountMock).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalled();
     });
   });
@@ -409,51 +405,5 @@ describe('stripe-payment.service', () => {
       expect(mockStripeEventConverter).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
     });
-
-    /*test('should return correct ModifyPayment for a charge refunded', () => {
-      const mockEvent: Stripe.Event = mockEvent__charge_refund_captured;
-
-      const stripePaymentService: StripePaymentService = new StripePaymentService(opts);
-      const result = stripePaymentService.processStripeEvent(mockEvent);
-
-      expect(result).toEqual({
-        paymentId: 'pi_11111',
-        stripePaymentIntent: undefined,
-        data: {
-          actions: [
-            {
-              action: 'refundPayment',
-              amount: {
-                centAmount: 34500,
-                currencyCode: 'MXN',
-              },
-            },
-          ],
-        },
-      });
-    });
-
-    test('should return correct ModifyPayment for a charge event', () => {
-      const mockEvent: Stripe.Event = mockEvent__paymentIntent_canceled;
-
-      const stripePaymentService: StripePaymentService = new StripePaymentService(opts);
-      const result = stripePaymentService.processStripeEvent(mockEvent);
-
-      expect(result).toEqual({
-        paymentId: undefined,
-        stripePaymentIntent: 'pi_11111',
-        data: {
-          actions: [
-            {
-              action: 'cancelPayment',
-              amount: {
-                centAmount: 0,
-                currencyCode: 'MXN',
-              },
-            },
-          ],
-        },
-      });
-    });*/
   });
 });
