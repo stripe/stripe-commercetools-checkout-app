@@ -1,3 +1,12 @@
+import Stripe from 'stripe';
+
+const getSavedPaymentConfig = () => {
+  const config = process.env.STRIPE_SAVED_PAYMENT_METHODS_CONFIG;
+  return config
+    ? (JSON.parse(config) as Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features)
+    : undefined;
+};
+
 export const config = {
   // Required by Payment SDK
   projectKey: process.env.CTP_PROJECT_KEY || 'payment-integration',
@@ -24,6 +33,8 @@ export const config = {
   stripePaymentElementAppearance: process.env.STRIPE_APPEARANCE_PAYMENT_ELEMENT,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
   stripeApplePayWellKnown: process.env.STRIPE_APPLE_PAY_WELL_KNOWN || 'mockWellKnown',
+  stripeApiVersion: process.env.STRIPE_API_VERSION || '2024-09-30',
+  stripeSavedPaymentMethodConfig: getSavedPaymentConfig(),
 
   // Payment Providers config
   merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',
