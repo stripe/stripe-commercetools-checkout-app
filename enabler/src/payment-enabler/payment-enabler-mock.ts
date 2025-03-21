@@ -15,7 +15,7 @@ import {
 } from "@stripe/stripe-js";
 import {StripePaymentElement} from "@stripe/stripe-js";
 import {ConfigElementResponseSchemaDTO, ConfigResponseSchemaDTO} from "../dtos/mock-payment.dto.ts";
-
+import { parseJSON } from "../utils";
 
 declare global {
   interface ImportMeta {
@@ -142,7 +142,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
         mode: 'payment',
         amount: cartInfoResponse.cartInfo.amount,
         currency: cartInfoResponse.cartInfo.currency.toLowerCase(),
-        appearance: JSON.parse(cartInfoResponse.appearance || "{}"),
+        appearance: parseJSON(cartInfoResponse.appearance),
         capture_method: cartInfoResponse.captureMethod,
       });
     } catch (error) {
@@ -180,33 +180,29 @@ export class MockPaymentEnabler implements PaymentEnabler {
     config: ConfigElementResponseSchemaDTO
   ): ElementsOptions {
     const { appearance, layout } = config;
-    let appOptions;
-    if(config.appearance !== undefined)
-      appOptions = config.appearance
     return {
       type: 'payment',
       options: {},
       onComplete: options.onComplete,
       onError: options.onError,
       layout: this.getLayoutObject(layout),
-      appearance: JSON.parse(appearance || '{}'),
+      appearance: parseJSON(appearance),
     }
   }
 
   private static getLayoutObject(layout: string): LayoutObject {
-    const defaultLayout: LayoutObject = {
-      type: 'tabs',
-      defaultCollapsed: false,
-    };
-
     if (layout) {
-      const parsedObject = JSON.parse(layout);
+      const parsedObject = parseJSON<LayoutObject>(layout);
       const isValid = this.validateLayoutObject(parsedObject);
       if (isValid) {
         return parsedObject;
       }
     }
-    return defaultLayout;
+
+    return {
+      type: 'tabs',
+      defaultCollapsed: false,
+    };
   }
 
   private static validateLayoutObject(layout: LayoutObject): boolean {
