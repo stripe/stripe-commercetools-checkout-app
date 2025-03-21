@@ -22,7 +22,8 @@ export const ConfigElementResponseSchema = Type.Object({
     currency: Type.String(),
   }),
   appearance: Type.Optional(Type.String()),
-  captureMethod: Type.String(),
+  captureMethod: Type.Union([Type.Literal('manual'), Type.Literal('automatic')]),
+  layout: Type.String(),
 });
 
 export const ConfigResponseSchema = Type.Object({
