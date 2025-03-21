@@ -31,6 +31,7 @@ export const ConfigElementResponseSchema = Type.Object({
   appearance: Type.Optional(Type.String()),
   captureMethod: Type.Union([Type.Literal('manual'), Type.Literal('automatic')]),
   setupFutureUsage: Type.Optional(Type.Union([Type.Literal('off_session'), Type.Literal('on_session')])),
+  layout: Type.String(),
 });
 
 export const ConfigResponseSchema = Type.Object({

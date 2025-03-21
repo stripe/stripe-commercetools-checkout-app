@@ -574,6 +574,7 @@ export const mockRoute__get_config_element_succeed: ConfigElementResponseSchemaD
   appearance: '',
   captureMethod: 'captureMethod',
   setupFutureUsage: 'off_session',
+  layout: '{"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":true}',
 };
 
 export const mockEvent__charge_capture_succeeded_notCaptured: Stripe.Event = {

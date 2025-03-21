@@ -264,10 +264,11 @@ export class StripePaymentService extends AbstractPaymentService {
             ...(ctCart.customerId ? { customer_id: ctCart.customerId } : null),
           },
           shipping: {
-            name: `${shipping?.firstName} ${shipping?.lastName}`,
+            name: `${shipping?.firstName} ${shipping?.lastName}`.trim(),
             phone: shipping?.phone || shipping?.mobile,
             address: {
-              line1: `${shipping?.streetNumber} ${shipping?.streetName}`,
+              line1: `${shipping?.streetNumber} ${shipping?.streetName}`.trim(),
+              line2: shipping?.additionalStreetInfo,
               city: shipping?.city,
               postal_code: shipping?.postalCode,
               state: shipping?.state,
@@ -396,7 +397,8 @@ export class StripePaymentService extends AbstractPaymentService {
    * @return {Promise<ConfigElementResponseSchemaDTO>} Returns a promise that resolves with the cart information, appearance, and capture method.
    */
   public async initializeCartPayment(opts: string): Promise<ConfigElementResponseSchemaDTO> {
-    const { stripeCaptureMethod, stripePaymentElementAppearance, stripeSavedPaymentMethodConfig } = getConfig();
+    const { stripeCaptureMethod, stripePaymentElementAppearance, stripeSavedPaymentMethodConfig, stripeLayout } =
+      getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const appearance = stripePaymentElementAppearance;
@@ -411,6 +413,7 @@ export class StripePaymentService extends AbstractPaymentService {
       stripeElementAppearance: appearance,
       stripeCaptureMethod: stripeCaptureMethod,
       stripeSetupFutureUsage: setupFutureUsage,
+      layout: stripeLayout,
     });
 
     return {
@@ -421,6 +424,7 @@ export class StripePaymentService extends AbstractPaymentService {
       appearance: appearance,
       captureMethod: stripeCaptureMethod,
       setupFutureUsage: setupFutureUsage,
+      layout: stripeLayout,
     };
   }
 

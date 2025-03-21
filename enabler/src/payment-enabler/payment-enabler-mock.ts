@@ -6,14 +6,20 @@ import {
 } from "./payment-enabler";
 import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
 import {
+  Appearance,
+  LayoutObject,
   loadStripe,
   Stripe,
   StripeElements,
   StripePaymentElementOptions
 } from "@stripe/stripe-js";
-import {StripePaymentElement} from "@stripe/stripe-js";
-import {ConfigElementResponseSchemaDTO, ConfigResponseSchemaDTO, CustomerResponseSchemaDTO} from "../dtos/mock-payment.dto.ts";
-
+import { StripePaymentElement } from "@stripe/stripe-js";
+import {
+  ConfigElementResponseSchemaDTO,
+  ConfigResponseSchemaDTO,
+  CustomerResponseSchemaDTO
+} from "../dtos/mock-payment.dto.ts";
+import { parseJSON } from "../utils";
 
 declare global {
   interface ImportMeta {
@@ -35,7 +41,14 @@ export type BaseOptions = {
   stripeCustomerId?: string;
 };
 
-
+interface ElementsOptions {
+  type: string;
+  options: Record<string, any>;
+  onComplete: (result: PaymentResult) => void;
+  onError: (error?: any) => void;
+  layout: LayoutObject;
+  appearance: Appearance;
+} 
 
 export class MockPaymentEnabler implements PaymentEnabler {
   setupData: Promise<{ baseOptions: BaseOptions }>;
@@ -131,14 +144,14 @@ export class MockPaymentEnabler implements PaymentEnabler {
         mode: 'payment',
         amount: cartInfoResponse.cartInfo.amount,
         currency: cartInfoResponse.cartInfo.currency.toLowerCase(),
-        appearance: JSON.parse(cartInfoResponse.appearance || "{}"),
-        captureMethod: cartInfoResponse.captureMethod,
         customerOptions: {
           customer: customer.stripeCustomerId,
           ephemeralKey: customer.ephemeralKey,
         },
         setupFutureUsage: cartInfoResponse.setupFutureUsage,
         customerSessionClientSecret: customer.sessionId,
+        appearance: parseJSON(cartInfoResponse.appearance),
+        capture_method: cartInfoResponse.captureMethod,
       });
     } catch (error) {
       console.error("Error initializing elements:", error);
@@ -169,21 +182,18 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
-  private static getElementsOptions(options: EnablerOptions, config: any): object {
-    // MVP options from the Stripe element appareance can be here. https://docs.stripe.com/js/elements_object/create
-    let appOptions;
-    if(config.appearance !== undefined)
-      appOptions = config.appearance
+  private static getElementsOptions(
+    options: EnablerOptions,
+    config: ConfigElementResponseSchemaDTO
+  ): ElementsOptions {
+    const { appearance, layout } = config;
     return {
       type: 'payment',
       options: {},
       onComplete: options.onComplete,
       onError: options.onError,
-      layout: {
-        type: 'tabs',
-        defaultCollapsed: false
-      },
-      ...(appOptions!== undefined && {appearance : appOptions}),
+      layout: this.getLayoutObject(layout),
+      appearance: parseJSON(appearance),
     }
   }
 
@@ -197,5 +207,26 @@ export class MockPaymentEnabler implements PaymentEnabler {
       throw data;
     }
     return data;
+  }
+
+  private static getLayoutObject(layout: string): LayoutObject {
+    if (layout) {
+      const parsedObject = parseJSON<LayoutObject>(layout);
+      const isValid = this.validateLayoutObject(parsedObject);
+      if (isValid) {
+        return parsedObject;
+      }
+    }
+
+    return {
+      type: 'tabs',
+      defaultCollapsed: false,
+    };
+  }
+
+  private static validateLayoutObject(layout: LayoutObject): boolean {
+    if (!layout) return false;
+    const validLayouts = ['tabs', 'accordion', 'auto'];
+    return validLayouts.includes(layout.type);
   }
 }
