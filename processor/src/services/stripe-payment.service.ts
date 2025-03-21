@@ -203,16 +203,7 @@ export class StripePaymentService extends AbstractPaymentService {
         components: {
           payment_element: {
             enabled: true,
-            features: {
-              //default values
-              payment_method_redisplay: 'enabled',
-              payment_method_remove: 'enabled',
-              payment_method_save: 'enabled',
-              payment_method_save_usage: 'off_session',
-              payment_method_redisplay_limit: 10,
-              //custom values will override default values
-              ...paymentConfig,
-            },
+            features: { ...paymentConfig },
           },
         },
       });
@@ -242,7 +233,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const captureMethodConfig = config.stripeCaptureMethod;
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
-    const setupFutureUsage = config.stripeSavedPaymentMethodConfig?.payment_method_save_usage ?? 'off_session';
+    const setupFutureUsage = config.stripeSavedPaymentMethodConfig?.payment_method_save_usage;
     let paymentIntent!: Stripe.PaymentIntent;
 
     try {
@@ -402,7 +393,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const appearance = stripePaymentElementAppearance;
-    const setupFutureUsage = stripeSavedPaymentMethodConfig?.payment_method_save_usage ?? 'off_session';
+    const setupFutureUsage = stripeSavedPaymentMethodConfig.payment_method_save_usage!;
 
     log.info(`Cart and Stripe.Element ${opts} config retrieved.`, {
       cartId: ctCart.id,
