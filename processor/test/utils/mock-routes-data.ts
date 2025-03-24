@@ -573,7 +573,7 @@ export const mockRoute__get_config_element_succeed: ConfigElementResponseSchemaD
   },
   appearance: '',
   captureMethod: 'captureMethod',
-  setupFutureUsage: 'off_session',
+  setupFutureUsage: 'on_session',
   layout: '{"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":true}',
 };
 
