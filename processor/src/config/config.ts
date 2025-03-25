@@ -1,3 +1,22 @@
+import Stripe from 'stripe';
+import { parseJSON } from '../utils';
+
+type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+
+const getSavedPaymentConfig = (): PaymentFeatures => {
+  const config = process.env.STRIPE_SAVED_PAYMENT_METHODS_CONFIG;
+  return {
+    //default values
+    payment_method_redisplay: 'enabled',
+    payment_method_remove: 'enabled',
+    payment_method_save: 'enabled',
+    payment_method_save_usage: 'on_session',
+    payment_method_redisplay_limit: 10,
+    //custom values will override default values
+    ...(config ? parseJSON<PaymentFeatures>(config) : null),
+  };
+};
+
 export const config = {
   // Required by Payment SDK
   projectKey: process.env.CTP_PROJECT_KEY || 'payment-integration',
@@ -24,6 +43,8 @@ export const config = {
   stripePaymentElementAppearance: process.env.STRIPE_APPEARANCE_PAYMENT_ELEMENT,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
   stripeApplePayWellKnown: process.env.STRIPE_APPLE_PAY_WELL_KNOWN || 'mockWellKnown',
+  stripeApiVersion: process.env.STRIPE_API_VERSION || '2024-09-30',
+  stripeSavedPaymentMethodConfig: getSavedPaymentConfig(),
   stripeLayout: process.env.STRIPE_LAYOUT || '{"type":"tabs","defaultCollapsed":false}',
 
   // Payment Providers config
