@@ -90,7 +90,7 @@ The following Stripe account credentials and configurations are required:
 
 ```
 //strigified eg.
-"{\"theme\":\"stripe\",\"variables\":{\"colorPrimary\":\"#0570DE\",\"colorBackground\":\"#FFFFFF\",\"colorText\":\"#30313D\",\"colorDanger\":\"#DF1B41\",\"fontFamily\":\"Ideal Sans,system-ui,sansserif\",\"spacingUnit\":\"2px\",\"borderRadius\":\"4px\"}}".
+{"theme":"night","labels":"floating"}
 ```
 
 4. **STRIPE_WEBHOOK_ID**: Unique identifier of a Webhook Endpoint in Stripe.
@@ -101,7 +101,7 @@ The following Stripe account credentials and configurations are required:
 
 ```
 //strigified eg.
-"{\"type\":\"accordion\",\"defaultCollapsed\":false,\"radios\":true \"spacedAccordionItems\":false}".
+{"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false}
 ```
 
 #### Considerations about the Webhook Endpoint
@@ -172,7 +172,7 @@ deployAs:
         - key: STRIPE_PUBLISHABLE_KEY  
           description: Stripe Publishable Key  
         - key: STRIPE_LAYOUT
-          description: Stripe Layout for Payment Element (example - "{\"type\":\"accordion\",\"defaultCollapsed\":false,\"radios\":true \"spacedAccordionItems\":false}").          
+          description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).          
       securedConfiguration:  
         - key: CTP_CLIENT_SECRET  
           description: commercetools client secret  
