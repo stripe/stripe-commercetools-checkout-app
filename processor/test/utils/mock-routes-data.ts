@@ -1,5 +1,9 @@
 import Stripe from 'stripe';
-import { ConfigElementResponseSchemaDTO, PaymentResponseSchemaDTO } from '../../src/dtos/stripe-payment.dto';
+import {
+  ConfigElementResponseSchemaDTO,
+  CustomerResponseSchemaDTO,
+  PaymentResponseSchemaDTO,
+} from '../../src/dtos/stripe-payment.dto';
 import { SupportedPaymentComponentsSchemaDTO } from '../../src/dtos/operations/payment-componets.dto';
 import {
   PaymentIntentResponseSchemaDTO,
@@ -847,3 +851,9 @@ export const mockModifyPayment__payment_intent_canceled: ModifyPayment = {
 };
 
 export const mockRoute__well_know__succeed: string = 'mockWellKnowString';
+
+export const mockRoute__customer_session_succeed: CustomerResponseSchemaDTO = {
+  ephemeralKey: 'mockEphemeralKey',
+  sessionId: 'mockSessionId',
+  stripeCustomerId: 'mockStripeCustomerId',
+};

@@ -176,7 +176,6 @@ export class StripePaymentService extends AbstractPaymentService {
    * @returns Promise with the stripeCustomerId, ephemeralKey and sessionId.
    */
   public async getCustomerSession(): Promise<CustomerResponseSchemaDTO | undefined> {
-    const config = getConfig();
     try {
       const cart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
       const stripeCustomerId = await this.getStripeCustomerId(cart);
@@ -189,11 +188,8 @@ export class StripePaymentService extends AbstractPaymentService {
         throw 'Failed to save stripe customer id.';
       }
 
-      const ephemeralKey = await stripeApi().ephemeralKeys.create(
-        { customer: stripeCustomerId },
-        { apiVersion: config.stripeApiVersion },
-      );
-      if (!ephemeralKey || !ephemeralKey.secret) {
+      const ephemeralKey = await this.createEphemeralKey(stripeCustomerId);
+      if (!ephemeralKey) {
         throw 'Failed to create ephemeral key.';
       }
 
@@ -204,7 +200,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
       return {
         stripeCustomerId,
-        ephemeralKey: ephemeralKey.secret,
+        ephemeralKey: ephemeralKey,
         sessionId: session.client_secret,
       };
     } catch (error) {
@@ -462,7 +458,7 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async getStripeCustomerId(cart: Cart): Promise<string> {
+  public async getStripeCustomerId(cart: Cart): Promise<string | undefined> {
     const ctCustomerId = cart.customerId!;
     const savedCustomerId = cart.custom?.fields?.stripeCustomerId;
     if (savedCustomerId) {
@@ -490,7 +486,7 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  private async validateStripeCustomerId(stripeCustomerId: string, ctCustomerId: string): Promise<boolean> {
+  public async validateStripeCustomerId(stripeCustomerId: string, ctCustomerId: string): Promise<boolean> {
     try {
       const customer = await stripeApi().customers.retrieve(stripeCustomerId);
       return Boolean(customer && !customer.deleted && customer.metadata?.ct_customer_id === ctCustomerId);
@@ -504,13 +500,13 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  private async findStripeCustomer(email: string, ctCustomerId: string): Promise<Stripe.Customer | undefined> {
+  public async findStripeCustomer(email: string, ctCustomerId: string): Promise<Stripe.Customer | undefined> {
     const query = `email:'${email}' AND metadata['ct_customer_id']:'${ctCustomerId}'`;
     const customer = await stripeApi().customers.search({ query });
     return customer.data[0];
   }
 
-  private async createStripeCustomer(cart: Cart, email: string): Promise<Stripe.Customer> {
+  public async createStripeCustomer(cart: Cart, email: string): Promise<Stripe.Customer | undefined> {
     const newCustomer = await stripeApi().customers.create({
       email,
       name: `${cart.shippingAddress?.firstName} ${cart.shippingAddress?.lastName}`.trim(),
@@ -522,14 +518,13 @@ export class StripePaymentService extends AbstractPaymentService {
     return newCustomer;
   }
 
-  private async saveStripeCustomerId(stripeCustomerId: string, cart: Cart): Promise<boolean> {
+  public async saveStripeCustomerId(stripeCustomerId: string, cart: Cart): Promise<boolean> {
     //TODO: Set the stripeCustomer in the Customer info, not in cart
     if (cart.custom?.fields?.stripeCustomerId === stripeCustomerId) {
       return true;
     }
 
-    const apiClient = paymentSDK.ctAPI.client;
-    const response = await apiClient
+    const response = await paymentSDK.ctAPI.client
       .carts()
       .withId({ ID: cart.id })
       .post({
@@ -553,7 +548,7 @@ export class StripePaymentService extends AbstractPaymentService {
     return Boolean(response.body.custom?.fields?.stripeCustomerId);
   }
 
-  private async createSession(stripeCustomerId: string) {
+  public async createSession(stripeCustomerId: string): Promise<Stripe.CustomerSession | undefined> {
     const paymentConfig = getConfig().stripeSavedPaymentMethodConfig;
     const session = await stripeApi().customerSessions.create({
       customer: stripeCustomerId,
@@ -566,5 +561,15 @@ export class StripePaymentService extends AbstractPaymentService {
     });
 
     return session;
+  }
+
+  public async createEphemeralKey(stripeCustomerId: string) {
+    const config = getConfig();
+    const stripe = stripeApi();
+    const res = await stripe.ephemeralKeys.create(
+      { customer: stripeCustomerId },
+      { apiVersion: config.stripeApiVersion },
+    );
+    return res?.secret;
   }
 }
