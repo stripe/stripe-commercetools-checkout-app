@@ -6,14 +6,20 @@ import {
 } from "./payment-enabler";
 import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
 import {
+  Appearance,
+  LayoutObject,
   loadStripe,
   Stripe,
   StripeElements,
   StripePaymentElementOptions
 } from "@stripe/stripe-js";
-import {StripePaymentElement} from "@stripe/stripe-js";
-import {ConfigElementResponseSchemaDTO, ConfigResponseSchemaDTO} from "../dtos/mock-payment.dto.ts";
-
+import { StripePaymentElement } from "@stripe/stripe-js";
+import {
+  ConfigElementResponseSchemaDTO,
+  ConfigResponseSchemaDTO,
+  CustomerResponseSchemaDTO
+} from "../dtos/mock-payment.dto.ts";
+import { parseJSON } from "../utils";
 
 declare global {
   interface ImportMeta {
@@ -32,9 +38,17 @@ export type BaseOptions = {
   onError: (error?: any) => void;
   paymentElement: StripePaymentElement; // MVP https://docs.stripe.com/payments/payment-element
   elements: StripeElements; // MVP https://docs.stripe.com/js/elements_object
+  stripeCustomerId?: string;
 };
 
-
+interface ElementsOptions {
+  type: string;
+  options: Record<string, any>;
+  onComplete: (result: PaymentResult) => void;
+  onError: (error?: any) => void;
+  layout: LayoutObject;
+  appearance: Appearance;
+} 
 
 export class MockPaymentEnabler implements PaymentEnabler {
   setupData: Promise<{ baseOptions: BaseOptions }>;
@@ -46,14 +60,11 @@ export class MockPaymentEnabler implements PaymentEnabler {
   private static _Setup = async (
     options: EnablerOptions
   ): Promise<{ baseOptions: BaseOptions }> => {
-
     const paymentMethodType : string = 'payment'
-
-    const [cartInfoResponse, configEnvResponse]: [ConfigElementResponseSchemaDTO, ConfigResponseSchemaDTO]
-      = await MockPaymentEnabler.fetchConfigData(paymentMethodType, options);
+    const [cartInfoResponse, configEnvResponse] = await MockPaymentEnabler.fetchConfigData(paymentMethodType, options);
     const stripeSDK = await MockPaymentEnabler.getStripeSDK(configEnvResponse);
-
-    const elements= MockPaymentEnabler.getElements(stripeSDK, cartInfoResponse);
+    const customer = await MockPaymentEnabler.getCustomerOptions(options);
+    const elements = MockPaymentEnabler.getElements(stripeSDK, cartInfoResponse, customer);
     const elementsOptions = MockPaymentEnabler.getElementsOptions(options, cartInfoResponse);
 
     return Promise.resolve({
@@ -65,7 +76,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
         onComplete: options.onComplete || (() => {}),
         onError: options.onError || (() => {}),
         paymentElement: elements.create('payment', elementsOptions as StripePaymentElementOptions ),// MVP this could be expressCheckout or payment for subscritpion.
-        elements: elements
+        elements: elements,
+        stripeCustomerId: customer.stripeCustomerId,
       },
     });
   };
@@ -74,9 +86,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     type: string
   ): Promise<PaymentComponentBuilder | never> {
     const { baseOptions } = await this.setupData;
-
-    const supportedMethods = {
-    };
+    const supportedMethods = {};
 
     if (!Object.keys(supportedMethods).includes(type)) {
       throw new Error(
@@ -93,7 +103,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     type: DropinType
   ): Promise<PaymentDropinBuilder | never> {
 
-    const setupData= await this.setupData;
+    const setupData = await this.setupData;
     if (!setupData) {
       throw new Error("StripePaymentEnabler not initialized");
     }
@@ -123,14 +133,24 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
-  private static getElements(stripeSDK: Stripe | null, cartInfoResponse): StripeElements | null {
+  private static getElements(
+    stripeSDK: Stripe | null,
+    cartInfoResponse: ConfigElementResponseSchemaDTO,
+    customer: CustomerResponseSchemaDTO
+  ): StripeElements | null {
     if (!stripeSDK) return null;
     try {
       return stripeSDK.elements?.({
         mode: 'payment',
         amount: cartInfoResponse.cartInfo.amount,
         currency: cartInfoResponse.cartInfo.currency.toLowerCase(),
-        appearance: JSON.parse(cartInfoResponse.appearance || "{}"),
+        customerOptions: {
+          customer: customer.stripeCustomerId,
+          ephemeralKey: customer.ephemeralKey,
+        },
+        setupFutureUsage: cartInfoResponse.setupFutureUsage,
+        customerSessionClientSecret: customer.sessionId,
+        appearance: parseJSON(cartInfoResponse.appearance),
         capture_method: cartInfoResponse.captureMethod,
       });
     } catch (error) {
@@ -138,7 +158,6 @@ export class MockPaymentEnabler implements PaymentEnabler {
       return null;
     }
   }
-
 
   private static async fetchConfigData(
     paymentMethodType: string, options: EnablerOptions
@@ -153,7 +172,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     return Promise.all([configElementResponse.json(), configEnvResponse.json()]);
   }
 
-  private static getFetchHeader(options: EnablerOptions): {method: string, headers: {[key: string]: string}} {
+  private static getFetchHeader(options: EnablerOptions): { method: string, headers: { [key: string]: string }} {
     return {
       method: "GET",
       headers: {
@@ -163,22 +182,51 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
-  private static getElementsOptions(options: EnablerOptions, config: any): object {
-    // MVP options from the Stripe element appareance can be here. https://docs.stripe.com/js/elements_object/create
-    let appOptions;
-    if(config.appearance !== undefined)
-      appOptions = config.appearance
+  private static getElementsOptions(
+    options: EnablerOptions,
+    config: ConfigElementResponseSchemaDTO
+  ): ElementsOptions {
+    const { appearance, layout } = config;
     return {
       type: 'payment',
       options: {},
       onComplete: options.onComplete,
       onError: options.onError,
-      layout: {
-        type: 'tabs',
-        defaultCollapsed: false
-      },
-      ...(appOptions!== undefined && {appearance : appOptions}),
+      layout: this.getLayoutObject(layout),
+      appearance: parseJSON(appearance),
     }
   }
 
+  private static async getCustomerOptions(options: EnablerOptions): Promise<CustomerResponseSchemaDTO> {
+    const headers = MockPaymentEnabler.getFetchHeader(options);
+    const apiUrl = new URL(`${options.processorUrl}/customer/session`);
+    const response = await fetch(apiUrl.toString(), headers);
+    const data: CustomerResponseSchemaDTO = await response.json();
+
+    if (!response.ok) {
+      throw data;
+    }
+    return data;
+  }
+
+  private static getLayoutObject(layout: string): LayoutObject {
+    if (layout) {
+      const parsedObject = parseJSON<LayoutObject>(layout);
+      const isValid = this.validateLayoutObject(parsedObject);
+      if (isValid) {
+        return parsedObject;
+      }
+    }
+
+    return {
+      type: 'tabs',
+      defaultCollapsed: false,
+    };
+  }
+
+  private static validateLayoutObject(layout: LayoutObject): boolean {
+    if (!layout) return false;
+    const validLayouts = ['tabs', 'accordion', 'auto'];
+    return validLayouts.includes(layout.type);
+  }
 }

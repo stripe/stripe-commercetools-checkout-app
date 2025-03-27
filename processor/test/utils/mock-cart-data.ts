@@ -1,10 +1,13 @@
 import { Cart, LineItem, CustomLineItem, ShippingInfo } from '@commercetools/connect-payments-sdk';
 import { randomUUID } from 'crypto';
 
+export const mockCtCustomerId = '1234567989-123456789';
+
 export const mockGetCartResult = () => {
   const cartId = randomUUID();
   const mockGetCartResult: Cart = {
     id: cartId,
+    customerId: mockCtCustomerId,
     version: 1,
     lineItems: [lineItem],
     customLineItems: [customLineItem],
@@ -29,6 +32,7 @@ export const mockGetCartResult = () => {
     shippingInfo: shippingInfo,
     createdAt: '2024-01-01T00:00:00Z',
     lastModifiedAt: '2024-01-01T00:00:00Z',
+    customerEmail: 'test@example.com',
     paymentInfo: {
       payments: [
         {
@@ -37,6 +41,30 @@ export const mockGetCartResult = () => {
           obj: undefined,
         },
       ],
+    },
+    shippingAddress: {
+      title: 'Mr.',
+      firstName: 'John',
+      lastName: 'Smith',
+      streetName: 'Test street',
+      streetNumber: '123',
+      postalCode: '12345',
+      city: 'Los Angeles',
+      state: 'CA',
+      country: 'US',
+      phone: '+312345678',
+      mobile: '+312345679',
+      email: 'test@example.com',
+      key: 'address1',
+    },
+    custom: {
+      type: {
+        typeId: 'type',
+        id: 'xxxxxxxxxxx',
+      },
+      fields: {
+        stripeCustomerId: 'cus_Example',
+      },
     },
   };
   return mockGetCartResult;

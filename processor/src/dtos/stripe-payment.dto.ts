@@ -43,13 +43,22 @@ export const ConfigElementResponseSchema = Type.Object({
   }),
   appearance: Type.Optional(Type.String()),
   captureMethod: Type.String(),
+  setupFutureUsage: Type.String(),
+  layout: Type.String(),
 });
 
 export const CtPaymentSchema = Type.Object({
   ctPaymentReference: Type.String(),
 });
 
+export const CustomerResponseSchema = Type.Object({
+  stripeCustomerId: Type.String(),
+  ephemeralKey: Type.String(),
+  sessionId: Type.String(),
+});
+
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>;
 export type PaymentResponseSchemaDTO = Static<typeof PaymentResponseSchema>;
 export type ConfigElementResponseSchemaDTO = Static<typeof ConfigElementResponseSchema>;
 export type CtPaymentSchemaDTO = Static<typeof CtPaymentSchema>;
+export type CustomerResponseSchemaDTO = Static<typeof CustomerResponseSchema>;

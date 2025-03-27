@@ -89,13 +89,27 @@ The following Stripe account credentials and configurations are required:
 3. **STRIPE_APPEARANCE_PAYMENT_ELEMENT**: This configuration enables the theming for the payment element component. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/elements/appearance-api).
 
 ```
-//strigified eg.
-"{\"theme\":\"stripe\",\"variables\":{\"colorPrimary\":\"#0570DE\",\"colorBackground\":\"#FFFFFF\",\"colorText\":\"#30313D\",\"colorDanger\":\"#DF1B41\",\"fontFamily\":\"Ideal Sans,system-ui,sansserif\",\"spacingUnit\":\"2px\",\"borderRadius\":\"4px\"}}".
+//stringified eg.
+{"theme":"night","labels":"floating"}
 ```
 
 4. **STRIPE_WEBHOOK_ID**: Unique identifier of a Webhook Endpoint in Stripe.
 
 5. **STRIPE_WEBHOOK_SIGNING_SECRET**: Signing secret of a Webhook Endpoint in Stripe.
+
+6. **STRIPE_LAYOUT**: This configuration enables the Layout for payment component. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/payments/payment-element#layout).
+
+```
+//stringified eg.
+{"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false}
+```
+
+7. **STRIPE_SAVED_PAYMENT_METHODS_CONFIG**: The configuration for the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
+
+```
+//stringified eg.
+{"payment_method_save_usage":"off_session","payment_method_redisplay_limit":10}
+```
 
 #### Considerations about the Webhook Endpoint
 Before installing the connector, it is necessary to create a Webhook Endpoint in Stripe (using a dummy URL). Once created, the ID and Signing Secret can be retrieved from the Stripe Console. This Webhook Endpoint will be updated during the post-deploy script after the connector has been deployed. It's important to set the correct values in the variables so the events are sent to the connector and can be accepted.
@@ -164,7 +178,8 @@ deployAs:
           description: Stripe Appearance for Payment Element.    
         - key: STRIPE_PUBLISHABLE_KEY  
           description: Stripe Publishable Key  
-          
+        - key: STRIPE_LAYOUT
+          description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).          
       securedConfiguration:  
         - key: CTP_CLIENT_SECRET  
           description: commercetools client secret  
@@ -178,6 +193,8 @@ deployAs:
         - key: STRIPE_WEBHOOK_SIGNING_SECRET  
           description: Stripe Webhook signing secret  
           required: true  
+        - key: STRIPE_SAVED_PAYMENT_METHODS_CONFIG
+          description: Stripe configuration for saved payment methods (example - {"payment_method_save_usage":"off_session","payment_method_redisplay_limit":10}).
 ```
 
 Here you can see the details about various variables in configuration
@@ -190,6 +207,7 @@ Here you can see the details about various variables in configuration
 - `CTP_JWT_ISSUER`: The issuer inside JSON Web Token which is required in JWT validation process. Default value is `https://mc-api.europe-west1.gcp.commercetools.com`
 - `STRIPE_CAPTURE_METHOD`: Stripe capture method (manual or automatic), default value: automatic.
 - `STRIPE_APPEARANCE_PAYMENT_ELEMENT`: Stripe Elements supports visual customization, which allows you to match the design of your site with the `appearance` option. This value has the specific appearance of the Payment Element component.
+- `STRIPE_LAYOUT`: Stripe allows you to customize the Payment Element’s layout to fit your checkout flow (accordions or tabs).
 - `CTP_CLIENT_SECRET`: The client secret of commercetools composable commerce user account. It is used in commercetools client to communicate with commercetools composable commerce via SDK.
 - `CTP_CLIENT_ID`: The client ID of your commercetools composable commerce user account. It is used in commercetools client to communicate with commercetools composable commerce via SDK. Expected scopes are: `manage_payments` `manage_orders` `view_sessions` `view_api_clients` `manage_checkout_payment_intents` `introspect_oauth_tokens` `manage_types` `view_types`.
 - `STRIPE_SECRET_KEY`: Stripe authenticates your API requests using your account’s API keys
@@ -198,6 +216,7 @@ Here you can see the details about various variables in configuration
 - `STRIPE_WEBHOOK_SIGNING_SECRET`: Stripe Secret key to verify webhook signatures using the official libraries. This key is created in the [Stripe dashboard Webhook](https://docs.stripe.com/webhooks).
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can found more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
 - `MERCHANT_RETURN_URL` : Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the url, the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`.
+- `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
 
 ## Development
 

@@ -4,6 +4,8 @@ import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import {
   ConfigElementResponseSchema,
   ConfigElementResponseSchemaDTO,
+  CustomerResponseSchema,
+  CustomerResponseSchemaDTO,
   PaymentResponseSchema,
   PaymentResponseSchemaDTO,
 } from '../dtos/stripe-payment.dto';
@@ -32,6 +34,24 @@ type StripeRoutesOptions = {
   stripeHeaderAuthHook: StripeHeaderAuthHook;
 };
 
+export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
+  fastify.get<{ Reply: CustomerResponseSchemaDTO }>(
+    '/customer/session',
+    {
+      preHandler: [opts.sessionHeaderAuthHook.authenticate()],
+      schema: {
+        response: {
+          200: CustomerResponseSchema,
+        },
+      },
+    },
+    async (_, reply) => {
+      const resp = await opts.paymentService.getCustomerSession();
+      return reply.status(200).send(resp);
+    },
+  );
+};
+
 /**
  * MVP if additional information needs to be included in the payment intent, this method should be supplied with the necessary data.
  *
@@ -47,9 +67,8 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
         },
       },
     },
-    async (request, reply) => {
+    async (_, reply) => {
       const resp = await opts.paymentService.createPaymentIntentStripe();
-
       return reply.status(200).send(resp);
     },
   );
@@ -90,7 +109,7 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
 };
 
 export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: StripeRoutesOptions) => {
-  fastify.post<{ Body: string; Reply: any }>(
+  fastify.post<{ Body: string }>(
     '/stripe/webhooks',
     {
       preHandler: [opts.stripeHeaderAuthHook.authenticate()],
@@ -107,7 +126,8 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
           signature,
           getConfig().stripeWebhookSigningSecret,
         );
-      } catch (err: any) {
+      } catch (error) {
+        const err = error as Error;
         log.error(JSON.stringify(err));
         return reply.status(400).send(`Webhook Error: ${err.message}`);
       }
