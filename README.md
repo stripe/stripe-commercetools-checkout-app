@@ -89,7 +89,7 @@ The following Stripe account credentials and configurations are required:
 3. **STRIPE_APPEARANCE_PAYMENT_ELEMENT**: This configuration enables the theming for the payment element component. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/elements/appearance-api).
 
 ```
-//strigified eg.
+//stringified eg.
 {"theme":"night","labels":"floating"}
 ```
 
@@ -100,8 +100,15 @@ The following Stripe account credentials and configurations are required:
 6. **STRIPE_LAYOUT**: This configuration enables the Layout for payment component. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/payments/payment-element#layout).
 
 ```
-//strigified eg.
+//stringified eg.
 {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false}
+```
+
+7. **STRIPE_SAVED_PAYMENT_METHODS_CONFIG**: The configuration for the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
+
+```
+//stringified eg.
+{"payment_method_save_usage":"off_session","payment_method_redisplay_limit":10}
 ```
 
 #### Considerations about the Webhook Endpoint
@@ -186,6 +193,8 @@ deployAs:
         - key: STRIPE_WEBHOOK_SIGNING_SECRET  
           description: Stripe Webhook signing secret  
           required: true  
+        - key: STRIPE_SAVED_PAYMENT_METHODS_CONFIG
+          description: Stripe configuration for saved payment methods (example - {"payment_method_save_usage":"off_session","payment_method_redisplay_limit":10}).
 ```
 
 Here you can see the details about various variables in configuration
@@ -207,6 +216,7 @@ Here you can see the details about various variables in configuration
 - `STRIPE_WEBHOOK_SIGNING_SECRET`: Stripe Secret key to verify webhook signatures using the official libraries. This key is created in the [Stripe dashboard Webhook](https://docs.stripe.com/webhooks).
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can found more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
 - `MERCHANT_RETURN_URL` : Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the url, the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`.
+- `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
 
 ## Development
 
