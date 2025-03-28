@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { mockCtCustomerId } from './mock-cart-data';
+import { Customer } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
 
 const lastResponse = {
   headers: {},
@@ -61,6 +62,39 @@ export const mockCustomerData: Stripe.Response<Stripe.Customer> = {
   tax_exempt: 'none',
   test_clock: null,
   lastResponse,
+};
+
+export const mockCtCustomerData: Customer = {
+  id: 'xxxxxx-test-id',
+  version: 1,
+  createdAt: '2025-03-19T00:09:28.752Z',
+  lastModifiedAt: '2025-03-19T00:48:46.632Z',
+  email: 'test@example.com',
+  firstName: 'Gildardo',
+  lastName: 'Diaz',
+  addresses: [
+    {
+      id: 'xxxxxx-test-id',
+      country: 'US',
+      city: 'San Francisco',
+      state: 'CA',
+      streetName: 'Main St',
+      streetNumber: '123',
+      postalCode: '94105',
+    },
+  ],
+  isEmailVerified: false,
+  stores: [],
+  authenticationMode: 'Password',
+  custom: {
+    type: {
+      typeId: 'type',
+      id: 'xxxxxxxxxxx',
+    },
+    fields: {
+      stripeCustomerId: 'cus_Example',
+    },
+  },
 };
 
 export const mockSearchCustomerResponse: Stripe.Response<Stripe.ApiSearchResult<Stripe.Customer>> = {

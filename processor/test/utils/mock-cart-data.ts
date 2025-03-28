@@ -57,15 +57,6 @@ export const mockGetCartResult = () => {
       email: 'test@example.com',
       key: 'address1',
     },
-    custom: {
-      type: {
-        typeId: 'type',
-        id: 'xxxxxxxxxxx',
-      },
-      fields: {
-        stripeCustomerId: 'cus_Example',
-      },
-    },
   };
   return mockGetCartResult;
 };
