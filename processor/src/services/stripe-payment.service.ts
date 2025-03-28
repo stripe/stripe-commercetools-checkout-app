@@ -227,15 +227,33 @@ export class StripePaymentService extends AbstractPaymentService {
   public async getCustomerSession(): Promise<CustomerResponseSchemaDTO | undefined> {
     try {
       const cart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+      const ctCustomerId = cart.customerId ? cart.customerId : cart.anonymousId!;
+      if (!ctCustomerId) {
+        log.warn('Cart does not have a customerId or anonymousId - Skipping customer session creation');
+        return undefined;
+      }
+
+      const isStripeCustomerId = await this.customerHasStripeCustomerId(ctCustomerId);
+      if (!isStripeCustomerId) {
+        log.warn('Customer does not have a stripeCustomerId - Skipping customer session creation');
+        return undefined;
+      }
+
+      log.info('Customer have a custom field call stripeCustomerId - customer session creation');
       const stripeCustomerId = await this.getStripeCustomerId(cart);
       if (!stripeCustomerId) {
         throw 'Failed to get stripe customer id.';
       }
 
+      /*
+        TODO: commercetools insights on how to integrate the Stripe accountId into commercetools:
+        We have plans to support recurring payments and saved payment methods in the next quarters.
+        Not sure if you can wait until that so your implementation would be aligned with ours.
+
       const stripeCustomerIsSaved = await this.saveStripeCustomerId(stripeCustomerId, cart);
       if (!stripeCustomerIsSaved) {
         throw 'Failed to save stripe customer id.';
-      }
+      }*/
 
       const ephemeralKey = await this.createEphemeralKey(stripeCustomerId);
       if (!ephemeralKey) {
@@ -508,7 +526,7 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   public async getStripeCustomerId(cart: Cart): Promise<string | undefined> {
-    const ctCustomerId = cart.customerId!;
+    const ctCustomerId = cart.customerId ? cart.customerId : cart.anonymousId!;
     const savedCustomerId = cart.custom?.fields?.stripeCustomerId;
     if (savedCustomerId) {
       const isValid = await this.validateStripeCustomerId(savedCustomerId, ctCustomerId);
@@ -620,5 +638,10 @@ export class StripePaymentService extends AbstractPaymentService {
       { apiVersion: config.stripeApiVersion },
     );
     return res?.secret;
+  }
+
+  public async customerHasStripeCustomerId(ctCustomerId: string): Promise<boolean> {
+    const response = await paymentSDK.ctAPI.client.customers().withId({ ID: ctCustomerId }).get().execute();
+    return Boolean(response.body.custom?.fields?.stripeCustomerId);
   }
 }

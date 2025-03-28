@@ -47,6 +47,9 @@ export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPlug
     },
     async (_, reply) => {
       const resp = await opts.paymentService.getCustomerSession();
+      if (!resp) {
+        return reply.status(204).send(resp);
+      }
       return reply.status(200).send(resp);
     },
   );
