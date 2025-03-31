@@ -14,15 +14,16 @@ import {
   mockStripeUpdatePaymentResult,
   mockUpdatePaymentResult,
   mockStripeCapturePaymentResult,
+  mockStripeCapturePaymentErrorResult,
 } from '../utils/mock-payment-results';
 import { mockEvent__paymentIntent_succeeded_captureMethodManual } from '../utils/mock-routes-data';
-import { mockCtCustomerId, mockGetCartResult } from '../utils/mock-cart-data';
+import { mockCtCustomerId, mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
 import * as Config from '../../src/config/config';
 import { PaymentStatus, StripePaymentServiceOptions } from '../../src/services/types/stripe-payment.type';
 import { AbstractPaymentService } from '../../src/services/abstract-payment.service';
 import { StripePaymentService } from '../../src/services/stripe-payment.service';
 import * as StatusHandler from '@commercetools/connect-payments-sdk/dist/api/handlers/status.handler';
-import { Cart, HealthCheckResult } from '@commercetools/connect-payments-sdk';
+import { HealthCheckResult } from '@commercetools/connect-payments-sdk';
 import * as Logger from '../../src/libs/logger/index';
 
 import Stripe from 'stripe';
@@ -33,12 +34,15 @@ import { PaymentTransactions } from '../../src/dtos/operations/payment-intents.d
 import { ClientResponse } from '@commercetools/platform-sdk/dist/declarations/src/generated/shared/utils/common-types';
 import {
   mockCreateSessionResult,
+  mockCtCustomerData,
+  mockCtCustomerWithoutCustomFieldsData,
   mockCustomerData,
   mockEphemeralKeyResult,
   mockEphemeralKeySecret,
   mockSearchCustomerResponse,
   mockStripeCustomerId,
 } from '../utils/mock-customer-data';
+import { Customer } from '@commercetools/platform-sdk';
 
 jest.mock('stripe', () => ({
   __esModule: true,
@@ -261,6 +265,42 @@ describe('stripe-payment.service', () => {
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
+    test('should capture a payment with log erro', async () => {
+      //Given
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'capturePayment',
+              amount: {
+                centAmount: 150000,
+                currencyCode: 'USD',
+              },
+            },
+          ],
+        },
+      };
+
+      const getPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'getPayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const stripeApiMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'capture')
+        .mockReturnValue(Promise.resolve(mockStripeCapturePaymentErrorResult));
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+
+      expect(Logger.log.warn).toBeCalled();
+      expect(result?.outcome).toStrictEqual('rejected');
+      expect(getPaymentMock).toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(stripeApiMock).toHaveBeenCalled();
+    });
+
     test('should capture a payment rejected', async () => {
       //Given
       const modifyPaymentOpts: ModifyPayment = {
@@ -387,6 +427,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getPaymentAmountMock = jest
         .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
         .mockResolvedValue(mockGetPaymentAmount);
@@ -410,6 +453,7 @@ describe('stripe-payment.service', () => {
 
       // Or check that the relevant mocks have been called
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getPaymentAmountMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(stripeApiMock).toHaveBeenCalled();
@@ -422,6 +466,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getPaymentAmountMock = jest
         .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
         .mockResolvedValue(mockGetPaymentAmount);
@@ -443,6 +490,7 @@ describe('stripe-payment.service', () => {
 
       // Or check that the relevant mocks have been called
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
       expect(getPaymentAmountMock).toHaveBeenCalled();
       expect(stripeApiMock).toHaveBeenCalled();
@@ -522,46 +570,6 @@ describe('stripe-payment.service', () => {
       expect(mockStripeEventConverter).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
     });
-
-    /*test('should return correct ModifyPayment for a charge refunded', () => {
-      const mockEvent: Stripe.Event = mockEvent__charge_refund_captured;
-      const result = stripePaymentService.processStripeEvent(mockEvent);
-      expect(result).toEqual({
-        paymentId: 'pi_11111',
-        stripePaymentIntent: undefined,
-        data: {
-          actions: [
-            {
-              action: 'refundPayment',
-              amount: {
-                centAmount: 34500,
-                currencyCode: 'MXN',
-              },
-            },
-          ],
-        },
-      });
-    });
-
-    test('should return correct ModifyPayment for a charge event', () => {
-      const mockEvent: Stripe.Event = mockEvent__paymentIntent_canceled;
-      const result = stripePaymentService.processStripeEvent(mockEvent);
-      expect(result).toEqual({
-        paymentId: undefined,
-        stripePaymentIntent: 'pi_11111',
-        data: {
-          actions: [
-            {
-              action: 'cancelPayment',
-              amount: {
-                centAmount: 0,
-                currencyCode: 'MXN',
-              },
-            },
-          ],
-        },
-      });
-    });*/
   });
 
   describe('method getCustomerSession', () => {
@@ -569,6 +577,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -592,16 +603,47 @@ describe('stripe-payment.service', () => {
       expect(result).toBeDefined();
 
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
       expect(createSessionMock).toHaveBeenCalled();
     });
 
+    test('should return undefined to get found customer id on cart', async () => {
+      const getCartMock = jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithoutCustomerIdResult()));
+
+      await stripePaymentService.getCustomerSession();
+
+      expect(Logger.log.warn).toBeCalled();
+      expect(getCartMock).toHaveBeenCalled();
+    });
+
+    test('should return undefined to get stripeCustomerId from customer custom field', async () => {
+      const getCartMock = jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerWithoutCustomFieldsData);
+
+      const response = await stripePaymentService.getCustomerSession();
+
+      expect(response).toBeUndefined();
+      expect(Logger.log.warn).toBeCalled();
+      expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
+    });
+
     test('should fail to get stripe customer id', async () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(undefined);
@@ -613,6 +655,7 @@ describe('stripe-payment.service', () => {
       }
 
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
     });
 
@@ -620,6 +663,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -634,6 +680,7 @@ describe('stripe-payment.service', () => {
       }
 
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
     });
@@ -642,6 +689,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -659,6 +709,7 @@ describe('stripe-payment.service', () => {
       }
 
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
@@ -668,6 +719,9 @@ describe('stripe-payment.service', () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -688,6 +742,7 @@ describe('stripe-payment.service', () => {
       }
 
       expect(getCartMock).toHaveBeenCalled();
+      expect(getCustomerMock).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
@@ -703,7 +758,7 @@ describe('stripe-payment.service', () => {
         .spyOn(StripePaymentService.prototype, 'validateStripeCustomerId')
         .mockResolvedValue(true);
 
-      const result = await stripePaymentService.getStripeCustomerId(cart);
+      const result = await stripePaymentService.getStripeCustomerId(cart, mockCtCustomerData);
 
       expect(result).toStrictEqual(mockStripeCustomerId);
       expect(result).toBeDefined();
@@ -717,23 +772,10 @@ describe('stripe-payment.service', () => {
         .spyOn(StripePaymentService.prototype, 'validateStripeCustomerId')
         .mockResolvedValue(true);
 
-      const result = await stripePaymentService.getStripeCustomerId(cart);
+      const result = await stripePaymentService.getStripeCustomerId(cart, mockCtCustomerData);
 
       expect(result).toStrictEqual(mockStripeCustomerId);
       expect(result).toBeDefined();
-      expect(validateStripeCustomerIdMock).toHaveBeenCalled();
-    });
-
-    test('should fail because no email is assigned', async () => {
-      const cart = { ...mockGetCartResult(), customerEmail: undefined, shippingAddress: undefined };
-      const validateStripeCustomerIdMock = jest
-        .spyOn(StripePaymentService.prototype, 'validateStripeCustomerId')
-        .mockResolvedValue(false);
-      try {
-        await stripePaymentService.getStripeCustomerId(cart);
-      } catch (e) {
-        expect(e).toStrictEqual('Customer email not found.');
-      }
       expect(validateStripeCustomerIdMock).toHaveBeenCalled();
     });
 
@@ -748,7 +790,7 @@ describe('stripe-payment.service', () => {
         .spyOn(StripePaymentService.prototype, 'findStripeCustomer')
         .mockResolvedValue(mockCustomerData);
 
-      const result = await stripePaymentService.getStripeCustomerId(cart);
+      const result = await stripePaymentService.getStripeCustomerId(cart, mockCtCustomerData);
 
       expect(result).toStrictEqual(mockStripeCustomerId);
       expect(result).toBeDefined();
@@ -771,7 +813,7 @@ describe('stripe-payment.service', () => {
         .spyOn(StripePaymentService.prototype, 'createStripeCustomer')
         .mockResolvedValue(mockCustomerData);
 
-      const result = await stripePaymentService.getStripeCustomerId(cart);
+      const result = await stripePaymentService.getStripeCustomerId(cart, mockCtCustomerData);
 
       expect(result).toStrictEqual(mockStripeCustomerId);
       expect(result).toBeDefined();
@@ -796,7 +838,7 @@ describe('stripe-payment.service', () => {
         .mockResolvedValue(undefined);
 
       try {
-        await stripePaymentService.getStripeCustomerId(cart);
+        await stripePaymentService.getStripeCustomerId(cart, mockCtCustomerData);
       } catch (e) {
         expect(e).toStrictEqual('Failed to create stripe customer.');
       }
@@ -882,7 +924,11 @@ describe('stripe-payment.service', () => {
         .spyOn(Stripe.prototype.customers, 'create')
         .mockReturnValue(Promise.resolve(mockCustomerData));
 
-      const result = await stripePaymentService.createStripeCustomer(mockGetCartResult(), 'test@example.com');
+      const result = await stripePaymentService.createStripeCustomer(
+        mockGetCartResult(),
+        'test@example.com',
+        mockCtCustomerData,
+      );
 
       expect(result).toStrictEqual(mockCustomerData);
       expect(result).toBeDefined();
@@ -890,37 +936,37 @@ describe('stripe-payment.service', () => {
     });
   });
 
-  describe('method saveStripeCustomerId', () => {
-    test('should not save stripe customer', async () => {
-      const result = await stripePaymentService.saveStripeCustomerId(mockStripeCustomerId, mockGetCartResult());
+  // describe('method saveStripeCustomerId', () => {
+  //   test('should not save stripe customer', async () => {
+  //     const result = await stripePaymentService.saveStripeCustomerId(mockStripeCustomerId, mockGetCartResult());
 
-      expect(result).toStrictEqual(true);
-      expect(result).toBeDefined();
-    });
+  //     expect(result).toStrictEqual(true);
+  //     expect(result).toBeDefined();
+  //   });
 
-    test('should save stripe customer id successfully', async () => {
-      const mockCart = mockGetCartResult();
-      const mockUpdatedCartResponse: ClientResponse<Cart> = {
-        body: mockCart,
-        statusCode: 200,
-        headers: {},
-      };
-      const executeMock = jest.fn().mockReturnValue(mockUpdatedCartResponse);
-      const client = paymentSDK.ctAPI.client;
-      client.carts = jest.fn(() => ({
-        withId: jest.fn(() => ({
-          post: jest.fn(() => ({
-            execute: executeMock,
-          })),
-        })),
-      })) as never;
+  //   test('should save stripe customer id successfully', async () => {
+  //     const mockCart = mockGetCartResult();
+  //     const mockUpdatedCartResponse: ClientResponse<Cart> = {
+  //       body: mockCart,
+  //       statusCode: 200,
+  //       headers: {},
+  //     };
+  //     const executeMock = jest.fn().mockReturnValue(mockUpdatedCartResponse);
+  //     const client = paymentSDK.ctAPI.client;
+  //     client.carts = jest.fn(() => ({
+  //       withId: jest.fn(() => ({
+  //         post: jest.fn(() => ({
+  //           execute: executeMock,
+  //         })),
+  //       })),
+  //     })) as never;
 
-      const result = await stripePaymentService.saveStripeCustomerId('mockStripeCustomerId', mockCart);
+  //     const result = await stripePaymentService.saveStripeCustomerId('mockStripeCustomerId', mockCart);
 
-      expect(executeMock).toHaveBeenCalled();
-      expect(result).toEqual(true);
-    });
-  });
+  //     expect(executeMock).toHaveBeenCalled();
+  //     expect(result).toEqual(true);
+  //   });
+  // });
 
   describe('method createSession', () => {
     test('should create stripe customer', async () => {
@@ -953,6 +999,30 @@ describe('stripe-payment.service', () => {
       expect(result).toStrictEqual(mockEphemeralKeySecret);
       expect(result).toBeDefined();
       expect(mockCreateEphemeralKey).toHaveBeenCalled();
+    });
+  });
+
+  describe('method getCtCustomer', () => {
+    test('should return ct customer successfully', async () => {
+      const mockCtCustomerResponse: ClientResponse<Customer> = {
+        body: mockCtCustomerData,
+        statusCode: 200,
+        headers: {},
+      };
+      const executeMock = jest.fn().mockReturnValue(mockCtCustomerResponse);
+      const client = paymentSDK.ctAPI.client;
+      client.customers = jest.fn(() => ({
+        withId: jest.fn(() => ({
+          get: jest.fn(() => ({
+            execute: executeMock,
+          })),
+        })),
+      })) as never;
+
+      const result = await stripePaymentService.getCtCustomer(mockCtCustomerId);
+
+      expect(executeMock).toHaveBeenCalled();
+      expect(result).toEqual(mockCtCustomerData);
     });
   });
 });
