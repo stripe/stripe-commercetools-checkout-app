@@ -5,6 +5,19 @@ The corresponding payment, cart or order details would be fetched from composabl
 
 The module also provides template scripts for post-deployment and pre-undeployment action. After deployment or before undeployment via connect service completed, customized actions can be performed based on users' needs.
 
+## Considerations for Stripe Customer Session
+
+The Stripe customer session allows you to create a session for a customer, which can be used to manage their payment methods and subscriptions. This feature is particularly useful for businesses that want to provide a seamless checkout experience for their customers.
+
+To use the Stripe customer session, the customer who owns the cart in the commercetools Checkout session must have the `stripeCustomerId` in the custom field with a dummy value that will be updated with the Stripe Account ID created by the flow.
+
+The creation and retrieval of the Stripe customer depend on a Custom Type created in the commercetools platform. This Custom Type should contain the following field:
+- **stripeCustomerId**: The ID of the customer in the commercetools platform or a dummy value.
+
+If the `stripeCustomerId`, the connector will try to retrieve the Stripe customer, if the customer do not exist the connector will create a new customer in Stripe using the customer who owns the cart in the session. The customer ID will be stored in the metadata of the payment transaction in commercetools and the `stripeCustomerId` will be updated with the customer ID created in Stripe.
+
+The environment variable `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` configures the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default.
+
 ## Getting Started
 
 These instructions will get you up and running on your local machine for development and testing purposes.
@@ -147,7 +160,7 @@ By implementing this workflow, seamless integration of BNPL payment methods with
 ## APIs
 The processor exposes the following endpoints to execute various operations with the Stripe platform:
 
-### Collect Payment and Appearance Details
+### Configurations of collecting payment, appearance and future usage
 This endpoint retrieves the payment information from the cart in session to use the prebuilt Stripe Payment Element UI component. This component simplifies the payment process for a variety of payment methods. The `paymentComponent` is requested in the query parameters to send the correct appearance from the environment variables configuration.
 
 #### Endpoint
@@ -163,6 +176,8 @@ The response will provide the necessary information to populate the payment elem
     - `currency`: Currency selected for the cart in session.
 - **appearance**: Optional. Used to customize or theme the payment element rendered by Stripe's prebuilt UI component. It must be a valid [Element Appearance](https://docs.stripe.com/elements/appearance-api).
 - **captureMethod**: The current capture method configured in the payment connector.
+- **setupFutureUsage**: The current setup future usage configured in the payment connector.[More information](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
+- **layout**: This configuration enables the Layout for the payment component. The value needs to be a valid stringified JSON. [More information](https://docs.stripe.com/payments/payment-element#layout).
 
 ### Create Payment Intent from Stripe
 This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. 
@@ -224,6 +239,20 @@ N/A
 
 #### Response Parameters
 - **string**: The string value of the well-know domain file.
+
+### Stripe customer session
+Stripe customer session is used to manage the payment methods and subscriptions of a customer. This endpoint creates a new customer session in Stripe. It is called after the user fills out all the payment information and submits the payment. [More information](#considerations-for-stripe-customer-session). 
+
+#### Endpoint
+`GET /customer/session`
+
+#### Query Parameters
+N/A
+
+#### Response Parameters
+- **stripeCustomerId**: The ID of the customer in Stripe used for the session.
+- **ephemeralKey**: The ephemeral key used to access the Stripe customer session.
+- **sessionId**: The ID of the customer session in Stripe.
 
 ### Get supported payment components
 Private endpoint protected by JSON Web Token that exposes the payment methods supported by the connector so that checkout application can retrieve the available payment components.

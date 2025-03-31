@@ -48,7 +48,7 @@ interface ElementsOptions {
   onError: (error?: any) => void;
   layout: LayoutObject;
   appearance: Appearance;
-} 
+}
 
 export class MockPaymentEnabler implements PaymentEnabler {
   setupData: Promise<{ baseOptions: BaseOptions }>;
@@ -77,7 +77,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
         onError: options.onError || (() => {}),
         paymentElement: elements.create('payment', elementsOptions as StripePaymentElementOptions ),// MVP this could be expressCheckout or payment for subscritpion.
         elements: elements,
-        stripeCustomerId: customer.stripeCustomerId,
+        ...(customer && {stripeCustomerId: customer?.stripeCustomerId,})
       },
     });
   };
@@ -144,12 +144,14 @@ export class MockPaymentEnabler implements PaymentEnabler {
         mode: 'payment',
         amount: cartInfoResponse.cartInfo.amount,
         currency: cartInfoResponse.cartInfo.currency.toLowerCase(),
-        customerOptions: {
-          customer: customer.stripeCustomerId,
-          ephemeralKey: customer.ephemeralKey,
-        },
-        setupFutureUsage: cartInfoResponse.setupFutureUsage,
-        customerSessionClientSecret: customer.sessionId,
+        ...(customer && {
+          customerOptions: {
+            customer: customer.stripeCustomerId,
+            ephemeralKey: customer.ephemeralKey,
+          },
+          setupFutureUsage: cartInfoResponse.setupFutureUsage,
+          customerSessionClientSecret: customer.sessionId,
+        }),
         appearance: parseJSON(cartInfoResponse.appearance),
         capture_method: cartInfoResponse.captureMethod,
       });
@@ -201,11 +203,12 @@ export class MockPaymentEnabler implements PaymentEnabler {
     const headers = MockPaymentEnabler.getFetchHeader(options);
     const apiUrl = new URL(`${options.processorUrl}/customer/session`);
     const response = await fetch(apiUrl.toString(), headers);
-    const data: CustomerResponseSchemaDTO = await response.json();
 
-    if (!response.ok) {
-      throw data;
+    if (response.status === 204) {
+      console.log("No Stripe customer session");
+      return undefined;
     }
+    const data: CustomerResponseSchemaDTO = await response.json();
     return data;
   }
 
