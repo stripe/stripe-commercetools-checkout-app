@@ -9,12 +9,12 @@ The module also provides template scripts for post-deployment and pre-undeployme
 
 The Stripe customer session allows you to create a session for a customer, which can be used to manage their payment methods and subscriptions. This feature is particularly useful for businesses that want to provide a seamless checkout experience for their customers.
 
-To use the Stripe customer session, the customer who owns the cart in the commercetools Checkout session must have the `stripeCustomerId` in the custom field.
+To use the Stripe customer session, the customer who owns the cart in the commercetools Checkout session must have the `stripeCustomerId` in the custom field with a dummy value that will be updated with the Stripe Account ID created by the flow.
 
 The creation and retrieval of the Stripe customer depend on a Custom Type created in the commercetools platform. This Custom Type should contain the following field:
-- **stripeCustomerId**: The ID of the customer in the commercetools platform.
+- **stripeCustomerId**: The ID of the customer in the commercetools platform or a dummy value.
 
-If the `stripeCustomerId` field exists but is empty, the connector will create a new customer in Stripe using the customer who owns the cart in the session. The customer ID will be stored in the metadata of the payment transaction in commercetools.
+If the `stripeCustomerId`, the connector will try to retrieve the Stripe customer, if the customer do not exist the connector will create a new customer in Stripe using the customer who owns the cart in the session. The customer ID will be stored in the metadata of the payment transaction in commercetools and the `stripeCustomerId` will be updated with the customer ID created in Stripe.
 
 The environment variable `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` configures the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default.
 
