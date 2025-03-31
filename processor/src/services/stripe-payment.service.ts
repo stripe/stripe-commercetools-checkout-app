@@ -592,7 +592,7 @@ export class StripePaymentService extends AbstractPaymentService {
               action: 'setCustomType',
               type: {
                 typeId: 'type',
-                id: customer.custom?.type?.id,
+                key: 'stripe-customer-id',
               },
               fields: {
                 stripeCustomerId: stripeCustomerId,
