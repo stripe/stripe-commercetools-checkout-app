@@ -693,6 +693,7 @@ export const mockEvent__charge_succeeded_notCaptured: Stripe.Event = {
       livemode: false,
       metadata: {
         cart_id: '11111-22222',
+        ct_payment_id: 'pi_11111',
       },
       on_behalf_of: null,
       outcome: {
@@ -806,7 +807,7 @@ export const mockEvent__charge_succeeded_captured: Stripe.Event = {
     id: 'req_11111',
     idempotency_key: '7ae634ca-11111',
   },
-  type: 'charge.captured',
+  type: 'charge.succeeded',
 };
 
 export const mockEvent__paymentIntent_requiresAction: Stripe.Event = {

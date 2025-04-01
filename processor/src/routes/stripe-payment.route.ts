@@ -42,6 +42,7 @@ export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPlug
       schema: {
         response: {
           200: CustomerResponseSchema,
+          204: Type.Null(),
         },
       },
     },

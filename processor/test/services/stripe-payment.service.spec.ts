@@ -580,6 +580,9 @@ describe('stripe-payment.service', () => {
       const getCtCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(true);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -604,6 +607,7 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
@@ -628,12 +632,16 @@ describe('stripe-payment.service', () => {
       const getCtCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerWithoutCustomFieldsData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(false);
 
       const response = await stripePaymentService.getCustomerSession();
 
       expect(response).toBeUndefined();
       expect(Logger.log.warn).toBeCalled();
       expect(getCartMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
     });
 
@@ -644,6 +652,9 @@ describe('stripe-payment.service', () => {
       const getCtCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(true);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(undefined);
@@ -656,6 +667,7 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
     });
 
@@ -666,6 +678,9 @@ describe('stripe-payment.service', () => {
       const getCtCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(true);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -681,6 +696,7 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
     });
@@ -692,6 +708,9 @@ describe('stripe-payment.service', () => {
       const getCtCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(true);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -710,6 +729,7 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
@@ -722,6 +742,9 @@ describe('stripe-payment.service', () => {
       const getCustomerMock = jest
         .spyOn(StripePaymentService.prototype, 'getCtCustomer')
         .mockResolvedValue(mockCtCustomerData);
+      const getIsStripeCustomerIdFieldPresent = jest
+        .spyOn(StripePaymentService.prototype, 'isStripeCustomerIdFieldPresent')
+        .mockResolvedValue(true);
       const getStripeCustomerIdMock = jest
         .spyOn(StripePaymentService.prototype, 'getStripeCustomerId')
         .mockResolvedValue(mockStripeCustomerId);
@@ -743,6 +766,7 @@ describe('stripe-payment.service', () => {
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getCustomerMock).toHaveBeenCalled();
+      expect(getIsStripeCustomerIdFieldPresent).toHaveBeenCalled();
       expect(getStripeCustomerIdMock).toHaveBeenCalled();
       expect(saveCustomerMock).toHaveBeenCalled();
       expect(createEphemeralKeyMock).toHaveBeenCalled();
