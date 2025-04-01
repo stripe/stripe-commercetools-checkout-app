@@ -92,7 +92,7 @@ export const mockCtCustomerData: Customer = {
       id: 'xxxxxxxxxxx',
     },
     fields: {
-      stripeCustomerId: 'cus_Example',
+      paymentConnectorStripeCustomerId: 'cus_Example',
     },
   },
 };
