@@ -235,14 +235,15 @@ export class StripePaymentService extends AbstractPaymentService {
       }
 
       const customer = await this.getCtCustomer(ctCustomerId);
-      const savedStripeCustomerId = customer?.custom?.fields?.stripeCustomerId;
 
-      if (!savedStripeCustomerId) {
-        log.warn('Customer does not have a stripeCustomerId - Skipping customer session creation');
+      const isStripeCustomerIdFieldPresent = await this.isStripeCustomerIdFieldPresent(customer);
+
+      if (!isStripeCustomerIdFieldPresent) {
+        log.warn('Customer does not have a paymentConnectorStripeCustomerId - Skipping customer session creation');
         return undefined;
       }
 
-      log.info('Customer has a custom field call stripeCustomerId - customer session creation');
+      log.info('Customer has a custom field call paymentConnectorStripeCustomerId - customer session creation');
       const stripeCustomerId = await this.getStripeCustomerId(cart, customer);
       if (!stripeCustomerId) {
         throw 'Failed to get stripe customer id.';
@@ -520,7 +521,7 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   public async getStripeCustomerId(cart: Cart, customer: Customer): Promise<string | undefined> {
-    const savedCustomerId = customer?.custom?.fields?.stripeCustomerId;
+    const savedCustomerId = customer?.custom?.fields?.paymentConnectorStripeCustomerId;
     if (savedCustomerId) {
       const isValid = await this.validateStripeCustomerId(savedCustomerId, customer.id);
       if (isValid) {
@@ -579,8 +580,6 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   public async saveStripeCustomerId(stripeCustomerId: string, customer: Customer): Promise<boolean> {
-    //TODO: Set the stripeCustomer in the Customer info, not in cart
-
     const response = await paymentSDK.ctAPI.client
       .customers()
       .withId({ ID: customer.id })
@@ -589,20 +588,15 @@ export class StripePaymentService extends AbstractPaymentService {
           version: customer.version,
           actions: [
             {
-              action: 'setCustomType',
-              type: {
-                typeId: 'type',
-                key: 'stripe-customer-id',
-              },
-              fields: {
-                stripeCustomerId: stripeCustomerId,
-              },
+              action: 'setCustomField',
+              name: 'paymentConnectorStripeCustomerId',
+              value: stripeCustomerId,
             },
           ],
         },
       })
       .execute();
-    return Boolean(response.body.custom?.fields?.stripeCustomerId);
+    return Boolean(response.body.custom?.fields?.paymentConnectorStripeCustomerId);
   }
 
   public async createSession(stripeCustomerId: string): Promise<Stripe.CustomerSession | undefined> {
@@ -658,5 +652,17 @@ export class StripePaymentService extends AbstractPaymentService {
         country: shipping?.country,
       },
     };
+  }
+
+  public async isStripeCustomerIdFieldPresent(customer: Customer) {
+    if (!customer.custom?.type?.id) {
+      return false;
+    }
+
+    const customerType = await paymentSDK.ctAPI.client.types().withId({ ID: customer.custom?.type.id }).get().execute();
+
+    return customerType.body.fieldDefinitions.some((field) => {
+      return field.name === 'paymentConnectorStripeCustomerId' && field.type.name === 'String';
+    });
   }
 }
