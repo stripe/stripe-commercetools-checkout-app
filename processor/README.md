@@ -15,6 +15,9 @@ If the `stripeConnector_stripeCustomerId` is presented, the connector will try t
 
 The environment variable `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` configures the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default.
 
+Diagram of the current workflow:
+![Stripe Customer Workflow.png](../docs/StripeCustomerWorkflow.png)
+
 ## Getting Started
 
 These instructions will get you up and running on your local machine for development and testing purposes.

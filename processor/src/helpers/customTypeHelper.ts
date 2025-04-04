@@ -56,6 +56,10 @@ export async function assignCustomTypeToCustomer(
   customer: Customer,
 ): Promise<Customer | undefined> {
   if (customer.custom?.type?.id) return;
+  const type = await getTypeByKey(client, stripeCustomerIdCustomType.key);
+  if (!type) {
+    await createCustomerCustomType(client, stripeCustomerIdCustomType as TypeDraft);
+  }
 
   const res = await client
     .customers()

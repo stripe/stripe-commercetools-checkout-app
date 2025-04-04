@@ -230,39 +230,27 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   /**
-   * Validates if the customer exists in Stripe and creates a new customer if it does not exist.
+   * Validates if the customer exists in Stripe and creates a new customer if it does not exist, to create a session
+   * for the Stripe customer.
    * @returns Promise with the stripeCustomerId, ephemeralKey and sessionId.
    */
   public async getCustomerSession(): Promise<CustomerResponseSchemaDTO | undefined> {
     try {
       const cart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
-      const ctCustomerId = cart.customerId ? cart.customerId : cart.anonymousId!;
+      const ctCustomerId = cart.customerId || cart.anonymousId;
       if (!ctCustomerId) {
-        log.warn('Cart does not have a customerId or anonymousId - Skipping customer session creation');
-        return undefined;
+        log.warn('Cart does not have a customerId or anonymousId - Skipping customer creation');
+        return;
       }
 
       const customer = await this.getCtCustomer(ctCustomerId);
-
       await this.ensureCustomerCustomFields(customer);
-
       log.info(
         `Customer has a custom field call ${stripeCustomerIdCustomType.fieldDefinitions[0].name} - customer session creation`,
       );
       const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(cart, customer);
       if (!stripeCustomerId) {
         throw 'Failed to get stripe customer id.';
-      }
-
-      /*
-        TODO: commercetools insights on how to integrate the Stripe accountId into commercetools:
-        We have plans to support recurring payments and saved payment methods in the next quarters.
-        Not sure if you can wait until that so your implementation would be aligned with ours.
-       */
-
-      const stripeCustomerIsSaved = await this.saveStripeCustomerId(stripeCustomerId, customer);
-      if (!stripeCustomerIsSaved) {
-        throw 'Failed to save stripe customer id.';
       }
 
       const ephemeralKey = await this.createEphemeralKey(stripeCustomerId);
@@ -538,11 +526,15 @@ export class StripePaymentService extends AbstractPaymentService {
 
     const existingCustomer = await this.findStripeCustomer(email, customer.id);
     if (existingCustomer?.id) {
+      await this.saveStripeCustomerId(existingCustomer?.id, customer);
+
       return existingCustomer.id;
     }
 
     const newCustomer = await this.createStripeCustomer(cart, email, customer);
     if (newCustomer?.id) {
+      await this.saveStripeCustomerId(newCustomer?.id, customer);
+
       return newCustomer.id;
     } else {
       throw 'Failed to create stripe customer.';
@@ -576,7 +568,7 @@ export class StripePaymentService extends AbstractPaymentService {
       name: shippingAddress?.name,
       phone: shippingAddress?.phone,
       metadata: {
-        ...(cart.customerId ? { ct_customer_id: cart.customerId } : null),
+        ...(cart.customerId ? { ct_customer_id: customer.id } : null),
       },
       ...(shippingAddress?.address ? { address: shippingAddress.address } : null),
     });
@@ -585,6 +577,11 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   public async saveStripeCustomerId(stripeCustomerId: string, customer: Customer): Promise<boolean> {
+    /*
+        TODO: commercetools insights on how to integrate the Stripe accountId into commercetools:
+        We have plans to support recurring payments and saved payment methods in the next quarters.
+        Not sure if you can wait until that so your implementation would be aligned with ours.
+       */
     const response = await paymentSDK.ctAPI.client
       .customers()
       .withId({ ID: customer.id })
@@ -663,14 +660,11 @@ export class StripePaymentService extends AbstractPaymentService {
     const client = paymentSDK.ctAPI.client;
     const fieldDef = stripeCustomerIdCustomType.fieldDefinitions[0] as FieldDefinition;
 
-    // Step 1: Ensure the customer has the custom type
     const updatedCustomer = await assignCustomTypeToCustomer(client, customer);
     const effectiveCustomer = updatedCustomer || customer;
 
-    // Step 2: Get the full custom type definition
     const customerType = await getCustomerCustomType(client, effectiveCustomer);
 
-    // Step 3: Ensure the custom field is present
     const fieldExists = hasField(customerType, fieldDef.name);
     if (!fieldExists) {
       const updatedType = await addFieldToCustomType(client, customerType, fieldDef);
