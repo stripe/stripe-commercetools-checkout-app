@@ -1,10 +1,32 @@
-import { stripeCustomerIdCustomType, stripeCustomerIdField } from '../custom-types/custom-types';
+import {
+  launchpadPurchaseOrderCustomType,
+  stripeCustomerIdCustomType,
+  stripeCustomerIdField,
+} from '../custom-types/custom-types';
 import { log } from '../libs/logger';
 import { paymentSDK } from '../payment-sdk';
 import Stripe from 'stripe';
 import { stripeApi } from '../clients/stripe.client';
 import { TypeDraft } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
 import { addFieldToType, createCustomerCustomType, getTypeByKey, hasField } from '../helpers/customTypeHelper';
+
+export async function createLaunchpadPurchaseOrderNumberCustomType(): Promise<void> {
+  const apiClient = paymentSDK.ctAPI.client;
+
+  const getRes = await apiClient
+    .types()
+    .get({
+      queryArgs: {
+        where: `key="${launchpadPurchaseOrderCustomType.key}"`,
+      },
+    })
+    .execute();
+
+  if (getRes.body.results.length) {
+    log.info('Launchpad purchase order number custom type already exists. Skipping creation.');
+    return;
+  }
+}
 
 export async function retrieveWebhookEndpoint(weId: string): Promise<Stripe.WebhookEndpoint> {
   log.info(`[RETRIEVE_WEBHOOK_ENDPOINT] Starting the process for retrieving webhook endpoint[${weId}].`);
