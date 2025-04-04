@@ -1,7 +1,12 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { ensureStripeCustomTypeForCustomer, retrieveWebhookEndpoint, updateWebhookEndpoint } from './actions';
+import {
+  createLaunchpadPurchaseOrderNumberCustomType,
+  ensureStripeCustomTypeForCustomer,
+  retrieveWebhookEndpoint,
+  updateWebhookEndpoint,
+} from './actions';
 
 const STRIPE_WEBHOOKS_ROUTE = 'stripe/webhooks';
 const CONNECT_SERVICE_URL = 'CONNECT_SERVICE_URL';
@@ -9,6 +14,8 @@ const STRIPE_WEBHOOK_ID = 'STRIPE_WEBHOOK_ID';
 const msgError = 'Post-deploy failed:';
 
 async function postDeploy(_properties: Map<string, unknown>) {
+  await createLaunchpadPurchaseOrderNumberCustomType();
+
   const applicationUrl = _properties.get(CONNECT_SERVICE_URL) as string;
   const stripeWebhookId = (_properties.get(STRIPE_WEBHOOK_ID) as string) ?? '';
 
