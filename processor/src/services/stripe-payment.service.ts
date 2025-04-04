@@ -524,7 +524,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     const email = cart.customerEmail || cart.shippingAddress?.email || customer.email;
 
-    const existingCustomer = await this.findStripeCustomer(email, customer.id);
+    const existingCustomer = await this.findStripeCustomer(customer.id);
     if (existingCustomer?.id) {
       await this.saveStripeCustomerId(existingCustomer?.id, customer);
 
@@ -551,8 +551,8 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async findStripeCustomer(email: string, ctCustomerId: string): Promise<Stripe.Customer | undefined> {
-    const query = `email:'${email}' AND metadata['ct_customer_id']:'${ctCustomerId}'`;
+  public async findStripeCustomer(ctCustomerId: string): Promise<Stripe.Customer | undefined> {
+    const query = `metadata['ct_customer_id']:'${ctCustomerId}'`;
     const customer = await stripeApi().customers.search({ query });
     return customer.data[0];
   }
