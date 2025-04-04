@@ -33,6 +33,14 @@ import { stripeApi, wrapStripeError } from '../clients/stripe.client';
 import { log } from '../libs/logger';
 import crypto from 'crypto';
 import { StripeEventConverter } from './converters/stripeEventConverter';
+import { stripeCustomerIdCustomType } from '../custom-types/custom-types';
+import { FieldDefinition } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
+import {
+  addFieldToCustomType,
+  assignCustomTypeToCustomer,
+  getCustomerCustomType,
+  hasField,
+} from '../helpers/customTypeHelper';
 
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
@@ -236,15 +244,12 @@ export class StripePaymentService extends AbstractPaymentService {
 
       const customer = await this.getCtCustomer(ctCustomerId);
 
-      const isStripeCustomerIdFieldPresent = await this.isStripeCustomerIdFieldPresent(customer);
+      await this.ensureCustomerCustomFields(customer);
 
-      if (!isStripeCustomerIdFieldPresent) {
-        log.warn('Customer does not have a paymentConnectorStripeCustomerId - Skipping customer session creation');
-        return undefined;
-      }
-
-      log.info('Customer has a custom field call paymentConnectorStripeCustomerId - customer session creation');
-      const stripeCustomerId = await this.getStripeCustomerId(cart, customer);
+      log.info(
+        `Customer has a custom field call ${stripeCustomerIdCustomType.fieldDefinitions[0].name} - customer session creation`,
+      );
+      const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(cart, customer);
       if (!stripeCustomerId) {
         throw 'Failed to get stripe customer id.';
       }
@@ -297,7 +302,7 @@ export class StripePaymentService extends AbstractPaymentService {
     let paymentIntent!: Stripe.PaymentIntent;
 
     try {
-      const stripeCustomerId = await this.getStripeCustomerId(ctCart, customer);
+      const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(ctCart, customer);
       const idempotencyKey = crypto.randomUUID();
       paymentIntent = await stripeApi().paymentIntents.create(
         {
@@ -520,8 +525,8 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async getStripeCustomerId(cart: Cart, customer: Customer): Promise<string | undefined> {
-    const savedCustomerId = customer?.custom?.fields?.paymentConnectorStripeCustomerId;
+  public async retrieveOrCreateStripeCustomerId(cart: Cart, customer: Customer): Promise<string | undefined> {
+    const savedCustomerId = customer?.custom?.fields?.[stripeCustomerIdCustomType.fieldDefinitions[0].name];
     if (savedCustomerId) {
       const isValid = await this.validateStripeCustomerId(savedCustomerId, customer.id);
       if (isValid) {
@@ -589,14 +594,14 @@ export class StripePaymentService extends AbstractPaymentService {
           actions: [
             {
               action: 'setCustomField',
-              name: 'paymentConnectorStripeCustomerId',
+              name: stripeCustomerIdCustomType.fieldDefinitions[0].name,
               value: stripeCustomerId,
             },
           ],
         },
       })
       .execute();
-    return Boolean(response.body.custom?.fields?.paymentConnectorStripeCustomerId);
+    return Boolean(response.body.custom?.fields?.[stripeCustomerIdCustomType.fieldDefinitions[0].name]);
   }
 
   public async createSession(stripeCustomerId: string): Promise<Stripe.CustomerSession | undefined> {
@@ -654,15 +659,24 @@ export class StripePaymentService extends AbstractPaymentService {
     };
   }
 
-  public async isStripeCustomerIdFieldPresent(customer: Customer) {
-    if (!customer.custom?.type?.id) {
-      return false;
+  public async ensureCustomerCustomFields(customer: Customer): Promise<boolean> {
+    const client = paymentSDK.ctAPI.client;
+    const fieldDef = stripeCustomerIdCustomType.fieldDefinitions[0] as FieldDefinition;
+
+    // Step 1: Ensure the customer has the custom type
+    const updatedCustomer = await assignCustomTypeToCustomer(client, customer);
+    const effectiveCustomer = updatedCustomer || customer;
+
+    // Step 2: Get the full custom type definition
+    const customerType = await getCustomerCustomType(client, effectiveCustomer);
+
+    // Step 3: Ensure the custom field is present
+    const fieldExists = hasField(customerType, fieldDef.name);
+    if (!fieldExists) {
+      const updatedType = await addFieldToCustomType(client, customerType, fieldDef);
+      return hasField(updatedType, fieldDef.name);
     }
 
-    const customerType = await paymentSDK.ctAPI.client.types().withId({ ID: customer.custom?.type.id }).get().execute();
-
-    return customerType.body.fieldDefinitions.some((field) => {
-      return field.name === 'paymentConnectorStripeCustomerId' && field.type.name === 'String';
-    });
+    return true;
   }
 }

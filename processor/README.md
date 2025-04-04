@@ -9,12 +9,9 @@ The module also provides template scripts for post-deployment and pre-undeployme
 
 The Stripe customer session allows you to create a session for a customer, which can be used to manage their payment methods and subscriptions. This feature is particularly useful for businesses that want to provide a seamless checkout experience for their customers.
 
-To use the Stripe customer session, the customer who owns the cart in the commercetools Checkout session must have the `paymentConnectorStripeCustomerId` in the custom field.
+The Stripe customer session is associated with the customer who owns the cart in the commercetools Checkout session. The cart must have either the `customerId` or `anonymousId` to retrieve and verify if the customer has a Type with the custom field `stripeConnector_stripeCustomerId`. If the Type do not have this field, the connector will create the field to store the Stripe customer ID.
 
-The creation and retrieval of the Stripe customer depend on a Custom Type created in the commercetools platform. This Custom Type should contain the following field:
-- **paymentConnectorStripeCustomerId**: The ID of the Stripe customer.
-
-If the `paymentConnectorStripeCustomerId` is presented, the connector will try to retrieve the Stripe customer, if the customer do not exist on Stripe, the connector will create a new customer in Stripe using the customer who owns the cart in the session. The commercetools customer ID will be stored in the metadata of the Stripe customer and the `paymentConnectorStripeCustomerId` field in commercetools will be updated with the Stripe customer ID .
+If the `stripeConnector_stripeCustomerId` is presented, the connector will try to retrieve the Stripe customer, if the customer do not exist on Stripe, the connector will create a new customer in Stripe using the customer who owns the cart in the session. The commercetools customer ID will be stored in the metadata of the Stripe customer and the `stripeConnector_stripeCustomerId` field in commercetools will be updated with the Stripe customer ID .
 
 The environment variable `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` configures the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default.
 
