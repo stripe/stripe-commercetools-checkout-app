@@ -871,7 +871,7 @@ describe('stripe-payment.service', () => {
         .spyOn(Stripe.prototype.customers, 'search')
         .mockReturnValue(Promise.resolve(mockSearchCustomerResponse) as Stripe.ApiSearchResultPromise<Stripe.Customer>);
 
-      const result = await stripePaymentService.findStripeCustomer('test@example.com', mockCtCustomerId);
+      const result = await stripePaymentService.findStripeCustomer(mockCtCustomerId);
 
       expect(result).toStrictEqual(mockCustomerData);
       expect(result).toBeDefined();
@@ -888,49 +888,13 @@ describe('stripe-payment.service', () => {
         .spyOn(Stripe.prototype.customers, 'create')
         .mockReturnValue(Promise.resolve(mockCustomerData));
 
-      const result = await stripePaymentService.createStripeCustomer(
-        mockGetCartResult(),
-        'test@example.com',
-        mockCtCustomerData,
-      );
+      const result = await stripePaymentService.createStripeCustomer(mockGetCartResult(), mockCtCustomerData);
 
       expect(result).toStrictEqual(mockCustomerData);
       expect(result).toBeDefined();
       expect(mockCreateCustomer).toHaveBeenCalled();
     });
   });
-
-  // describe('method saveStripeCustomerId', () => {
-  //   test('should not save stripe customer', async () => {
-  //     const result = await stripePaymentService.saveStripeCustomerId(mockStripeCustomerId, mockGetCartResult());
-
-  //     expect(result).toStrictEqual(true);
-  //     expect(result).toBeDefined();
-  //   });
-
-  //   test('should save stripe customer id successfully', async () => {
-  //     const mockCart = mockGetCartResult();
-  //     const mockUpdatedCartResponse: ClientResponse<Cart> = {
-  //       body: mockCart,
-  //       statusCode: 200,
-  //       headers: {},
-  //     };
-  //     const executeMock = jest.fn().mockReturnValue(mockUpdatedCartResponse);
-  //     const client = paymentSDK.ctAPI.client;
-  //     client.carts = jest.fn(() => ({
-  //       withId: jest.fn(() => ({
-  //         post: jest.fn(() => ({
-  //           execute: executeMock,
-  //         })),
-  //       })),
-  //     })) as never;
-
-  //     const result = await stripePaymentService.saveStripeCustomerId('mockStripeCustomerId', mockCart);
-
-  //     expect(executeMock).toHaveBeenCalled();
-  //     expect(result).toEqual(true);
-  //   });
-  // });
 
   describe('method createSession', () => {
     test('should create stripe customer', async () => {
