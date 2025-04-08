@@ -25,7 +25,7 @@ In addition, please make sure the API client has enough scope to manage Payment.
 Configure various URLs from the commercetools platform, so that the connect application can handle the session and authentication process for endpoints.
 Their values are input for environment variables/configurations for connecting, with variable names `CTP_API_URL`, `CTP_AUTH_URL`, and `CTP_SESSION_URL`.
 
-#### 4. Stripe account and keys
+#### 3. Stripe account and keys
 
 Configure Stripe secret and public keys so the Connect application can handle endpoint session and authentication processes. Their values are taken as input as environment variables/ configuration for Connect, with variable names `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, and `STRIPE_WEBHOOK_SIGNING_SECRET`.
 
