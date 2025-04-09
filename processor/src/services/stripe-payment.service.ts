@@ -42,6 +42,7 @@ import {
   hasField,
 } from '../helpers/customTypeHelper';
 import { Address } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/common';
+import { isValidUUID } from '../utils';
 
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
@@ -552,6 +553,10 @@ export class StripePaymentService extends AbstractPaymentService {
 
   public async findStripeCustomer(ctCustomerId: string): Promise<Stripe.Customer | undefined> {
     try {
+      if (!isValidUUID(ctCustomerId)) {
+        log.warn('Invalid ctCustomerId: Not a valid UUID:', { ctCustomerId });
+        throw 'Invalid ctCustomerId: Not a valid UUID';
+      }
       const query = `metadata['ct_customer_id']:'${ctCustomerId}'`;
       const customer = await stripeApi().customers.search({ query });
 

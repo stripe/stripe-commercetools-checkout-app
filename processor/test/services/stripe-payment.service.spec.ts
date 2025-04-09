@@ -17,7 +17,7 @@ import {
   mockStripeCapturePaymentErrorResult,
 } from '../utils/mock-payment-results';
 import { mockEvent__paymentIntent_succeeded_captureMethodManual } from '../utils/mock-routes-data';
-import { mockCtCustomerId, mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
+import { mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
 import * as Config from '../../src/config/config';
 import { PaymentStatus, StripePaymentServiceOptions } from '../../src/services/types/stripe-payment.type';
 import { AbstractPaymentService } from '../../src/services/abstract-payment.service';
@@ -40,6 +40,7 @@ import {
   mockEphemeralKeySecret,
   mockSearchCustomerResponse,
   mockStripeCustomerId,
+  mockCtCustomerId,
 } from '../utils/mock-customer-data';
 import { Customer } from '@commercetools/platform-sdk';
 
@@ -877,6 +878,12 @@ describe('stripe-payment.service', () => {
       expect(result).toBeDefined();
       expect(mockRetrieveCustomer).toHaveBeenCalled();
     });
+
+    test('should return undefined due to incorrect ctCustomerId', async () => {
+      const result = await stripePaymentService.findStripeCustomer('wrongId');
+      expect(Logger.log.warn).toBeCalled();
+      expect(result).toBeUndefined();
+    });
   });
 
   describe('method createStripeCustomer', () => {
@@ -951,6 +958,62 @@ describe('stripe-payment.service', () => {
 
       expect(executeMock).toHaveBeenCalled();
       expect(result).toEqual(mockCtCustomerData);
+    });
+
+    test('should fail to retrieve customer', async () => {
+      const mockCtCustomerResponse = {
+        body: null,
+        statusCode: 404,
+        headers: {},
+      };
+      const executeMock = jest.fn().mockResolvedValue(mockCtCustomerResponse as never);
+      const client = paymentSDK.ctAPI.client;
+      client.customers = jest.fn(() => ({
+        withId: jest.fn(() => ({
+          get: jest.fn(() => ({
+            execute: executeMock,
+          })),
+        })),
+      })) as never;
+
+      try {
+        await stripePaymentService.getCtCustomer(mockCtCustomerId);
+      } catch (e) {
+        expect(e).toEqual(`Customer with ID ${mockCtCustomerId} not found`);
+      }
+      expect(Logger.log.error).toBeCalled();
+      expect(executeMock).toHaveBeenCalled();
+    });
+  });
+
+  describe('method saveStripeCustomerId', () => {
+    test('should save stripe customer id successfully', async () => {
+      const mockCustomer = mockCtCustomerData;
+      const mockUpdatedCustomerResponse: ClientResponse<Customer> = {
+        body: mockCustomer,
+        statusCode: 200,
+        headers: {},
+      };
+
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
+
+      const executeMock = jest.fn().mockReturnValue(mockUpdatedCustomerResponse);
+      const client = paymentSDK.ctAPI.client;
+      client.customers = jest.fn(() => ({
+        withId: jest.fn(() => ({
+          post: jest.fn(() => ({
+            execute: executeMock,
+          })),
+        })),
+      })) as never;
+
+      const result = await stripePaymentService.saveStripeCustomerId('mockStripeCustomerId', mockCtCustomerData);
+
+      expect(executeMock).toHaveBeenCalled();
+      expect(result).toEqual(true);
+      expect(getCtCustomerMock).toHaveBeenCalled();
     });
   });
 });

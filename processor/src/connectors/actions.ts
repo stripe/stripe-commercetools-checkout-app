@@ -12,19 +12,13 @@ import { addFieldToType, createCustomerCustomType, getTypeByKey, hasField } from
 
 export async function createLaunchpadPurchaseOrderNumberCustomType(): Promise<void> {
   const apiClient = paymentSDK.ctAPI.client;
-
   const getRes = await apiClient
     .types()
-    .get({
-      queryArgs: {
-        where: `key="${launchpadPurchaseOrderCustomType.key}"`,
-      },
-    })
+    .get({ queryArgs: { where: `key="${launchpadPurchaseOrderCustomType.key}"` } })
     .execute();
 
   if (getRes.body.results.length) {
     log.info('Launchpad purchase order number custom type already exists. Skipping creation.');
-    return;
   }
 }
 
@@ -33,9 +27,9 @@ export async function retrieveWebhookEndpoint(weId: string): Promise<Stripe.Webh
 
   try {
     return await stripeApi().webhookEndpoints.retrieve(weId);
-  } catch (error: any) {
+  } catch (error) {
     log.error('[RETRIEVE_WEBHOOK_ENDPOINT]', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }
 
@@ -57,9 +51,9 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
       ],
       url: weAppUrl,
     });
-  } catch (error: any) {
+  } catch (error) {
     log.error('[UPDATE_WEBHOOK_ENDPOINT]', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }
 
@@ -81,8 +75,8 @@ export async function ensureStripeCustomTypeForCustomer(): Promise<void> {
 
     log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Creating Stripe custom type.');
     await createCustomerCustomType(apiClient, stripeCustomerIdCustomType as TypeDraft);
-  } catch (error: any) {
+  } catch (error) {
     log.error('[ENSURE_STRIPE_CUSTOM_TYPE] Error occurred while ensuring Stripe custom type.', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }
