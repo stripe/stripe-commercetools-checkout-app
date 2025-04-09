@@ -961,7 +961,7 @@ describe('stripe-payment.service', () => {
         statusCode: 404,
         headers: {},
       };
-      const executeMock = jest.fn().mockResolvedValue(mockCtCustomerResponse as never);
+      const executeMock = jest.fn<() => Promise<ClientResponse<Customer>>>().mockRejectedValue(mockCtCustomerResponse);
       const client = paymentSDK.ctAPI.client;
       client.customers = jest.fn(() => ({
         withId: jest.fn(() => ({
@@ -976,7 +976,7 @@ describe('stripe-payment.service', () => {
       } catch (e) {
         expect(e).toEqual(`Customer with ID ${mockCtCustomerId} not found`);
       }
-      expect(Logger.log.error).toBeCalled();
+      expect(Logger.log.warn).toBeCalled();
       expect(executeMock).toHaveBeenCalled();
     });
   });
