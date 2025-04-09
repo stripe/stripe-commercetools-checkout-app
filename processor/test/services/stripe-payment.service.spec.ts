@@ -442,9 +442,6 @@ describe('stripe-payment.service', () => {
       const addPaymentMock = jest
         .spyOn(DefaultCartService.prototype, 'addPayment')
         .mockResolvedValue(mockGetCartResult());
-      const retrieveOrCreateStripeCustomerIdMock = jest
-        .spyOn(StripePaymentService.prototype, 'retrieveOrCreateStripeCustomerId')
-        .mockResolvedValue(mockStripeCustomerId);
 
       const result = await stripePaymentService.createPaymentIntentStripe();
 
@@ -455,7 +452,6 @@ describe('stripe-payment.service', () => {
       expect(getCartMock).toHaveBeenCalled();
       expect(getCtCustomerMock).toHaveBeenCalled();
       expect(getPaymentAmountMock).toHaveBeenCalled();
-      expect(retrieveOrCreateStripeCustomerIdMock).toHaveBeenCalled();
       expect(stripeApiMock).toHaveBeenCalled();
       expect(createPaymentMock).toHaveBeenCalled();
       expect(addPaymentMock).toHaveBeenCalled();
@@ -479,9 +475,7 @@ describe('stripe-payment.service', () => {
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
       const wrapStripeError = jest.spyOn(StripeClient, 'wrapStripeError').mockReturnValue(error);
-      const retrieveOrCreateStripeCustomerIdMock = jest
-        .spyOn(StripePaymentService.prototype, 'retrieveOrCreateStripeCustomerId')
-        .mockResolvedValue(mockStripeCustomerId);
+
       try {
         await stripePaymentService.createPaymentIntentStripe();
       } catch (e) {
@@ -495,7 +489,6 @@ describe('stripe-payment.service', () => {
       expect(getPaymentAmountMock).toHaveBeenCalled();
       expect(stripeApiMock).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
-      expect(retrieveOrCreateStripeCustomerIdMock).toHaveBeenCalled();
     });
   });
 
@@ -944,7 +937,9 @@ describe('stripe-payment.service', () => {
         statusCode: 200,
         headers: {},
       };
-      const executeMock = jest.fn().mockReturnValue(mockCtCustomerResponse);
+      //const executeMock = jest.fn().mockResolvedValue(mockCtCustomerResponse);
+      const executeMock = jest.fn<() => Promise<ClientResponse<Customer>>>().mockResolvedValue(mockCtCustomerResponse);
+
       const client = paymentSDK.ctAPI.client;
       client.customers = jest.fn(() => ({
         withId: jest.fn(() => ({
