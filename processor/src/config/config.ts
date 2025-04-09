@@ -40,6 +40,7 @@ export const config = {
   stripeApiVersion: process.env.STRIPE_API_VERSION || '2025-02-24.acacia',
   stripeSavedPaymentMethodConfig: getSavedPaymentConfig(),
   stripeLayout: process.env.STRIPE_LAYOUT || '{"type":"tabs","defaultCollapsed":false}',
+  stripeCollectBillingAddress: process.env.STRIPE_COLLECT_BILLING_ADDRESS || 'auto',
 
   // Payment Providers config
   merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',

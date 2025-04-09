@@ -1,14 +1,10 @@
-import {
-  launchpadPurchaseOrderCustomType,
-  stripeCustomerIdCustomType,
-  stripeCustomerIdField,
-} from '../custom-types/custom-types';
+import { launchpadPurchaseOrderCustomType, stripeCustomerIdCustomType } from '../custom-types/custom-types';
 import { log } from '../libs/logger';
 import { paymentSDK } from '../payment-sdk';
 import Stripe from 'stripe';
 import { stripeApi } from '../clients/stripe.client';
 import { TypeDraft } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
-import { addFieldToType, createCustomerCustomType, getTypeByKey, hasField } from '../helpers/customTypeHelper';
+import { createCustomerCustomType, getTypeByKey } from '../helpers/customTypeHelper';
 
 export async function createLaunchpadPurchaseOrderNumberCustomType(): Promise<void> {
   const apiClient = paymentSDK.ctAPI.client;
@@ -33,9 +29,9 @@ export async function retrieveWebhookEndpoint(weId: string): Promise<Stripe.Webh
 
   try {
     return await stripeApi().webhookEndpoints.retrieve(weId);
-  } catch (error: any) {
+  } catch (error) {
     log.error('[RETRIEVE_WEBHOOK_ENDPOINT]', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }
 
@@ -57,32 +53,24 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
       ],
       url: weAppUrl,
     });
-  } catch (error: any) {
+  } catch (error) {
     log.error('[UPDATE_WEBHOOK_ENDPOINT]', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }
 
-export async function ensureStripeCustomTypeForCustomer(): Promise<void> {
+export async function createStripeCustomTypeForCustomer(): Promise<void> {
   try {
     log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Starting the process for ensuring Stripe custom type exist.');
-    const apiClient = paymentSDK.ctAPI.client;
 
-    const existingType = await getTypeByKey(apiClient, stripeCustomerIdCustomType.key);
+    const existingType = await getTypeByKey(stripeCustomerIdCustomType.key);
 
-    if (existingType) {
-      if (!hasField(existingType, stripeCustomerIdField.name)) {
-        log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Adding field to existing custom type.');
-        await addFieldToType(apiClient, existingType.id, existingType.version, stripeCustomerIdField);
-      }
-      log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Stripe custom type for customer exists.');
-      return;
+    if (!existingType) {
+      log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Creating Stripe custom type.');
+      await createCustomerCustomType(stripeCustomerIdCustomType as TypeDraft);
     }
-
-    log.info('[ENSURE_STRIPE_CUSTOM_TYPE] Creating Stripe custom type.');
-    await createCustomerCustomType(apiClient, stripeCustomerIdCustomType as TypeDraft);
-  } catch (error: any) {
+  } catch (error) {
     log.error('[ENSURE_STRIPE_CUSTOM_TYPE] Error occurred while ensuring Stripe custom type.', error);
-    throw new Error(error);
+    throw new Error(error as string);
   }
 }

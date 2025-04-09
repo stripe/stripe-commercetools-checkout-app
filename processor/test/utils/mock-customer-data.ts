@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
-import { mockCtCustomerId } from './mock-cart-data';
 import { Customer } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
+
+export const mockCtCustomerId = '437906f7-1aaa-41dd-8775-3a03d8aa1258';
 
 const lastResponse = {
   headers: {},
@@ -65,7 +66,7 @@ export const mockCustomerData: Stripe.Response<Stripe.Customer> = {
 };
 
 export const mockCtCustomerData: Customer = {
-  id: 'xxxxxx-test-id',
+  id: mockCtCustomerId,
   version: 1,
   createdAt: '2025-03-19T00:09:28.752Z',
   lastModifiedAt: '2025-03-19T00:48:46.632Z',
@@ -98,7 +99,7 @@ export const mockCtCustomerData: Customer = {
 };
 
 export const mockCtCustomerWithoutCustomFieldsData: Customer = {
-  id: 'xxxxxx-test-id',
+  id: mockCtCustomerId,
   version: 1,
   createdAt: '2025-03-19T00:09:28.752Z',
   lastModifiedAt: '2025-03-19T00:48:46.632Z',

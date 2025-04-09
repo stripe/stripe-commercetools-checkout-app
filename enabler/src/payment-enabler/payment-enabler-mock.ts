@@ -48,6 +48,11 @@ interface ElementsOptions {
   onError: (error?: any) => void;
   layout: LayoutObject;
   appearance: Appearance;
+  fields: {
+    billingDetails: {
+      address: string;
+    };
+  };
 }
 
 export class MockPaymentEnabler implements PaymentEnabler {
@@ -188,7 +193,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     options: EnablerOptions,
     config: ConfigElementResponseSchemaDTO
   ): ElementsOptions {
-    const { appearance, layout } = config;
+    const { appearance, layout, collectBillingAddress } = config;
     return {
       type: 'payment',
       options: {},
@@ -196,6 +201,13 @@ export class MockPaymentEnabler implements PaymentEnabler {
       onError: options.onError,
       layout: this.getLayoutObject(layout),
       appearance: parseJSON(appearance),
+      ...(collectBillingAddress !== 'auto' && {
+        fields: {
+          billingDetails: {
+            address: collectBillingAddress,
+          }
+        }
+      }),
     }
   }
 

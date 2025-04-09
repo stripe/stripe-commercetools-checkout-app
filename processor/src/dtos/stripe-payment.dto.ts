@@ -34,7 +34,14 @@ export const PaymentResponseSchema = Type.Object({
   paymentReference: Type.String(),
   merchantReturnUrl: Type.String(),
   cartId: Type.String(),
+  billingAddress: Type.Optional(Type.String()),
 });
+
+export enum CollectBillingAddressOptions {
+  AUTO = 'auto',
+  NEVER = 'never',
+  IF_REQUIRED = 'if_required',
+}
 
 export const ConfigElementResponseSchema = Type.Object({
   cartInfo: Type.Object({
@@ -45,6 +52,7 @@ export const ConfigElementResponseSchema = Type.Object({
   captureMethod: Type.String(),
   setupFutureUsage: Type.Optional(Type.String()),
   layout: Type.String(),
+  collectBillingAddress: Type.Enum(CollectBillingAddressOptions),
 });
 
 export const CtPaymentSchema = Type.Object({
