@@ -9,12 +9,17 @@ import { BaseOptions } from "../payment-enabler/payment-enabler-mock";
 import { StripePaymentElement} from "@stripe/stripe-js";
 
 interface BillingAddress {
-  city: string;
-  country: string;
-  line1: string;
-  line2: string;
-  postal_code: string;
-  state: string;
+  name: string;
+  email: string;
+  phone: string;
+  address: {
+    city: string;
+    country: string;
+    line1: string;
+    line2: string;
+    postal_code: string;
+    state: string;
+  }
 }
 
 interface ConfirmPaymentProps {
@@ -142,16 +147,7 @@ export class DropinComponents implements DropinComponent {
         return_url: returnUrl.toString(),
         ...(billingAddress &&{
           payment_method_data: {
-            billing_details: {
-              address: {
-                city: billingAddress.city,
-                country: billingAddress.country,
-                line1: billingAddress.line1,
-                line2: billingAddress.line2,
-                postal_code: billingAddress.postal_code,
-                state: billingAddress.state,
-              }
-            }
+            billing_details: billingAddress
           }
         })
       },
