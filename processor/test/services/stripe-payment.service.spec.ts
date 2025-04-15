@@ -7,18 +7,19 @@ import {
   mockGetPaymentAmount,
   mockGetPaymentResult,
   mockStripeCancelPaymentResult,
+  mockStripeCapturePaymentErrorResult,
+  mockStripeCapturePaymentResult,
   mockStripeCreatePaymentResult,
   mockStripeCreateRefundResult,
   mockStripePaymentMethodsList,
   mockStripeRetrievePaymentResult,
   mockStripeUpdatePaymentResult,
   mockUpdatePaymentResult,
-  mockStripeCapturePaymentResult,
-  mockStripeCapturePaymentErrorResult,
 } from '../utils/mock-payment-results';
 import { mockEvent__paymentIntent_succeeded_captureMethodManual } from '../utils/mock-routes-data';
 import { mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
 import * as Config from '../../src/config/config';
+import * as ConfigModule from '../../src/config/config';
 import { PaymentStatus, StripePaymentServiceOptions } from '../../src/services/types/stripe-payment.type';
 import { AbstractPaymentService } from '../../src/services/abstract-payment.service';
 import { StripePaymentService } from '../../src/services/stripe-payment.service';
@@ -35,12 +36,12 @@ import { ClientResponse } from '@commercetools/platform-sdk/dist/declarations/sr
 import {
   mockCreateSessionResult,
   mockCtCustomerData,
+  mockCtCustomerId,
   mockCustomerData,
   mockEphemeralKeyResult,
   mockEphemeralKeySecret,
   mockSearchCustomerResponse,
   mockStripeCustomerId,
-  mockCtCustomerId,
 } from '../utils/mock-customer-data';
 import { Customer } from '@commercetools/platform-sdk';
 
@@ -86,7 +87,7 @@ function setupMockConfig(keysAndValues: Record<string, string>) {
     mockConfig[key] = keysAndValues[key];
   });
 
-  jest.spyOn(Config, 'getConfig').mockReturnValue(mockConfig as any);
+  jest.spyOn(Config, 'getConfig').mockReturnValue(mockConfig as never);
 }
 
 describe('stripe-payment.service', () => {
@@ -424,6 +425,67 @@ describe('stripe-payment.service', () => {
 
   describe('method createPaymentIntentStripe', () => {
     test('should createPaymentIntent successful', async () => {
+      const getCartMock = jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      const getCtCustomerMock = jest
+        .spyOn(StripePaymentService.prototype, 'getCtCustomer')
+        .mockResolvedValue(mockCtCustomerData);
+      const getPaymentAmountMock = jest
+        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
+        .mockResolvedValue(mockGetPaymentAmount);
+      const stripeApiMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      const createPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'createPayment')
+        .mockResolvedValue(mockGetPaymentResult);
+      const addPaymentMock = jest
+        .spyOn(DefaultCartService.prototype, 'addPayment')
+        .mockResolvedValue(mockGetCartResult());
+
+      const result = await stripePaymentService.createPaymentIntentStripe();
+
+      expect(result.sClientSecret).toStrictEqual(mockStripeCreatePaymentResult.client_secret);
+      expect(result).toBeDefined();
+
+      // Or check that the relevant mocks have been called
+      expect(getCartMock).toHaveBeenCalled();
+      expect(getCtCustomerMock).toHaveBeenCalled();
+      expect(getPaymentAmountMock).toHaveBeenCalled();
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(createPaymentMock).toHaveBeenCalled();
+      expect(addPaymentMock).toHaveBeenCalled();
+    });
+
+    test('should createPaymentIntent with billing information successful', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'never',
+      });
+
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
@@ -983,9 +1045,8 @@ describe('stripe-payment.service', () => {
 
   describe('method saveStripeCustomerId', () => {
     test('should save stripe customer id successfully', async () => {
-      const mockCustomer = mockCtCustomerData;
       const mockUpdatedCustomerResponse: ClientResponse<Customer> = {
-        body: mockCustomer,
+        body: mockCtCustomerData,
         statusCode: 200,
         headers: {},
       };
