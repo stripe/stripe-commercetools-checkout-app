@@ -1,8 +1,15 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
+import { removeCustomerCustomType, removeLineItemCustomType, removeProductTypeSubscription } from './actions';
+
 async function preUndeploy() {
-  // execute something if needed
+  await removeProductTypeSubscription();
+  await removeLineItemCustomType();
+  await removeCustomerCustomType();
 }
 
-async function run() {
+export async function run() {
   try {
     await preUndeploy();
   } catch (error) {
@@ -12,4 +19,5 @@ async function run() {
     process.exitCode = 1;
   }
 }
+
 run();
