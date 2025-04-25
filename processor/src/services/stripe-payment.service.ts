@@ -337,8 +337,14 @@ export class StripePaymentService extends AbstractPaymentService {
       amountPlanned,
       paymentMethodInfo: {
         paymentInterface: getPaymentInterfaceFromContext() || 'stripe',
-        method: 'payment',
+        /*name: { // Currently unused fields
+          en: 'Stripe Payment Connector',
+        },*/
       },
+      /*paymentStatus: { // Currently unused fields
+        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
+        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
+      },*/
       ...(ctCart.customerId && {
         customer: {
           typeId: 'customer',
@@ -515,8 +521,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
       for (const tx of updateData.transactions) {
         const updatedPayment = await this.ctPaymentService.updatePayment({
-          id: updateData.id,
-          pspReference: updateData.pspReference,
+          ...updateData,
           transaction: tx,
         });
 
