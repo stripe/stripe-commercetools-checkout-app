@@ -75,6 +75,10 @@ const commonPaymentResult = {
 
 export const mockGetPaymentResult: Payment = {
   id: '123456',
+  customer: {
+    id: 'cus_1234567890',
+    typeId: 'customer',
+  },
   version: 1,
   amountPlanned: {
     type: 'centPrecision',
@@ -286,6 +290,7 @@ export const mockStripeUpdatePaymentResult: Stripe.Response<Stripe.PaymentIntent
 export const mockGetPaymentAmount: PaymentAmount = {
   centAmount: 150000,
   currencyCode: 'USD',
+  fractionDigits: 2,
 };
 
 export const mockStripePaymentMethodsList: Stripe.ApiList<Stripe.PaymentMethod> = {
@@ -390,6 +395,59 @@ export const mockStripeCapturePaymentResult: Stripe.Response<Stripe.PaymentInten
   statement_descriptor: 'aaaaaaa',
   statement_descriptor_suffix: null,
   status: 'succeeded',
+  transfer_data: null,
+  transfer_group: null,
+};
+
+export const mockStripeCapturePaymentErrorResult: Stripe.Response<Stripe.PaymentIntent> = {
+  lastResponse: commonLastResponse,
+  id: 'pi_11111',
+  object: 'payment_intent',
+  amount: 112300,
+  amount_capturable: 0,
+  amount_details: {
+    tip: {},
+  },
+  amount_received: 112300,
+  application: null,
+  application_fee_amount: null,
+  automatic_payment_methods: null,
+  canceled_at: null,
+  cancellation_reason: null,
+  capture_method: 'manual',
+  client_secret: 'pi_11111_secret_11111',
+  confirmation_method: 'automatic',
+  created: 1719342275,
+  currency: 'mxn',
+  customer: null,
+  description: 'Sport shoes',
+  invoice: null,
+  last_payment_error: null,
+  latest_charge: 'ch_11111',
+  livemode: false,
+  metadata: {},
+  next_action: null,
+  on_behalf_of: null,
+  payment_method: 'pm_11111',
+  payment_method_configuration_details: null,
+  payment_method_options: {
+    card: {
+      installments: null,
+      mandate_options: null,
+      network: null,
+      request_three_d_secure: 'automatic',
+    },
+  },
+  payment_method_types: ['card'],
+  processing: null,
+  receipt_email: null,
+  review: null,
+  setup_future_usage: null,
+  shipping: null,
+  source: null,
+  statement_descriptor: 'aaaaaaa',
+  statement_descriptor_suffix: null,
+  status: 'requires_capture',
   transfer_data: null,
   transfer_group: null,
 };
