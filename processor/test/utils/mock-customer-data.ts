@@ -90,7 +90,7 @@ export const mockCtCustomerData: Customer = {
   custom: {
     type: {
       typeId: 'type',
-      id: 'xxxxxxxxxxx',
+      id: 'mock-type-id',
     },
     fields: {
       stripeConnector_stripeCustomerId: 'cus_Example',
@@ -147,7 +147,7 @@ export const mockCtCustomerWithoutCustomFieldsData: Customer = {
   custom: {
     type: {
       typeId: 'type',
-      id: 'xxxxxxxxxxx',
+      id: 'mock-type-id',
     },
     fields: {},
   },

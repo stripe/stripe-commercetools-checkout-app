@@ -4,96 +4,44 @@ import {
   TypeAddFieldDefinitionAction,
   TypeDraft,
   TypeRemoveFieldDefinitionAction,
-  TypeUpdateAction,
 } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
 import {
-  Customer,
   CustomerSetCustomFieldAction,
   CustomerSetCustomTypeAction,
-  CustomerUpdateAction,
 } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
-import { paymentSDK } from '../payment-sdk';
-import { log } from '../libs/logger';
+import { log } from '../../libs/logger';
+import {
+  createCustomType,
+  deleteCustomTypeByKey,
+  getTypesByResourceTypeId,
+  updateCustomTypeByKey,
+} from './customTypeClient';
 
 export interface KeyAndVersion {
   key: string;
   version: number;
 }
 
-const apiClient = paymentSDK.ctAPI.client;
-
-export async function getTypeByKey(key: string): Promise<Type | undefined> {
-  const res = await apiClient
-    .types()
-    .get({ queryArgs: { where: `key="${key}"` } })
-    .execute();
-  return res.body.results[0] || undefined;
+export function hasField(type: Type | TypeDraft, fieldName: string): boolean {
+  return !!type.fieldDefinitions?.some((field) => field.name === fieldName);
 }
 
-export async function getTypesByResourceTypeId(resourceTypeId: string) {
-  const res = await apiClient
-    .types()
-    .get({
-      queryArgs: {
-        where: `resourceTypeIds contains any ("${resourceTypeId}")`,
-      },
-    })
-    .execute();
-  return res.body.results;
-}
-
-export function hasField(type: Type, fieldName: string): boolean {
-  return type.fieldDefinitions.some((field) => field.name === fieldName);
-}
-
-export function hasAllFields(customType: TypeDraft, type: Type) {
+export function hasAllFields(customType: Type | TypeDraft, type: Type | TypeDraft) {
   return customType.fieldDefinitions?.every(({ name }) => hasField(type, name));
 }
 
-export function findValidCustomType(types: Type[], customType: TypeDraft) {
-  for (const type of types) {
+export function findValidCustomType(allTypes: (Type | TypeDraft)[], customType: Type | TypeDraft) {
+  if (customType.fieldDefinitions?.length === 0) {
+    return undefined;
+  }
+
+  for (const type of allTypes) {
     const match = hasAllFields(customType, type);
     if (match) {
       return type;
     }
   }
   return undefined;
-}
-
-export async function updateCustomerById({
-  id,
-  version,
-  actions,
-}: {
-  id: string;
-  version: number;
-  actions: CustomerUpdateAction[];
-}): Promise<Customer> {
-  const response = await apiClient.customers().withId({ ID: id }).post({ body: { version, actions } }).execute();
-  return response.body;
-}
-
-export async function createCustomType(customType: TypeDraft): Promise<string> {
-  const res = await apiClient.types().post({ body: customType }).execute();
-  return res.body.id;
-}
-
-export async function updateCustomTypeByKey({
-  key,
-  version,
-  actions,
-}: KeyAndVersion & { actions: TypeUpdateAction[] }) {
-  await apiClient.types().withKey({ key }).post({ body: { version, actions } }).execute();
-}
-
-export async function deleteCustomTypeByKey({ key, version }: KeyAndVersion): Promise<void> {
-  await apiClient
-    .types()
-    .withKey({ key })
-    .delete({
-      queryArgs: { version },
-    })
-    .execute();
 }
 
 export async function addOrUpdateCustomType(customType: TypeDraft): Promise<void> {
@@ -129,6 +77,11 @@ export async function addOrUpdateCustomType(customType: TypeDraft): Promise<void
 export async function deleteOrUpdateCustomType(customType: TypeDraft): Promise<void> {
   const resourceTypeId = customType.resourceTypeIds[0];
   const types = await getTypesByResourceTypeId(resourceTypeId);
+
+  if (!types.length) {
+    log.info(`Custom Type with resourceTypeId "${resourceTypeId}" does not exist. Skipping deletion.`);
+    return;
+  }
 
   for (const type of types) {
     const { key, version } = type;
@@ -170,13 +123,13 @@ export async function deleteOrUpdateCustomType(customType: TypeDraft): Promise<v
  * If the custom type exists and all fields exist, it returns `setCustomField` actions,
  * if not, it returns `setCustomType` action.
  * @returns An array of actions to update the custom field in the customer.
- */
+ **/
 export async function getCustomFieldUpdateActions({
-  resource,
+  customFields,
   fields,
   customType,
 }: {
-  resource: { id: string; version: number; custom?: CustomFields };
+  customFields?: CustomFields;
   fields: Record<string, string>;
   customType: TypeDraft;
 }): Promise<(CustomerSetCustomTypeAction | CustomerSetCustomFieldAction)[]> {
@@ -186,10 +139,10 @@ export async function getCustomFieldUpdateActions({
     throw new Error(`Custom Type not found for resource "${resourceTypeId.toUpperCase()}"`);
   }
 
-  const typeAssigned = allTypes.find(({ id }) => id === resource.custom?.type.id);
+  const typeAssigned = allTypes.find(({ id }) => id === customFields?.type.id);
   const allFieldsExist = !!(typeAssigned && hasAllFields(customType, typeAssigned));
 
-  if (resource.custom?.type.id && allFieldsExist) {
+  if (customFields?.type.id && allFieldsExist) {
     return Object.entries(fields).map(([name, value]) => ({
       action: 'setCustomField',
       name,

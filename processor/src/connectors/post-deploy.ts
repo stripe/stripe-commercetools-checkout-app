@@ -13,7 +13,7 @@ import {
 const STRIPE_WEBHOOKS_ROUTE = 'stripe/webhooks';
 const CONNECT_SERVICE_URL = 'CONNECT_SERVICE_URL';
 const STRIPE_WEBHOOK_ID = 'STRIPE_WEBHOOK_ID';
-// const STRIPE_IS_SUBSCRIPTION = 'STRIPE_IS_SUBSCRIPTION';
+const STRIPE_IS_SUBSCRIPTION = 'STRIPE_IS_SUBSCRIPTION';
 const msgError = 'Post-deploy failed:';
 
 async function postDeploy(properties: Map<string, unknown>) {
@@ -21,9 +21,7 @@ async function postDeploy(properties: Map<string, unknown>) {
 
   const applicationUrl = properties.get(CONNECT_SERVICE_URL) as string;
   const stripeWebhookId = (properties.get(STRIPE_WEBHOOK_ID) as string) ?? '';
-  // Uncomment when the subscription feature is ready
-  // const stripeIsSubscription = properties.get(STRIPE_IS_SUBSCRIPTION) === 'true';
-  const stripeIsSubscription = false;
+  const stripeIsSubscription = properties.get(STRIPE_IS_SUBSCRIPTION) === 'true';
 
   if (properties) {
     if (stripeWebhookId === '') {

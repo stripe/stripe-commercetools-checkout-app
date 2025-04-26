@@ -7,17 +7,16 @@ import {
 import { log } from '../libs/logger';
 import Stripe from 'stripe';
 import { stripeApi } from '../clients/stripe.client';
-import { addOrUpdateCustomType, deleteOrUpdateCustomType, getTypeByKey } from '../helpers/customTypeHelper';
+import { addOrUpdateCustomType, deleteOrUpdateCustomType } from '../services/commerce-tools/customTypeHelper';
 import {
   createProductType,
   deleteProductType,
   getProductsByProductTypeId,
   getProductTypeByKey,
-} from '../helpers/productTypeHelper';
+} from '../services/commerce-tools/productTypeClient';
+import { getTypeByKey } from '../services/commerce-tools/customTypeClient';
 
-const stripe = stripeApi();
-
-async function handleRequest({
+export async function handleRequest({
   loggerId,
   startMessage,
   throwError = true,
@@ -50,7 +49,7 @@ export async function retrieveWebhookEndpoint(weId: string): Promise<Stripe.Webh
   log.info(`[RETRIEVE_WEBHOOK_ENDPOINT] Starting the process for retrieving webhook endpoint[${weId}].`);
 
   try {
-    return await stripe.webhookEndpoints.retrieve(weId);
+    return await stripeApi().webhookEndpoints.retrieve(weId);
   } catch (error) {
     log.error('[RETRIEVE_WEBHOOK_ENDPOINT]', error);
   }
@@ -62,7 +61,7 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
   );
 
   try {
-    await stripe.webhookEndpoints.update(weId, {
+    await stripeApi().webhookEndpoints.update(weId, {
       enabled_events: [
         'charge.succeeded',
         'charge.captured',
@@ -118,12 +117,11 @@ export async function createProductTypeSubscription(): Promise<void> {
     loggerId: '[CREATE_PRODUCT_TYPE_SUBSCRIPTION]',
     startMessage: 'Starting the process for creating Product Type "Subscription".',
     fn: async () => {
-      const productType = await getProductTypeByKey(productTypeSubscription.key);
+      const productType = await getProductTypeByKey(productTypeSubscription.key!);
       if (productType) {
         log.info('Product type subscription already exists. Skipping creation.');
       } else {
-        const body = productTypeSubscription;
-        const newProductType = await createProductType(body);
+        const newProductType = await createProductType(productTypeSubscription);
         log.info(`Product Type "${newProductType.key}" created successfully.`);
       }
     },

@@ -35,9 +35,10 @@ import { log } from '../libs/logger';
 import crypto from 'crypto';
 import { StripeEventConverter } from './converters/stripeEventConverter';
 import { stripeCustomerIdCustomType, stripeCustomerIdFieldName } from '../custom-types/custom-types';
-import { getCustomFieldUpdateActions, updateCustomerById } from '../helpers/customTypeHelper';
+import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTypeHelper';
 import { Address } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/common';
 import { isValidUUID } from '../utils';
+import { updateCustomerById } from '../services/commerce-tools/customerClient';
 
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
@@ -600,13 +601,12 @@ export class StripePaymentService extends AbstractPaymentService {
     const fields: Record<string, string> = {
       [stripeCustomerIdFieldName]: stripeCustomerId,
     };
+    const { id, version, custom } = customer;
     const updateFieldActions = await getCustomFieldUpdateActions({
-      resource: customer,
       fields,
+      customFields: custom,
       customType: stripeCustomerIdCustomType,
     });
-
-    const { id, version } = customer;
     await updateCustomerById({ id, version, actions: updateFieldActions });
     log.info(`Stripe Customer ID "${stripeCustomerId}" saved to customer "${id}".`);
   }
