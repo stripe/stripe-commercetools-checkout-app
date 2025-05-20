@@ -82,7 +82,6 @@ export class StripeEventConverter {
         ];
       }
       case StripeEvent.CHARGE__SUCCEEDED: {
-        if (event.data.object.captured) return [];
         return [
           {
             type: PaymentTransactions.AUTHORIZATION,

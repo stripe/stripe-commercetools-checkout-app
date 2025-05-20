@@ -7,7 +7,6 @@ import {
   mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
   mockEvent__charge_succeeded_notCaptured,
   mockEvent__charge_refund_notCaptured,
-  mockEvent__charge_succeeded_captured,
 } from '../../utils/mock-routes-data';
 
 describe('stripeEvent.converter', () => {
@@ -150,20 +149,6 @@ describe('stripeEvent.converter', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
     }
-  });
-
-  test('convert a charge.succeeded event not captured return empty array', () => {
-    const result = converter.convert(mockEvent__charge_succeeded_captured);
-
-    expect(result).toEqual({
-      id: undefined,
-      paymentMethod: 'card',
-      pspReference: 'pi_11111',
-      transactions: [],
-      pspInteraction: {
-        response: JSON.stringify(mockEvent__charge_succeeded_captured),
-      },
-    });
   });
 
   test('convert a charge.succeeded event captured return transaction', () => {
