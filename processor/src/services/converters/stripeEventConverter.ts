@@ -7,19 +7,23 @@ import { wrapStripeError } from '../../clients/stripe.client';
 
 export class StripeEventConverter {
   public convert(opts: Stripe.Event): StripeEventUpdatePayment {
-    let data, paymentIntentId;
+    let data, paymentIntentId, paymentMethod;
     if (opts.type.startsWith('payment')) {
       data = opts.data.object as Stripe.PaymentIntent;
       paymentIntentId = data.id;
     } else {
       data = opts.data.object as Stripe.Charge;
       paymentIntentId = (data.payment_intent || data.id) as string;
+      paymentMethod = (data.payment_method_details?.type as string) || '';
     }
 
     return {
       id: this.getCtPaymentId(data),
       pspReference: paymentIntentId,
-      paymentMethod: 'payment',
+      paymentMethod: paymentMethod,
+      pspInteraction: {
+        response: JSON.stringify(opts),
+      },
       transactions: this.populateTransactions(opts, paymentIntentId),
     };
   }
@@ -78,7 +82,6 @@ export class StripeEventConverter {
         ];
       }
       case StripeEvent.CHARGE__SUCCEEDED: {
-        if (event.data.object.captured) return [];
         return [
           {
             type: PaymentTransactions.AUTHORIZATION,
