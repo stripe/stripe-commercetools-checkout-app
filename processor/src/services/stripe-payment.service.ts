@@ -17,7 +17,7 @@ import packageJSON from '../../package.json';
 import { AbstractPaymentService } from './abstract-payment.service';
 import { getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
-import { CaptureMethod, StripeEvent, StripePaymentServiceOptions } from './types/stripe-payment.type';
+import { CaptureMethod, StripePaymentServiceOptions } from './types/stripe-payment.type';
 import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
@@ -524,47 +524,10 @@ export class StripePaymentService extends AbstractPaymentService {
           transaction: JSON.stringify(tx),
         });
       }
-
-      if (event.type === StripeEvent.PAYMENT_INTENT__SUCCEEDED) {
-        const ctCart = await this.ctCartService.getCartByPaymentId({ paymentId: updateData.id });
-        await this.createOrder(ctCart, updateData.pspReference);
-      }
     } catch (e) {
       log.error('Error processing notification', { error: e });
       return;
     }
-  }
-
-  public async createOrder(cart: Cart, paymentIntent: string | undefined) {
-    const apiClient = paymentSDK.ctAPI.client;
-    const order = await apiClient
-      .orders()
-      .post({
-        body: {
-          cart: {
-            id: cart.id,
-            typeId: 'cart',
-          },
-          shipmentState: 'Pending',
-          orderState: 'Open',
-          version: cart.version,
-          paymentState: 'Paid',
-        },
-      })
-      .execute();
-
-    const idempotencyKey = crypto.randomUUID();
-
-    if (paymentIntent)
-      await stripeApi().paymentIntents.update(
-        paymentIntent,
-        {
-          metadata: {
-            ct_order_id: order.body.id,
-          },
-        },
-        { idempotencyKey },
-      );
   }
 
   public async retrieveOrCreateStripeCustomerId(cart: Cart, customer: Customer): Promise<string | undefined> {
