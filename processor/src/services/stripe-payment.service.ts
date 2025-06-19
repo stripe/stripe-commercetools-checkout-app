@@ -1,5 +1,10 @@
 import Stripe from 'stripe';
-import { Cart, healthCheckCommercetoolsPermissions, statusHandler } from '@commercetools/connect-payments-sdk';
+import {
+  Cart,
+  ErrorInvalidOperation,
+  healthCheckCommercetoolsPermissions,
+  statusHandler,
+} from '@commercetools/connect-payments-sdk';
 import { Customer } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
 import {
   CancelPaymentRequest,
@@ -7,6 +12,7 @@ import {
   ConfigResponse,
   PaymentProviderModificationResponse,
   RefundPaymentRequest,
+  ReversePaymentRequest,
   StatusResponse,
 } from './types/operation.type';
 
@@ -17,7 +23,7 @@ import packageJSON from '../../package.json';
 import { AbstractPaymentService } from './abstract-payment.service';
 import { getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
-import { CaptureMethod, StripePaymentServiceOptions } from './types/stripe-payment.type';
+import { CaptureMethod, PaymentStatus, StripePaymentServiceOptions } from './types/stripe-payment.type';
 import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
@@ -163,6 +169,23 @@ export class StripePaymentService extends AbstractPaymentService {
       });
 
       if (response.status === 'succeeded') {
+        await this.ctPaymentService.updatePayment({
+          id: request.payment.id,
+          transaction: {
+            type: PaymentTransactions.CHARGE,
+            amount: request.amount,
+            interactionId: response.id,
+            state: PaymentStatus.SUCCESS,
+          },
+        });
+
+        log.info(`Payment modification completed.`, {
+          paymentId: paymentIntentId,
+          action: PaymentTransactions.CHARGE,
+          result: PaymentModificationStatus.APPROVED,
+          trackingId: response.id,
+        });
+
         return {
           outcome: PaymentModificationStatus.APPROVED,
           pspReference: response.id,
@@ -192,7 +215,24 @@ export class StripePaymentService extends AbstractPaymentService {
   public async cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse> {
     try {
       const paymentIntentId = request.payment.interfaceId as string;
-      await stripeApi().paymentIntents.cancel(paymentIntentId);
+      const response = await stripeApi().paymentIntents.cancel(paymentIntentId);
+
+      await this.ctPaymentService.updatePayment({
+        id: request.payment.id,
+        transaction: {
+          type: PaymentTransactions.CANCEL_AUTHORIZATION,
+          amount: request.payment.amountPlanned,
+          interactionId: paymentIntentId,
+          state: PaymentStatus.SUCCESS,
+        },
+      });
+      log.info(`Payment modification completed.`, {
+        paymentId: paymentIntentId,
+        action: PaymentTransactions.CANCEL_AUTHORIZATION,
+        result: PaymentModificationStatus.APPROVED,
+        trackingId: response.id,
+      });
+
       return { outcome: PaymentModificationStatus.APPROVED, pspReference: paymentIntentId };
     } catch (error) {
       log.error('Error canceling payment in Stripe', { error });
@@ -213,10 +253,27 @@ export class StripePaymentService extends AbstractPaymentService {
     try {
       const paymentIntentId = request.payment.interfaceId as string;
       const amount = request.amount.centAmount;
-      await stripeApi().refunds.create({
+      const response = await stripeApi().refunds.create({
         payment_intent: paymentIntentId,
         amount: amount,
       });
+
+      await this.ctPaymentService.updatePayment({
+        id: request.payment.id,
+        transaction: {
+          type: PaymentTransactions.REFUND,
+          amount: request.amount,
+          interactionId: paymentIntentId,
+          state: PaymentStatus.SUCCESS,
+        },
+      });
+      log.info(`Payment modification completed.`, {
+        paymentId: request.payment.id,
+        action: PaymentTransactions.CANCEL_AUTHORIZATION,
+        result: PaymentModificationStatus.APPROVED,
+        trackingId: response.id,
+      });
+
       return { outcome: PaymentModificationStatus.RECEIVED, pspReference: paymentIntentId };
     } catch (error) {
       log.error('Error refunding payment in Stripe', { error });
@@ -225,6 +282,54 @@ export class StripePaymentService extends AbstractPaymentService {
         pspReference: request.payment.interfaceId as string,
       };
     }
+  }
+
+  /**
+   * Reverse payment
+   *
+   * @remarks
+   * Abstract method to execute payment reversals in support of automated reversals to be triggered by checkout api. The actual invocation to PSPs should be implemented in subclasses
+   *
+   * @param request
+   * @returns Promise with outcome containing operation status and PSP reference
+   */
+  public async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse> {
+    const hasCharge = this.ctPaymentService.hasTransactionInState({
+      payment: request.payment,
+      transactionType: 'Charge',
+      states: ['Success'],
+    });
+    const hasRefund = this.ctPaymentService.hasTransactionInState({
+      payment: request.payment,
+      transactionType: 'Refund',
+      states: ['Success', 'Pending'],
+    });
+    const hasCancelAuthorization = this.ctPaymentService.hasTransactionInState({
+      payment: request.payment,
+      transactionType: 'CancelAuthorization',
+      states: ['Success', 'Pending'],
+    });
+
+    const wasPaymentReverted = hasRefund || hasCancelAuthorization;
+
+    if (hasCharge && !wasPaymentReverted) {
+      return this.refundPayment({
+        payment: request.payment,
+        merchantReference: request.merchantReference,
+        amount: request.payment.amountPlanned,
+      });
+    }
+
+    const hasAuthorization = this.ctPaymentService.hasTransactionInState({
+      payment: request.payment,
+      transactionType: 'Authorization',
+      states: ['Success'],
+    });
+    if (hasAuthorization && !wasPaymentReverted) {
+      return this.cancelPayment({ payment: request.payment });
+    }
+
+    throw new ErrorInvalidOperation('There is no successful payment transaction to reverse.');
   }
 
   /**

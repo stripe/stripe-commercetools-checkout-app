@@ -201,7 +201,7 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('approved');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(1);
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
@@ -230,8 +230,98 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('rejected');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
       expect(stripeApiMock).toHaveBeenCalled();
+    });
+
+    test('should cancel a payment successfully', async () => {
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'reversePayment',
+            },
+          ],
+        },
+      };
+
+      const getPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'getPayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult));
+      const stripeApiMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'cancel')
+        .mockReturnValue(Promise.resolve(mockStripeCancelPaymentResult));
+      const mockHasTransactionInState = jest
+        .spyOn(DefaultPaymentService.prototype, 'hasTransactionInState')
+        .mockImplementation(({ payment, transactionType, states }) => {
+          if (transactionType === PaymentTransactions.CHARGE) {
+            return false;
+          } else if (transactionType === PaymentTransactions.REFUND) {
+            return false;
+          } else if (transactionType === PaymentTransactions.CANCEL_AUTHORIZATION) {
+            return false;
+          } else if (transactionType === PaymentTransactions.AUTHORIZATION) {
+            return true;
+          }
+          console.log(`${payment} ${transactionType} ${states}`);
+          return false;
+        });
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('approved');
+      expect(getPaymentMock).toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledTimes(1);
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(mockHasTransactionInState).toHaveBeenCalledTimes(4);
+    });
+
+    test('should cancel a payment rejected', async () => {
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'reversePayment',
+            },
+          ],
+        },
+      };
+
+      const getPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'getPayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult));
+      const stripeApiMock = jest.spyOn(Stripe.prototype.paymentIntents, 'cancel').mockImplementation(() => {
+        throw new Error('Unexpected error calling Stripe API');
+      });
+      const mockHasTransactionInState = jest
+        .spyOn(DefaultPaymentService.prototype, 'hasTransactionInState')
+        .mockImplementation(({ payment, transactionType, states }) => {
+          if (transactionType === PaymentTransactions.CHARGE) {
+            return false;
+          } else if (transactionType === PaymentTransactions.REFUND) {
+            return false;
+          } else if (transactionType === PaymentTransactions.CANCEL_AUTHORIZATION) {
+            return false;
+          } else if (transactionType === PaymentTransactions.AUTHORIZATION) {
+            return true;
+          }
+          console.log(`${payment} ${transactionType} ${states}`);
+          return false;
+        });
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('rejected');
+      expect(getPaymentMock).toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(mockHasTransactionInState).toHaveBeenCalledTimes(4);
     });
 
     test('should capture a payment successfully', async () => {
@@ -264,11 +354,11 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('approved');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(1);
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
-    test('should capture a payment with log erro', async () => {
+    test('should capture a payment requires_action', async () => {
       //Given
       const modifyPaymentOpts: ModifyPayment = {
         paymentId: 'dummy-paymentId',
@@ -300,7 +390,7 @@ describe('stripe-payment.service', () => {
       expect(Logger.log.warn).toBeCalled();
       expect(result?.outcome).toStrictEqual('rejected');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
@@ -334,7 +424,7 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('rejected');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
@@ -367,7 +457,7 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('received');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(1);
       expect(stripeApiMock).toHaveBeenCalled();
     });
 
@@ -400,8 +490,94 @@ describe('stripe-payment.service', () => {
       const result = await paymentService.modifyPayment(modifyPaymentOpts);
       expect(result?.outcome).toStrictEqual('rejected');
       expect(getPaymentMock).toHaveBeenCalled();
-      expect(updatePaymentMock).toHaveBeenCalledTimes(2);
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
       expect(stripeApiMock).toHaveBeenCalled();
+    });
+
+    test('should reverse refund a payment successfully', async () => {
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'reversePayment',
+            },
+          ],
+        },
+      };
+
+      const getPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'getPayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult));
+      const stripeApiMock = jest
+        .spyOn(Stripe.prototype.refunds, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreateRefundResult));
+      const mockHasTransactionInState = jest
+        .spyOn(DefaultPaymentService.prototype, 'hasTransactionInState')
+        .mockImplementation(({ payment, transactionType, states }) => {
+          if (transactionType === PaymentTransactions.CHARGE) {
+            return true;
+          } else if (transactionType === PaymentTransactions.REFUND) {
+            return false;
+          } else if (transactionType === PaymentTransactions.CANCEL_AUTHORIZATION) {
+            return false;
+          }
+          console.log(`${payment} ${transactionType} ${states}`);
+          return false;
+        });
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('received');
+      expect(getPaymentMock).toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledTimes(1);
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(mockHasTransactionInState).toHaveBeenCalledTimes(3);
+    });
+
+    test('should reverse refund a payment rejected', async () => {
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'reversePayment',
+            },
+          ],
+        },
+      };
+
+      const getPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'getPayment')
+        .mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult));
+      const stripeApiMock = jest.spyOn(Stripe.prototype.refunds, 'create').mockImplementation(() => {
+        throw new Error('Unexpected error calling Stripe API');
+      });
+      const mockHasTransactionInState = jest
+        .spyOn(DefaultPaymentService.prototype, 'hasTransactionInState')
+        .mockImplementation(({ payment, transactionType, states }) => {
+          if (transactionType === PaymentTransactions.CHARGE) {
+            return true;
+          } else if (transactionType === PaymentTransactions.REFUND) {
+            return false;
+          } else if (transactionType === PaymentTransactions.CANCEL_AUTHORIZATION) {
+            return false;
+          }
+          console.log(`${payment} ${transactionType} ${states}`);
+          return false;
+        });
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('rejected');
+      expect(getPaymentMock).toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledTimes(0);
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(mockHasTransactionInState).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -413,7 +589,6 @@ describe('stripe-payment.service', () => {
       const getPaymentMock = jest
         .spyOn(DefaultPaymentService.prototype, 'getPayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
-
       const updatePaymentMock = jest
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
