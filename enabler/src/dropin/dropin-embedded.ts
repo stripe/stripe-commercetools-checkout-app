@@ -157,6 +157,19 @@ export class DropinComponents implements DropinComponent {
     if (error) {
       throw error;
     }
+    
+    if (paymentIntent.status === "requires_action") {
+      const error: any = new Error("Payment requires additional action");
+      error.type = "requires_action";
+      error.next_action = paymentIntent.next_action;
+      throw error;
+    }
+    if(paymentIntent.last_payment_error) {
+      const error: any = new Error(`${paymentIntent.last_payment_error.message}`);
+      error.type = "payment_failed";
+      error.last_payment_error = paymentIntent.last_payment_error;
+      throw error;
+    } 
 
     return { paymentIntent };
   }
