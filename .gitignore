@@ -2,3 +2,7 @@
 .idea
 .env
 .idea/*
+
+# MCP (Model Context Protocol) configuration and data
+.mcp/
+.DS_Store
