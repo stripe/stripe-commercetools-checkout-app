@@ -258,23 +258,14 @@ export class StripePaymentService extends AbstractPaymentService {
         amount: amount,
       });
 
-      await this.ctPaymentService.updatePayment({
-        id: request.payment.id,
-        transaction: {
-          type: PaymentTransactions.REFUND,
-          amount: request.amount,
-          interactionId: paymentIntentId,
-          state: PaymentStatus.SUCCESS,
-        },
-      });
       log.info(`Payment modification completed.`, {
         paymentId: request.payment.id,
-        action: PaymentTransactions.CANCEL_AUTHORIZATION,
+        action: PaymentTransactions.REFUND,
         result: PaymentModificationStatus.APPROVED,
         trackingId: response.id,
       });
 
-      return { outcome: PaymentModificationStatus.RECEIVED, pspReference: paymentIntentId };
+      return { outcome: PaymentModificationStatus.RECEIVED, pspReference: response.id };
     } catch (error) {
       log.error('Error refunding payment in Stripe', { error });
       return {
@@ -614,6 +605,54 @@ export class StripePaymentService extends AbstractPaymentService {
     log.info('Processing notification', { event: JSON.stringify(event.id) });
     try {
       const updateData = this.stripeEventConverter.convert(event);
+
+      for (const tx of updateData.transactions) {
+        const updatedPayment = await this.ctPaymentService.updatePayment({
+          ...updateData,
+          transaction: tx,
+        });
+
+        log.info('Payment updated after processing the notification', {
+          paymentId: updatedPayment.id,
+          version: updatedPayment.version,
+          pspReference: updateData.pspReference,
+          paymentMethod: updateData.paymentMethod,
+          transaction: JSON.stringify(tx),
+        });
+      }
+    } catch (e) {
+      log.error('Error processing notification', { error: e });
+      return;
+    }
+  }
+
+  public async processStripeEventRefunded(event: Stripe.Event): Promise<void> {
+    log.info('Processing notification', { event: JSON.stringify(event.id) });
+    try {
+      const updateData = this.stripeEventConverter.convert(event);
+      const charge = event.data.object as Stripe.Charge;
+      const refunds = await stripeApi().refunds.list({
+        charge: charge.id,
+        created: {
+          gte: charge.created,
+        },
+        limit: 2,
+      });
+
+      const refund = refunds.data[0];
+      if (!refund) {
+        log.warn('No refund found for charge', { chargeId: charge.id });
+        return;
+      }
+
+      updateData.pspReference = refund.id;
+      updateData.transactions.forEach((tx) => {
+        tx.interactionId = refund.id;
+        tx.amount = {
+          centAmount: refund.amount,
+          currencyCode: refund.currency.toUpperCase(),
+        };
+      });
 
       for (const tx of updateData.transactions) {
         const updatedPayment = await this.ctPaymentService.updatePayment({
