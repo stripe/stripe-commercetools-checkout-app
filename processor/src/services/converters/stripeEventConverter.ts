@@ -35,13 +35,13 @@ export class StripeEventConverter {
           {
             type: PaymentTransactions.AUTHORIZATION,
             state: PaymentStatus.FAILURE,
-            amount: this.populateAmount(event),
+            amount: this.populateAmountCanceled(event),
             interactionId: paymentIntentId,
           },
           {
             type: PaymentTransactions.CANCEL_AUTHORIZATION,
             state: PaymentStatus.SUCCESS,
-            amount: this.populateAmount(event),
+            amount: this.populateAmountCanceled(event),
             interactionId: paymentIntentId,
           },
         ];
@@ -111,6 +111,17 @@ export class StripeEventConverter {
     return {
       centAmount: centAmount,
       currencyCode: data.currency.toUpperCase(),
+    };
+  }
+
+  private populateAmountCanceled(opts: Stripe.Event): Money {
+    const data = opts.data.object as Stripe.PaymentIntent;
+    const currencyCode = data.currency.toUpperCase();
+    const centAmount = data.amount;
+
+    return {
+      centAmount: centAmount,
+      currencyCode: currencyCode,
     };
   }
 

@@ -217,15 +217,6 @@ export class StripePaymentService extends AbstractPaymentService {
       const paymentIntentId = request.payment.interfaceId as string;
       const response = await stripeApi().paymentIntents.cancel(paymentIntentId);
 
-      await this.ctPaymentService.updatePayment({
-        id: request.payment.id,
-        transaction: {
-          type: PaymentTransactions.CANCEL_AUTHORIZATION,
-          amount: request.payment.amountPlanned,
-          interactionId: paymentIntentId,
-          state: PaymentStatus.SUCCESS,
-        },
-      });
       log.info(`Payment modification completed.`, {
         paymentId: paymentIntentId,
         action: PaymentTransactions.CANCEL_AUTHORIZATION,
@@ -233,7 +224,7 @@ export class StripePaymentService extends AbstractPaymentService {
         trackingId: response.id,
       });
 
-      return { outcome: PaymentModificationStatus.APPROVED, pspReference: paymentIntentId };
+      return { outcome: PaymentModificationStatus.APPROVED, pspReference: response.id };
     } catch (error) {
       log.error('Error canceling payment in Stripe', { error });
       return {

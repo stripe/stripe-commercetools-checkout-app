@@ -49,7 +49,7 @@ describe('stripeEvent.converter', () => {
       transactions: [
         {
           amount: {
-            centAmount: 0,
+            centAmount: 45600,
             currencyCode: 'MXN',
           },
           interactionId: 'pi_11111',
@@ -58,7 +58,7 @@ describe('stripeEvent.converter', () => {
         },
         {
           amount: {
-            centAmount: 0,
+            centAmount: 45600,
             currencyCode: 'MXN',
           },
           interactionId: 'pi_11111',
