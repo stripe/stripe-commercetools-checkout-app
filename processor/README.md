@@ -331,6 +331,14 @@ Private endpoint called by Checkout frontend to support various payment update r
 #### Endpoint
 `POST /operations/payment-intents/{paymentsId}`
 
+### Payment Cancellation
+The payment cancellation process has been optimized for better performance and reliability:
+- **Simplified Logic**: Removed redundant `updatePayment` calls during cancellation to streamline the process
+- **Enhanced Amount Handling**: Canceled payment events now properly populate amount values using the new `populateAmountCanceled` method
+- **Improved Response Handling**: Returns the Stripe API response ID for better tracking and debugging
+- **Webhook Integration**: Payment cancellation events are automatically handled through webhook processing, ensuring proper transaction state updates in commercetools
+
+
 ## Enhanced Refund Processing
 
 The processor now includes enhanced support for handling multiple refunded events through a dedicated `processStripeEventRefunded` method. This enhancement provides:

@@ -13,6 +13,7 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - Transfer of shipping information from commercetools to Stripe payment intent.
 - Support for Buy Now Pay Later (BNPL) payment method.[Considerations](./processor/README.md#merchant-return-url)
 - Enhanced refund processing with support for [multiple refunded events](./processor/README.md#enhanced-refund-processing), ensuring accurate refund data synchronization between Stripe and commercetools.
+- Payment cancellation logic with improved amount handling and streamlined processing flow. More information in [Payment Cancellation](./processor/README.md#payment-cancellation)
 
 ## Prerequisite
 
@@ -65,7 +66,7 @@ Regarding the development of a processor or enabler module, please refer to the 
 # Webhooks
 
 The following webhooks are currently supported, and the payment transactions in commercetools are:
-- **payment_intent.canceled**: Modified the payment transaction Authorization to Failure and create a payment transaction CancelAuthorization: Success
+- **payment_intent.canceled**: Modified the payment transaction Authorization to Failure and create a payment transaction CancelAuthorization: Success. Now includes proper amount handling for canceled payments using the enhanced `populateAmountCanceled` method.
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
