@@ -12,6 +12,7 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - Customer session management for Stripe, including customer creation and retrieval.[Considerations](./processor/README.md#considerations-for-stripe-customer-session)
 - Transfer of shipping information from commercetools to Stripe payment intent.
 - Support for Buy Now Pay Later (BNPL) payment method.[Considerations](./processor/README.md#merchant-return-url)
+- Enhanced refund processing with support for [multiple refunded events](./processor/README.md#enhanced-refund-processing), ensuring accurate refund data synchronization between Stripe and commercetools.
 
 ## Prerequisite
 
@@ -54,6 +55,7 @@ Regarding the development of a processor or enabler module, please refer to the 
         - Handle manual API payment transactions.
         - Listening to webhooks events triggered by Stripe and processing all related payment operations.
         - Create Stripe customer session
+        - Refund processing with support for multiple refunded events and accurate data synchronization
 4. **Enabler**
     - Assists in creating the [Stripe Payment Element](https://docs.stripe.com/payments/payment-element) component used as a payment method in the commercetools Checkout.
     - Connects to any sample site that wants to integrate the connector, providing the available payment components for seamless integration.
@@ -67,7 +69,7 @@ The following webhooks are currently supported, and the payment transactions in 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
-- **charge.refunded**: Create a payment transaction Refund to Success and a Chargeback to Success.
+- **charge.refunded**: Creates a payment transaction Refund to Success and a Chargeback to Success. The system now properly handles multiple refund events by retrieving the latest refund information from Stripe and updating the payment with the correct refund details. More infomration in [Enhanced support for multiple refunded events](./processor/README.md#enhanced-refund-processing)
 - **charge.succeeded**: Create the payment transaction to 'Authorization:Success' if charge is not capture.
 - **charge.captured**: Logs the information in the connector app inside the Processor logs.
 
@@ -119,6 +121,10 @@ We must create the connector on the commercetools connect marketplace, enable th
 
 
 ## Development Guide
+
+## Changelog
+
+For a detailed list of changes and enhancements, see [CHANGELOG.md](./CHANGELOG.md).
 
 ## Deployment Configuration
 

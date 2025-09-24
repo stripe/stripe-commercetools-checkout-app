@@ -217,7 +217,7 @@ The following webhooks currently supported and transformed to different payment 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success. 
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
-- **charge.refunded**: Create a payment transaction Refund to Success, and a Chargeback to Success.
+- **charge.refunded**: Creates a payment transaction Refund to Success, and a Chargeback to Success. The system now uses a dedicated `processStripeEventRefunded` method that retrieves the latest refund information from Stripe API and properly updates the payment with the correct refund details, including the refund ID and amount. More information in [Enhanced support for multiple refunded events](#enhanced-refund-processing)
 - **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
 - **charge.captured**: Logs the information in the connector app inside the Processor logs.
 
@@ -330,4 +330,22 @@ Private endpoint called by Checkout frontend to support various payment update r
 
 #### Endpoint
 `POST /operations/payment-intents/{paymentsId}`
+
+## Enhanced Refund Processing
+
+The processor now includes enhanced support for handling multiple refunded events through a dedicated `processStripeEventRefunded` method. This enhancement provides:
+
+### Key Features
+- **Multiple Refund Support**: Handles scenarios where multiple refunds may be processed for the same charge
+- **Accurate Refund Data**: Retrieves the latest refund information directly from Stripe API to ensure accurate refund amounts and IDs
+- **Robust Error Handling**: Includes proper error handling and logging for refund processing scenarios
+- **Transaction Updates**: Updates commercetools payment transactions with the correct refund details
+
+### Implementation Details
+The enhanced refund processing:
+1. Receives `charge.refunded` webhook events from Stripe
+2. Queries Stripe API to retrieve the latest refund information for the charge
+3. Updates the payment transaction in commercetools with the correct refund details
+4. Handles cases where no refund is found gracefully
+5. Provides comprehensive logging for debugging and monitoring
 
