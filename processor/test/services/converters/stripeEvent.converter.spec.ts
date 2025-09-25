@@ -126,14 +126,33 @@ describe('stripeEvent.converter', () => {
     });
   });
 
-  test('convert a charge.refunded event not captured to empty transaction', () => {
+  test('convert a charge.refunded event not captured to refund and chargeback transactions', () => {
     const result = converter.convert(mockEvent__charge_refund_notCaptured);
 
     expect(result).toEqual({
       id: 'pi_11111',
       paymentMethod: 'card',
       pspReference: 'pi_11111',
-      transactions: [],
+      transactions: [
+        {
+          amount: {
+            centAmount: 34500,
+            currencyCode: 'MXN',
+          },
+          interactionId: 'pi_11111',
+          state: 'Success',
+          type: 'Refund',
+        },
+        {
+          amount: {
+            centAmount: 34500,
+            currencyCode: 'MXN',
+          },
+          interactionId: 'pi_11111',
+          state: 'Success',
+          type: 'Chargeback',
+        },
+      ],
       pspInteraction: {
         response: JSON.stringify(mockEvent__charge_refund_notCaptured),
       },
