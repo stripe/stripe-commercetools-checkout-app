@@ -219,7 +219,7 @@ The following webhooks currently supported and transformed to different payment 
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
 - **charge.refunded**: Creates a payment transaction Refund to Success, and a Chargeback to Success. The system now uses a dedicated `processStripeEventRefunded` method that retrieves the latest refund information from Stripe API and properly updates the payment with the correct refund details, including the refund ID and amount. More information in [Enhanced support for multiple refunded events](#enhanced-refund-processing)
 - **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
-- **charge.captured**: Logs the information in the connector app inside the Processor logs.
+- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. This webhook supports multicapture scenarios where multiple partial captures are performed on the same payment intent.
 
 #### Endpoint
 `POST /stripe/webhooks`
@@ -338,6 +338,40 @@ The payment cancellation process has been optimized for better performance and r
 - **Improved Response Handling**: Returns the Stripe API response ID for better tracking and debugging
 - **Webhook Integration**: Payment cancellation events are automatically handled through webhook processing, ensuring proper transaction state updates in commercetools
 
+
+## Multicapture Support
+
+The processor now includes comprehensive support for multicapture scenarios, allowing multiple partial captures on the same payment intent. This feature is particularly useful for businesses that need to capture payments in stages or handle complex fulfillment scenarios.
+
+### Key Features
+- **Partial Capture Support**: Enables capturing partial amounts from an authorized payment intent
+- **Multiple Capture Detection**: Automatically detects when multicapture is being used based on Stripe payment intent configuration
+- **Balance Transaction Tracking**: Uses Stripe's balance transaction system to track individual capture amounts
+- **Webhook Integration**: Handles `charge.updated` events to process partial capture notifications
+- **Transaction Accuracy**: Ensures each capture transaction reflects the correct amount and interaction ID
+
+### Implementation Details
+The multicapture support includes:
+
+1. **Payment Intent Configuration**: 
+   - Sets `request_multicapture: 'if_available'` in payment method options
+   - Uses `manual` capture method to enable partial captures
+   - Configures `final_capture: false` for partial captures
+
+2. **Capture Processing**:
+   - Enhanced `capturePayment` method supports partial capture logic
+   - Determines if capture is partial based on total amount vs. amount received
+   - Properly handles both single and multiple capture scenarios
+
+3. **Event Processing**:
+   - `processStripeEvent` method detects multicapture scenarios
+   - Retrieves balance transactions to get accurate capture amounts
+   - Updates transaction data with correct interaction IDs and amounts
+
+4. **Webhook Handling**:
+   - `processStripeEventMultipleCaptured` method handles `charge.updated` events
+   - Processes partial capture notifications with proper amount calculations
+   - Validates capture state changes before processing
 
 ## Enhanced Refund Processing
 

@@ -64,7 +64,7 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
     await stripeApi().webhookEndpoints.update(weId, {
       enabled_events: [
         'charge.succeeded',
-        'charge.captured',
+        'charge.updated',
         'payment_intent.succeeded',
         'charge.refunded',
         'payment_intent.canceled',

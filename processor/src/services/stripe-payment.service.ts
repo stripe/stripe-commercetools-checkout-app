@@ -23,7 +23,7 @@ import packageJSON from '../../package.json';
 import { AbstractPaymentService } from './abstract-payment.service';
 import { getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
-import { CaptureMethod, PaymentStatus, StripePaymentServiceOptions } from './types/stripe-payment.type';
+import { CaptureMethod, StripePaymentServiceOptions } from './types/stripe-payment.type';
 import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
@@ -152,51 +152,46 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   /**
-   * Capture payment in Stripe.
+   * Capture payment in Stripe, supporting multicapture (multiple partial captures).
    *
    * @remarks
-   * MVP: capture the total amount
+   * Supports capturing the total or a partial amount multiple times, as allowed by Stripe.
    *
    * @param {CapturePaymentRequest} request - Information about the ct payment and the amount.
-   * @returns Promise with mocking data containing operation status and PSP reference
+   * @returns Promise with data containing operation status and PSP reference
    */
   public async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
     try {
       const paymentIntentId = request.payment.interfaceId as string;
-      const amount = request.amount.centAmount;
+      const amountToBeCaptured = request.amount.centAmount;
+      const stripePaymentIntent: Stripe.PaymentIntent = await stripeApi().paymentIntents.retrieve(paymentIntentId);
+
+      if (!request.payment.amountPlanned.centAmount) {
+        throw new Error('Payment amount is not set');
+      }
+
+      const cartTotalAmount = request.payment.amountPlanned.centAmount;
+      const isPartialCapture = stripePaymentIntent.amount_received + amountToBeCaptured < cartTotalAmount;
+
       const response = await stripeApi().paymentIntents.capture(paymentIntentId, {
-        amount_to_capture: amount,
+        amount_to_capture: amountToBeCaptured,
+        ...(isPartialCapture && {
+          final_capture: false,
+        }),
       });
 
-      if (response.status === 'succeeded') {
-        await this.ctPaymentService.updatePayment({
-          id: request.payment.id,
-          transaction: {
-            type: PaymentTransactions.CHARGE,
-            amount: request.amount,
-            interactionId: response.id,
-            state: PaymentStatus.SUCCESS,
-          },
-        });
+      log.info(`Payment modification completed.`, {
+        paymentId: paymentIntentId,
+        action: PaymentTransactions.CHARGE,
+        result: PaymentModificationStatus.APPROVED,
+        trackingId: response.id,
+        isPartialCapture: isPartialCapture,
+      });
 
-        log.info(`Payment modification completed.`, {
-          paymentId: paymentIntentId,
-          action: PaymentTransactions.CHARGE,
-          result: PaymentModificationStatus.APPROVED,
-          trackingId: response.id,
-        });
-
-        return {
-          outcome: PaymentModificationStatus.APPROVED,
-          pspReference: response.id,
-        };
-      } else {
-        log.warn('Stripe capture did not succeed as expected', { status: response.status, id: response.id });
-        return {
-          outcome: PaymentModificationStatus.REJECTED,
-          pspReference: response.id,
-        };
-      }
+      return {
+        outcome: PaymentModificationStatus.APPROVED,
+        pspReference: response.id,
+      };
     } catch (error) {
       log.error('Error capturing payment in Stripe', { error });
       return {
@@ -397,6 +392,11 @@ export class StripePaymentService extends AbstractPaymentService {
             ...(ctCart.customerId ? { ct_customer_id: ctCart.customerId } : null),
           },
           shipping: shippingAddress,
+          payment_method_options: {
+            card: {
+              request_multicapture: 'if_available',
+            },
+          },
         },
         {
           idempotencyKey,
@@ -587,16 +587,45 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   /**
-   * Retrieves modified payment data based on the given Stripe event.
+   * Processes a Stripe event and updates the corresponding payment in commercetools.
    *
-   * @param {Stripe.Event} event - The Stripe event object to extract data from.
-   * @return {ModifyPayment} - An object containing modified payment data.
+   * Handles standard payment events as well as multicapture scenarios for payment intents
+   * with manual capture and multicapture enabled. In multicapture cases, updates the transaction
+   * data with the correct balance transaction information from Stripe.
+   *
+   * @param {Stripe.Event} event - The Stripe event object to process.
+   * @returns {Promise<void>} - Resolves when the payment has been updated.
    */
   public async processStripeEvent(event: Stripe.Event): Promise<void> {
     log.info('Processing notification', { event: JSON.stringify(event.id) });
     try {
       const updateData = this.stripeEventConverter.convert(event);
 
+      //does payment intent event have multicapture?
+      if (event.type.startsWith('payment')) {
+        const pi = event.data.object as Stripe.PaymentIntent;
+        if (
+          pi.capture_method === 'manual' &&
+          pi.payment_method_options?.card?.request_multicapture === 'if_available' &&
+          typeof pi.latest_charge === 'string'
+        ) {
+          const balanceTransactions = await stripeApi().balanceTransactions.list({
+            source: pi.latest_charge,
+            limit: 10,
+          });
+
+          if (balanceTransactions.data.length > 1) {
+            //it is multicapture, so we need to update the transactions
+            updateData.transactions.forEach((tx) => {
+              tx.interactionId = balanceTransactions.data[0].id;
+              tx.amount = {
+                centAmount: balanceTransactions.data[0].amount,
+                currencyCode: balanceTransactions.data[0].currency.toUpperCase(),
+              };
+            });
+          }
+        }
+      }
       for (const tx of updateData.transactions) {
         const updatedPayment = await this.ctPaymentService.updatePayment({
           ...updateData,
@@ -642,6 +671,51 @@ export class StripePaymentService extends AbstractPaymentService {
         tx.amount = {
           centAmount: refund.amount,
           currencyCode: refund.currency.toUpperCase(),
+        };
+      });
+
+      for (const tx of updateData.transactions) {
+        const updatedPayment = await this.ctPaymentService.updatePayment({
+          ...updateData,
+          transaction: tx,
+        });
+
+        log.info('Payment updated after processing the notification', {
+          paymentId: updatedPayment.id,
+          version: updatedPayment.version,
+          pspReference: updateData.pspReference,
+          paymentMethod: updateData.paymentMethod,
+          transaction: JSON.stringify(tx),
+        });
+      }
+    } catch (e) {
+      log.error('Error processing notification', { error: e });
+      return;
+    }
+  }
+
+  public async processStripeEventMultipleCaptured(event: Stripe.Event): Promise<void> {
+    log.info('Processing notification', { event: JSON.stringify(event.id) });
+    try {
+      const updateData = this.stripeEventConverter.convert(event);
+      const charge = event.data.object as Stripe.Charge;
+      if (charge.captured) {
+        log.warn('Charge is already captured', { chargeId: charge.id });
+        return;
+      }
+
+      const previousAttributes = event.data.previous_attributes as Stripe.Charge;
+      if (!(charge.amount_captured > previousAttributes.amount_captured)) {
+        log.warn('The amount captured do not change from the previous charge', { chargeId: charge.id });
+        return;
+      }
+
+      updateData.pspReference = charge.balance_transaction as string;
+      updateData.transactions.forEach((tx) => {
+        tx.interactionId = charge.balance_transaction as string;
+        tx.amount = {
+          centAmount: charge.amount_captured - previousAttributes.amount_captured,
+          currencyCode: charge.currency.toUpperCase(),
         };
       });
 

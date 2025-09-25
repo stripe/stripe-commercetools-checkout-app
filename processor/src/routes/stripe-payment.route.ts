@@ -141,7 +141,6 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
         case StripeEvent.PAYMENT_INTENT__CANCELED:
         case StripeEvent.PAYMENT_INTENT__REQUIRED_ACTION:
         case StripeEvent.PAYMENT_INTENT__PAYMENT_FAILED:
-        case StripeEvent.CHARGE__CAPTURED:
         case StripeEvent.CHARGE__SUCCEEDED:
           log.info(`Received: ${event.type} event of ${event.data.object.id}`);
           await opts.paymentService.processStripeEvent(event);
@@ -149,6 +148,10 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
         case StripeEvent.CHARGE__REFUNDED:
           log.info(`Received: ${event.type} event of ${event.data.object.id}`);
           await opts.paymentService.processStripeEventRefunded(event);
+          break;
+        case StripeEvent.CHARGE__UPDATED:
+          log.info(`Received: ${event.type} event of ${event.data.object.id}`);
+          await opts.paymentService.processStripeEventMultipleCaptured(event);
           break;
         default:
           log.info(`--->>> This Stripe event is not supported: ${event.type}`);

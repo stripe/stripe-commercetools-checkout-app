@@ -91,6 +91,15 @@ export class StripeEventConverter {
           },
         ];
       }
+      case StripeEvent.CHARGE__UPDATED:
+        return [
+          {
+            type: PaymentTransactions.CHARGE,
+            state: PaymentStatus.SUCCESS,
+            amount: this.populateAmount(event),
+            interactionId: paymentIntentId,
+          },
+        ];
       default: {
         const error = `Unsupported event ${event.type}`;
         throw wrapStripeError(new Error(error));

@@ -14,6 +14,7 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - Support for Buy Now Pay Later (BNPL) payment method.[Considerations](./processor/README.md#merchant-return-url)
 - Enhanced refund processing with support for [multiple refunded events](./processor/README.md#enhanced-refund-processing), ensuring accurate refund data synchronization between Stripe and commercetools.
 - Payment cancellation logic with improved amount handling and streamlined processing flow. More information in [Payment Cancellation](./processor/README.md#payment-cancellation)
+- **Multicapture Support**: Comprehensive support for multiple partial captures on the same payment intent, enabling complex fulfillment scenarios and staged payment processing. More information in [Multicapture Support](./processor/README.md#multicapture-support)
 
 ## Prerequisite
 
@@ -72,7 +73,7 @@ The following webhooks are currently supported, and the payment transactions in 
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
 - **charge.refunded**: Creates a payment transaction Refund to Success and a Chargeback to Success. The system now properly handles multiple refund events by retrieving the latest refund information from Stripe and updating the payment with the correct refund details. More infomration in [Enhanced support for multiple refunded events](./processor/README.md#enhanced-refund-processing)
 - **charge.succeeded**: Create the payment transaction to 'Authorization:Success' if charge is not capture.
-- **charge.captured**: Logs the information in the connector app inside the Processor logs.
+- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. This webhook supports multicapture scenarios where multiple partial captures are performed on the same payment intent. More information in [Multicapture Support](./processor/README.md#multicapture-support)
 
 
 ## Prerequisite
