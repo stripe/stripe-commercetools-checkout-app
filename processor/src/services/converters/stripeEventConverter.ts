@@ -64,8 +64,6 @@ export class StripeEventConverter {
           },
         ];
       case StripeEvent.CHARGE__REFUNDED: {
-        const isCaptured = event.data.object.captured;
-        if (!isCaptured) return [];
         return [
           {
             type: PaymentTransactions.REFUND,
