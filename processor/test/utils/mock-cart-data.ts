@@ -56,6 +56,7 @@ export const mockGetCartResult = () => {
       email: 'test@example.com',
       key: 'address1',
     },
+    priceRoundingMode: 'HalfUp',
   };
   return mockGetCartResult;
 };
@@ -114,6 +115,7 @@ export const mockGetCartWithoutCustomerIdResult = () => {
       email: 'test@example.com',
       key: 'address1',
     },
+    priceRoundingMode: 'HalfUp',
   };
   return mockGetCartResult;
 };

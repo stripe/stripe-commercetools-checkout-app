@@ -742,7 +742,7 @@ describe('stripe-payment.service', () => {
       // Or check that the relevant mocks have been called
       expect(getCartMock).toHaveBeenCalled();
       expect(getPaymentAmountMock).toHaveBeenCalled();
-      expect(Logger.log.info).toBeCalled();
+      expect(Logger.log.info).toHaveBeenCalled();
     });
   });
 
@@ -937,7 +937,7 @@ describe('stripe-payment.service', () => {
 
       await stripePaymentService.getCustomerSession();
 
-      expect(Logger.log.warn).toBeCalled();
+      expect(Logger.log.warn).toHaveBeenCalled();
       expect(getCartMock).toHaveBeenCalled();
     });
 
@@ -1189,7 +1189,7 @@ describe('stripe-payment.service', () => {
 
     test('should return undefined due to incorrect ctCustomerId', async () => {
       const result = await stripePaymentService.findStripeCustomer('wrongId');
-      expect(Logger.log.warn).toBeCalled();
+      expect(Logger.log.warn).toHaveBeenCalled();
       expect(result).toBeUndefined();
     });
   });
@@ -1291,7 +1291,7 @@ describe('stripe-payment.service', () => {
       } catch (e) {
         expect(e).toEqual(`Customer with ID ${mockCtCustomerId} not found`);
       }
-      expect(Logger.log.warn).toBeCalled();
+      expect(Logger.log.warn).toHaveBeenCalled();
       expect(executeMock).toHaveBeenCalled();
     });
   });
