@@ -35,13 +35,13 @@ export class StripeEventConverter {
           {
             type: PaymentTransactions.AUTHORIZATION,
             state: PaymentStatus.FAILURE,
-            amount: this.populateAmount(event),
+            amount: this.populateAmountCanceled(event),
             interactionId: paymentIntentId,
           },
           {
             type: PaymentTransactions.CANCEL_AUTHORIZATION,
             state: PaymentStatus.SUCCESS,
-            amount: this.populateAmount(event),
+            amount: this.populateAmountCanceled(event),
             interactionId: paymentIntentId,
           },
         ];
@@ -64,8 +64,6 @@ export class StripeEventConverter {
           },
         ];
       case StripeEvent.CHARGE__REFUNDED: {
-        const isCaptured = event.data.object.captured;
-        if (!isCaptured) return [];
         return [
           {
             type: PaymentTransactions.REFUND,
@@ -91,6 +89,15 @@ export class StripeEventConverter {
           },
         ];
       }
+      case StripeEvent.CHARGE__UPDATED:
+        return [
+          {
+            type: PaymentTransactions.CHARGE,
+            state: PaymentStatus.SUCCESS,
+            amount: this.populateAmount(event),
+            interactionId: paymentIntentId,
+          },
+        ];
       default: {
         const error = `Unsupported event ${event.type}`;
         throw wrapStripeError(new Error(error));
@@ -111,6 +118,17 @@ export class StripeEventConverter {
     return {
       centAmount: centAmount,
       currencyCode: data.currency.toUpperCase(),
+    };
+  }
+
+  private populateAmountCanceled(opts: Stripe.Event): Money {
+    const data = opts.data.object as Stripe.PaymentIntent;
+    const currencyCode = data.currency.toUpperCase();
+    const centAmount = data.amount;
+
+    return {
+      centAmount: centAmount,
+      currencyCode: currencyCode,
     };
   }
 

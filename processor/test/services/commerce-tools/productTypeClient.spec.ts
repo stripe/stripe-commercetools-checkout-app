@@ -75,7 +75,7 @@ describe('ProductTypeHelper testing', () => {
       })) as never;
 
       await deleteProductType({ key: 'product-type-key', version: 1 });
-      expect(executeMock).toBeCalled();
+      expect(executeMock).toHaveBeenCalled();
     });
   });
 
@@ -91,7 +91,7 @@ describe('ProductTypeHelper testing', () => {
 
       const result = await createProductType(mock_ProductType);
       expect(result).toEqual(mock_ProductType);
-      expect(executeMock).toBeCalled();
+      expect(executeMock).toHaveBeenCalled();
     });
   });
 });

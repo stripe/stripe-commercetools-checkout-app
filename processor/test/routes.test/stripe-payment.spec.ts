@@ -58,6 +58,7 @@ function setupMockConfig(keysAndValues: Record<string, string>) {
     mockConfig[key] = keysAndValues[key];
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   jest.spyOn(Config, 'getConfig').mockReturnValue(mockConfig as any);
 }
 
@@ -193,7 +194,7 @@ describe('Stripe Payment APIs', () => {
       // Set mocked functions to Stripe and spyOn to set the result expected
       Stripe.prototype.webhooks = { constructEvent: jest.fn() } as unknown as Stripe.Webhooks;
       jest.spyOn(Stripe.prototype.webhooks, 'constructEvent').mockReturnValue(mockEvent__charge_refund_captured);
-      jest.spyOn(StripePaymentService.prototype, 'processStripeEvent').mockReturnValue(Promise.resolve());
+      jest.spyOn(StripePaymentService.prototype, 'processStripeEventRefunded').mockReturnValue(Promise.resolve());
 
       //When
       const response = await fastifyApp.inject({
@@ -206,7 +207,7 @@ describe('Stripe Payment APIs', () => {
 
       //Then
       expect(response.statusCode).toEqual(200);
-      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalled();
+      expect(spiedPaymentService.processStripeEventRefunded).toHaveBeenCalled();
     });
 
     test('it should handle a payment_intent.canceled event gracefully.', async () => {
