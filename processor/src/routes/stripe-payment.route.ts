@@ -146,12 +146,21 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
           await opts.paymentService.processStripeEvent(event);
           break;
         case StripeEvent.CHARGE__REFUNDED:
-          log.info(`Received: ${event.type} event of ${event.data.object.id}`);
-          await opts.paymentService.processStripeEventRefunded(event);
+          if (getConfig().stripeEnableMultiOperations) {
+            log.info(`Processing Stripe multirefund event with enhanced tracking: ${event.type}`);
+            await opts.paymentService.processStripeEventRefunded(event);
+          } else {
+            log.info(`Processing Stripe refund event with basic tracking (multi-operations disabled): ${event.type}`);
+            await opts.paymentService.processStripeEvent(event);
+          }
           break;
         case StripeEvent.CHARGE__UPDATED:
-          log.info(`Received: ${event.type} event of ${event.data.object.id}`);
-          await opts.paymentService.processStripeEventMultipleCaptured(event);
+          if (getConfig().stripeEnableMultiOperations) {
+            log.info(`Processing Stripe multicapture event: ${event.type}`);
+            await opts.paymentService.processStripeEventMultipleCaptured(event);
+          } else {
+            log.info(`Multi-operations disabled, skipping multicapture: ${event.type}`);
+          }
           break;
         default:
           log.info(`--->>> This Stripe event is not supported: ${event.type}`);
