@@ -217,9 +217,9 @@ The following webhooks currently supported and transformed to different payment 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success. 
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
-- **charge.refunded**: Creates a payment transaction Refund to Success, and a Chargeback to Success. The system now uses a dedicated `processStripeEventRefunded` method that retrieves the latest refund information from Stripe API and properly updates the payment with the correct refund details, including the refund ID and amount. More information in [Enhanced support for multiple refunded events](#enhanced-refund-processing)
+- **charge.refunded**: Creates a payment transaction Refund to Success, and a Chargeback to Success. When `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled, the system uses a dedicated `processStripeEventRefunded` method that retrieves the latest refund information from Stripe API and properly updates the payment with the correct refund details. When disabled, uses basic refund tracking. More information in [Enhanced support for multiple refunded events](#enhanced-refund-processing)
 - **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
-- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. This webhook supports multicapture scenarios where multiple partial captures are performed on the same payment intent.
+- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. **Note**: This webhook is only processed when `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled. This supports multicapture scenarios where multiple partial captures are performed on the same payment intent.
 
 #### Endpoint
 `POST /stripe/webhooks`
@@ -343,12 +343,30 @@ The payment cancellation process has been optimized for better performance and r
 
 The processor now includes comprehensive support for multicapture scenarios, allowing multiple partial captures on the same payment intent. This feature is particularly useful for businesses that need to capture payments in stages or handle complex fulfillment scenarios.
 
+### Configuration
+
+**IMPORTANT**: Multicapture support is an opt-in feature controlled by the `STRIPE_ENABLE_MULTI_OPERATIONS` environment variable.
+
+- **Default**: `false` (disabled)
+- **To Enable**: Set `STRIPE_ENABLE_MULTI_OPERATIONS=true` in your environment configuration
+- **Prerequisites**:
+  - Multicapture must be enabled in your Stripe account settings
+  - Payment intent must use `manual` capture method
+  - The feature flag must be set to `true` before processing partial captures
+
+When the feature is disabled:
+- Partial capture attempts will throw an error with a clear message
+- `charge.updated` webhook events are skipped (logged but not processed)
+- Only full single captures are supported
+
 ### Key Features
 - **Partial Capture Support**: Enables capturing partial amounts from an authorized payment intent
+- **Validation**: Prevents partial captures when the feature flag is disabled
 - **Multiple Capture Detection**: Automatically detects when multicapture is being used based on Stripe payment intent configuration
 - **Balance Transaction Tracking**: Uses Stripe's balance transaction system to track individual capture amounts
-- **Webhook Integration**: Handles `charge.updated` events to process partial capture notifications
+- **Webhook Integration**: Conditionally handles `charge.updated` events based on feature flag
 - **Transaction Accuracy**: Ensures each capture transaction reflects the correct amount and interaction ID
+- **Enhanced Logging**: Tracks `multiOperationsEnabled` status for debugging
 
 ### Implementation Details
 The multicapture support includes:
@@ -375,19 +393,33 @@ The multicapture support includes:
 
 ## Enhanced Refund Processing
 
-The processor now includes enhanced support for handling multiple refunded events through a dedicated `processStripeEventRefunded` method. This enhancement provides:
+The processor now includes enhanced support for handling multiple refunded events through a dedicated `processStripeEventRefunded` method. This enhancement is controlled by the `STRIPE_ENABLE_MULTI_OPERATIONS` feature flag.
+
+### Configuration
+
+**IMPORTANT**: Enhanced multirefund support is an opt-in feature controlled by the `STRIPE_ENABLE_MULTI_OPERATIONS` environment variable.
+
+- **Default**: `false` (disabled) - Uses basic refund tracking
+- **To Enable**: Set `STRIPE_ENABLE_MULTI_OPERATIONS=true` in your environment configuration
+- **Behavior**:
+  - **When enabled**: Uses `processStripeEventRefunded()` with enhanced tracking
+  - **When disabled**: Uses `processStripeEvent()` with basic tracking
 
 ### Key Features
 - **Multiple Refund Support**: Handles scenarios where multiple refunds may be processed for the same charge
 - **Accurate Refund Data**: Retrieves the latest refund information directly from Stripe API to ensure accurate refund amounts and IDs
 - **Robust Error Handling**: Includes proper error handling and logging for refund processing scenarios
 - **Transaction Updates**: Updates commercetools payment transactions with the correct refund details
+- **Enhanced Logging**: Tracks `multiOperationsEnabled` and `isMultipleRefund` status for debugging
+- **Warning System**: Warns merchants when multiple refunds are attempted without the feature enabled
 
 ### Implementation Details
 The enhanced refund processing:
 1. Receives `charge.refunded` webhook events from Stripe
-2. Queries Stripe API to retrieve the latest refund information for the charge
-3. Updates the payment transaction in commercetools with the correct refund details
-4. Handles cases where no refund is found gracefully
-5. Provides comprehensive logging for debugging and monitoring
+2. Routes to appropriate handler based on `STRIPE_ENABLE_MULTI_OPERATIONS` flag
+3. When enabled: Queries Stripe API to retrieve the latest refund information for the charge
+4. Updates the payment transaction in commercetools with the correct refund details
+5. Handles cases where no refund is found gracefully
+6. Provides comprehensive logging for debugging and monitoring
+7. Warns if webhook-based tracking may not work properly without the feature enabled
 

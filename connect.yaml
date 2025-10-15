@@ -58,6 +58,9 @@ deployAs:
           description: Stripe collect billing address information in Payment Element (example - 'auto' | 'never' | 'if_required').
           default: 'auto'
           required: true
+        - key: STRIPE_ENABLE_MULTI_OPERATIONS
+          description: Enable multicapture and multirefund support. Requires multicapture to be enabled in your Stripe account (example - true | false).
+          default: 'false'
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret.

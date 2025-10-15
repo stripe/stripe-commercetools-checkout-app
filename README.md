@@ -71,9 +71,9 @@ The following webhooks are currently supported, and the payment transactions in 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
-- **charge.refunded**: Creates a payment transaction Refund to Success and a Chargeback to Success. The system now properly handles multiple refund events by retrieving the latest refund information from Stripe and updating the payment with the correct refund details. More infomration in [Enhanced support for multiple refunded events](./processor/README.md#enhanced-refund-processing)
+- **charge.refunded**: Creates a payment transaction Refund to Success and a Chargeback to Success. When `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled, the system uses enhanced refund tracking to properly handle multiple refund events by retrieving the latest refund information from Stripe. When disabled, basic refund tracking is used. More information in [Enhanced support for multiple refunded events](./processor/README.md#enhanced-refund-processing)
 - **charge.succeeded**: Create the payment transaction to 'Authorization:Success' if charge is not capture.
-- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. This webhook supports multicapture scenarios where multiple partial captures are performed on the same payment intent. More information in [Multicapture Support](./processor/README.md#multicapture-support)
+- **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. **Note**: This webhook is only processed when `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled. This supports multicapture scenarios where multiple partial captures are performed on the same payment intent. More information in [Multicapture Support](./processor/README.md#multicapture-support)
 
 
 ## Prerequisite
@@ -111,6 +111,7 @@ Before installing the connector, you must create a Stripe account and obtain the
 11. **STRIPE_CAPTURE_METHOD**: This is the capture method used for the Payment. It can be either `automatic` or `manual`. The default value is `automatic`.
 12. **STRIPE_WEBHOOK_ID**: This is the unique identifier for the Stripe Webhook Endpoint.
 13. **STRIPE_COLLECT_SHIPPING_ADDRESS**: This is the configuration for the Stripe collect shipping address in the payment element. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
+14. **STRIPE_ENABLE_MULTI_OPERATIONS**: This is an opt-in feature flag to enable advanced multicapture and multirefund support. When enabled (`true`), the connector processes multiple partial captures and refunds on a single payment. The default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account. More information in [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing).
 
 
 #### 2. commercetools
@@ -208,6 +209,9 @@ deployAs:
           description: Stripe collect billing address information (example - 'auto' | 'never' | 'if_required').
           default: 'auto'
           required: true
+        - key: STRIPE_ENABLE_MULTI_OPERATIONS
+          description: Enable multicapture and multirefund support. Requires multicapture to be enabled in your Stripe account (example - true | false).
+          default: 'false'
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret.
@@ -245,6 +249,7 @@ Here, you can see the details about various variables in the configuration
 - `MERCHANT_RETURN_URL`: Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the URL; the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`. 
 - `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default. To enable it, you need to add the expected customer session object. Default value is `{"payment_method_save":"disabled"}`
 - `STRIPE_COLLECT_SHIPPING_ADDRESS`: Stripe allows you to collect the shipping address in the Payment Element. If you want to collect the shipping address, you need to set this value to `never`. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
+- `STRIPE_ENABLE_MULTI_OPERATIONS`: Opt-in feature flag to enable advanced multicapture and multirefund support. When set to `true`, enables processing of multiple partial captures and refunds on a single payment intent. Default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account settings. See [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing) for implementation details.
 
 ## Development
 

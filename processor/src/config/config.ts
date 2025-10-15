@@ -44,6 +44,19 @@ export const config = {
 
   // Payment Providers config
   merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',
+
+  /**
+   * Enable multicapture and multirefund support for Stripe payments
+   * When enabled, allows:
+   * - Multiple partial captures on a single payment (multicapture)
+   * - Multiple refunds to be processed on a single charge (multirefund)
+   *
+   * Default: false (disabled) - Merchants must opt-in to enable these advanced features
+   * Note: This feature requires multicapture to be enabled in your Stripe account
+   *
+   * Environment variable: STRIPE_ENABLE_MULTI_OPERATIONS
+   */
+  stripeEnableMultiOperations: process.env.STRIPE_ENABLE_MULTI_OPERATIONS === 'true' || false,
 };
 
 export const getConfig = () => {
