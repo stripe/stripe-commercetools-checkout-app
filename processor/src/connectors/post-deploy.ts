@@ -2,7 +2,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import {
-  createCustomerCustomType,
+  createOrUpdateCustomerCustomType,
   createLaunchpadPurchaseOrderNumberCustomType,
   retrieveWebhookEndpoint,
   updateWebhookEndpoint,
@@ -33,7 +33,7 @@ async function postDeploy(properties: Map<string, unknown>) {
     }
   }
 
-  await createCustomerCustomType();
+  await createOrUpdateCustomerCustomType();
 }
 
 export async function runPostDeployScripts() {
