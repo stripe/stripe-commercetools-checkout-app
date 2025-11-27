@@ -437,7 +437,9 @@ export class StripePaymentService extends AbstractPaymentService {
           shipping: shippingAddress,
           payment_method_options: {
             card: {
-              request_multicapture: 'if_available',
+              ...(config.stripeEnableMultiOperations && {
+                request_multicapture: 'if_available',
+              }),
             },
           },
         },

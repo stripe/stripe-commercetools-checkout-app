@@ -78,7 +78,7 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
   }
 }
 
-export async function createCustomerCustomType(): Promise<void> {
+export async function createOrUpdateCustomerCustomType(): Promise<void> {
   await handleRequest({
     loggerId: '[CREATE_CUSTOMER_CUSTOM_TYPE]',
     startMessage: 'Starting the process for creating "Customer" Custom Type.',
