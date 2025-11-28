@@ -167,7 +167,7 @@ describe('Actions test', () => {
         .spyOn(CustomTypeHelper, 'addOrUpdateCustomType')
         .mockReturnValue(Promise.resolve());
 
-      await Actions.createCustomerCustomType();
+      await Actions.createOrUpdateCustomerCustomType();
       expect(addOrUpdateCustomTypeMock).toHaveBeenCalled();
       expect(Logger.log.info).toHaveBeenCalled();
     });

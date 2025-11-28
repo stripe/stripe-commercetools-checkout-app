@@ -25,7 +25,7 @@ describe('runPostDeployScripts', () => {
       .spyOn(Actions, 'retrieveWebhookEndpoint')
       .mockResolvedValue(mock_Stripe_retrieveWebhookEnpoints_response);
     const mockUpdateWe = jest.spyOn(Actions, 'updateWebhookEndpoint').mockResolvedValue();
-    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createCustomerCustomType').mockResolvedValue();
+    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createOrUpdateCustomerCustomType').mockResolvedValue();
 
     await PostDeploy.runPostDeployScripts();
 
@@ -44,7 +44,7 @@ describe('runPostDeployScripts', () => {
       .spyOn(Actions, 'retrieveWebhookEndpoint')
       .mockResolvedValue(mock_Stripe_retrieveWebhookEnpoints_response);
     const mockUpdateWe = jest.spyOn(Actions, 'updateWebhookEndpoint').mockResolvedValue();
-    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createCustomerCustomType').mockResolvedValue();
+    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createOrUpdateCustomerCustomType').mockResolvedValue();
 
     await PostDeploy.runPostDeployScripts();
 
@@ -85,7 +85,7 @@ describe('runPostDeployScripts', () => {
 
     const mockErrorMessage = `Post-deploy failed: STRIPE_WEBHOOK_ID var is not assigned. Add the connector URL manually on the Stripe Webhook Dashboard\n`;
     const writeSpy = jest.spyOn(process.stderr, 'write');
-    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createCustomerCustomType').mockResolvedValue();
+    const createCustomerCustomTypeMock = jest.spyOn(Actions, 'createOrUpdateCustomerCustomType').mockResolvedValue();
 
     await PostDeploy.runPostDeployScripts();
 
