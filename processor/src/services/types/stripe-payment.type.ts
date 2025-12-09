@@ -2,7 +2,9 @@ import { PaymentRequestSchemaDTO } from '../../dtos/stripe-payment.dto';
 import {
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
+  PaymentMethodInfoDraft,
   TransactionData,
 } from '@commercetools/connect-payments-sdk';
 import { PSPInteraction } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type';
@@ -11,6 +13,7 @@ export type StripePaymentServiceOptions = {
   ctCartService: CommercetoolsCartService;
   ctPaymentService: CommercetoolsPaymentService;
   ctOrderService: CommercetoolsOrderService;
+  ctPaymentMethodService: CommercetoolsPaymentMethodService;
 };
 
 export type CreatePayment = {
@@ -23,6 +26,7 @@ export type StripeEventUpdatePayment = {
   pspReference?: string;
   transactions: TransactionData[];
   paymentMethod?: string;
+  paymentMethodInfo?: PaymentMethodInfoDraft;
   pspInteraction?: PSPInteraction;
 };
 

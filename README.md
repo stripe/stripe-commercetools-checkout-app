@@ -205,6 +205,9 @@ deployAs:
         - key: MERCHANT_RETURN_URL
           description: Merchant return URL
           required: true
+        - key: PAYMENT_INTERFACE
+          description: The payment interface value used in the commercetools payment/payment methods. Default value is "checkout-stripe".
+          required: false
         - key: STRIPE_COLLECT_BILLING_ADDRESS
           description: Stripe collect billing address information (example - 'auto' | 'never' | 'if_required').
           default: 'auto'

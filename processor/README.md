@@ -74,6 +74,7 @@ Make sure commercetools client credential have at least the following permission
 * 'view_api_clients'
 * 'manage_orders'
 * 'manage_types'
+* 'manage_payment_methods'
 
 ```
 npm run dev

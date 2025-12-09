@@ -4,6 +4,7 @@ import { describe, beforeAll, afterAll, test, expect, jest, afterEach, beforeEac
 import {
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
   ContextProvider,
   JWTAuthenticationHook,
@@ -108,6 +109,7 @@ describe('Stripe Payment APIs', () => {
     ctCartService: jest.fn() as unknown as CommercetoolsCartService,
     ctPaymentService: jest.fn() as unknown as CommercetoolsPaymentService,
     ctOrderService: jest.fn() as unknown as CommercetoolsOrderService,
+    ctPaymentMethodService: jest.fn() as unknown as CommercetoolsPaymentMethodService,
   });
 
   const spiedStripeHeaderAuthHook = new StripeHeaderAuthHook();

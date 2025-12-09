@@ -14,6 +14,7 @@ export default async function (server: FastifyInstance) {
     ctCartService: paymentSDK.ctCartService,
     ctPaymentService: paymentSDK.ctPaymentService,
     ctOrderService: paymentSDK.ctOrderService,
+    ctPaymentMethodService: paymentSDK.ctPaymentMethodService,
   });
 
   await server.register(customerRoutes, {

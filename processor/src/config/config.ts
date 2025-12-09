@@ -43,6 +43,7 @@ export const config = {
   stripeCollectBillingAddress: process.env.STRIPE_COLLECT_BILLING_ADDRESS || 'auto',
 
   // Payment Providers config
+  paymentInterface: process.env.PAYMENT_INTERFACE || 'checkout-stripe',
   merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',
 
   /**

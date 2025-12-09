@@ -4,11 +4,9 @@ import {
   TypeAddFieldDefinitionAction,
   TypeDraft,
   TypeRemoveFieldDefinitionAction,
-} from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
-import {
   CustomerSetCustomFieldAction,
   CustomerSetCustomTypeAction,
-} from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
+} from '@commercetools/connect-payments-sdk';
 import { log } from '../../libs/logger';
 import {
   createCustomType,
