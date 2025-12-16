@@ -4,6 +4,7 @@ import {
   CommercetoolsOrderService,
   CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
+  CommercetoolsRecurringPaymentJobService,
   PaymentMethodInfoDraft,
   TransactionData,
 } from '@commercetools/connect-payments-sdk';
@@ -14,6 +15,7 @@ export type StripePaymentServiceOptions = {
   ctPaymentService: CommercetoolsPaymentService;
   ctOrderService: CommercetoolsOrderService;
   ctPaymentMethodService: CommercetoolsPaymentMethodService;
+  ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService;
 };
 
 export type CreatePayment = {

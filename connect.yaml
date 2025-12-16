@@ -24,6 +24,9 @@ deployAs:
           description: Session API URL (example - https://session.europe-west1.gcp.commercetools.com).
           required: true
           default: https://session.europe-west1.gcp.commercetools.com
+        - key: CTP_CHECKOUT_API_URL
+          description: Checkout API URL (example - https://checkout.europe-west1.gcp.commercetools.com).
+          required: true
         - key: CTP_JWKS_URL
           description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
           required: true

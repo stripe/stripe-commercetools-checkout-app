@@ -6,6 +6,7 @@ const paymentService = new StripePaymentService({
   ctPaymentService: paymentSDK.ctPaymentService,
   ctOrderService: paymentSDK.ctOrderService,
   ctPaymentMethodService: paymentSDK.ctPaymentMethodService,
+  ctRecurringPaymentJobService: paymentSDK.ctRecurringPaymentJobService,
 });
 
 export const app = {

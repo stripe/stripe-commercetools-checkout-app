@@ -4,7 +4,9 @@ import {
   Cart,
   Customer,
   ErrorInvalidOperation,
+  ErrorResourceNotFound,
   healthCheckCommercetoolsPermissions,
+  PaymentMethod,
   statusHandler,
 } from '@commercetools/connect-payments-sdk';
 import {
@@ -50,7 +52,13 @@ export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
 
   constructor(opts: StripePaymentServiceOptions) {
-    super(opts.ctCartService, opts.ctPaymentService, opts.ctOrderService, opts.ctPaymentMethodService);
+    super(
+      opts.ctCartService,
+      opts.ctPaymentService,
+      opts.ctOrderService,
+      opts.ctPaymentMethodService,
+      opts.ctRecurringPaymentJobService,
+    );
     this.stripeEventConverter = new StripeEventConverter();
   }
 
@@ -93,6 +101,7 @@ export class StripePaymentService extends AbstractPaymentService {
             'manage_checkout_payment_intents',
             'manage_types',
             'manage_payment_methods',
+            'manage_checkout_recurring_payment_jobs',
           ],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
@@ -700,6 +709,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * 2. Retrieves the payment method from Stripe to verify it's attached to a customer
    * 3. Saves the payment method to commercetools if it doesn't already exist
    * 4. Updates the payment record with the payment method token reference
+   * 5. Creates a recurring payment job if the payment is linked to a recurring cart
    *
    * @param event - The Stripe webhook event (PAYMENT_INTENT__SUCCEEDED or CHARGE__SUCCEEDED)
    * @returns Promise that resolves when the payment method has been stored, or immediately if skipped
@@ -726,10 +736,33 @@ export class StripePaymentService extends AbstractPaymentService {
         return;
       }
 
-      await this.savePaymentMethodIfNew(paymentMethod, ctCustomerId);
+      const ctPaymentMethod = await this.savePaymentMethodIfNew(paymentMethod, ctCustomerId);
 
       if (ctPaymentId) {
         await this.updatePaymentWithToken(ctPaymentId, paymentMethod);
+        log.info('Updated payment with stored payment method token', {
+          paymentId: ctPaymentId,
+          paymentMethodId: ctPaymentMethod.id,
+        });
+
+        // Create a recurring payment job for the stored payment method if the payment is linked to a recurring cart
+        const recurringPaymentJob = await this.ctRecurringPaymentJobService.createRecurringPaymentJobIfApplicable({
+          originPayment: {
+            id: ctPaymentId,
+            typeId: 'payment',
+          },
+          paymentMethod: {
+            id: ctPaymentMethod.id,
+            typeId: 'payment-method',
+          },
+        });
+
+        if (recurringPaymentJob) {
+          log.info('Created recurring payment job for stored payment method', {
+            recurringPaymentJobId: recurringPaymentJob.id,
+            paymentMethodId: ctPaymentMethod.id,
+          });
+        }
       }
     } catch (e) {
       log.error('Error storing payment method in commercetools', { error: e, eventId: event.id });
@@ -1062,19 +1095,33 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param paymentMethod - The Stripe PaymentMethod object to save
    * @param ctCustomerId - The commercetools customer ID
    */
-  private async savePaymentMethodIfNew(paymentMethod: Stripe.PaymentMethod, ctCustomerId: string): Promise<void> {
-    const alreadyExists = await this.ctPaymentMethodService.doesTokenBelongsToCustomer({
-      customerId: ctCustomerId,
-      paymentInterface: getConfig().paymentInterface,
-      tokenValue: paymentMethod.id,
-    });
-
-    if (alreadyExists) {
-      log.info('Payment method already stored for customer', {
-        ctCustomerId,
-        stripePaymentMethod: paymentMethod.id,
+  private async savePaymentMethodIfNew(
+    paymentMethod: Stripe.PaymentMethod,
+    ctCustomerId: string,
+  ): Promise<PaymentMethod> {
+    try {
+      const existingPaymentMethod = await this.ctPaymentMethodService.getByTokenValue({
+        customerId: ctCustomerId,
+        paymentInterface: getConfig().paymentInterface,
+        tokenValue: paymentMethod.id,
       });
-      return;
+
+      if (existingPaymentMethod) {
+        log.info('Payment method already stored for customer', {
+          ctCustomerId,
+          stripePaymentMethod: paymentMethod.id,
+        });
+        return existingPaymentMethod;
+      }
+    } catch (error) {
+      if (error instanceof ErrorResourceNotFound) {
+        log.debug('Payment method does not exist, will create new one', {
+          ctCustomerId,
+          stripePaymentMethod: paymentMethod.id,
+        });
+      } else {
+        throw error;
+      }
     }
 
     const ctPaymentMethod = await this.ctPaymentMethodService.save({
@@ -1089,6 +1136,8 @@ export class StripePaymentService extends AbstractPaymentService {
       ctPaymentMethod: ctPaymentMethod.id,
       stripePaymentMethod: paymentMethod.id,
     });
+
+    return ctPaymentMethod;
   }
 
   /**

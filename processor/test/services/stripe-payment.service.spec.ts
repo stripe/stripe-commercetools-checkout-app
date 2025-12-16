@@ -3,6 +3,7 @@ import { ConfigResponse, ModifyPayment, StatusResponse } from '../../src/service
 import { paymentSDK } from '../../src/payment-sdk';
 import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service';
 import { DefaultCartService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-cart.service';
+import { ErrorResourceNotFound } from '@commercetools/connect-payments-sdk';
 import {
   mockGetPaymentAmount,
   mockGetPaymentResult,
@@ -102,6 +103,7 @@ describe('stripe-payment.service', () => {
     ctPaymentService: paymentSDK.ctPaymentService,
     ctOrderService: paymentSDK.ctOrderService,
     ctPaymentMethodService: paymentSDK.ctPaymentMethodService,
+    ctRecurringPaymentJobService: paymentSDK.ctRecurringPaymentJobService,
   };
   const paymentService: AbstractPaymentService = new StripePaymentService(opts);
   const stripePaymentService: StripePaymentService = new StripePaymentService(opts);
@@ -643,6 +645,7 @@ describe('stripe-payment.service', () => {
         mockClientKey: '',
         mockEnvironment: '',
         sessionUrl: '',
+        checkoutUrl: '',
         stripeApiVersion: '',
         stripeApplePayWellKnown: '',
         stripeLayout: '',
@@ -1466,9 +1469,9 @@ describe('stripe-payment.service', () => {
         },
       } as unknown as Stripe);
 
-      const doesTokenBelongsMock = jest
-        .spyOn(opts.ctPaymentMethodService, 'doesTokenBelongsToCustomer')
-        .mockResolvedValue(false);
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockRejectedValue(new ErrorResourceNotFound('customer_123'));
 
       const savePaymentMethodMock = jest
         .spyOn(opts.ctPaymentMethodService, 'save')
@@ -1478,12 +1481,16 @@ describe('stripe-payment.service', () => {
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
         .mockResolvedValue(mockGetPaymentResult);
 
+      const createRecurringPaymentJobMock = jest
+        .spyOn(opts.ctRecurringPaymentJobService, 'createRecurringPaymentJobIfApplicable')
+        .mockResolvedValue(null);
+
       // When
       await stripePaymentService.storePaymentMethod(mockEvent);
 
       // Then
       expect(stripeApiMock).toHaveBeenCalled();
-      expect(doesTokenBelongsMock).toHaveBeenCalledWith({
+      expect(getByTokenValueMock).toHaveBeenCalledWith({
         customerId: 'customer_123',
         paymentInterface: expect.any(String),
         tokenValue: 'pm_test_123',
@@ -1500,6 +1507,16 @@ describe('stripe-payment.service', () => {
           token: {
             value: 'pm_test_123',
           },
+        },
+      });
+      expect(createRecurringPaymentJobMock).toHaveBeenCalledWith({
+        originPayment: {
+          id: 'payment_123',
+          typeId: 'payment',
+        },
+        paymentMethod: {
+          id: 'ct_pm_123',
+          typeId: 'payment-method',
         },
       });
     });
@@ -1526,15 +1543,20 @@ describe('stripe-payment.service', () => {
         type: 'card',
       } as Stripe.PaymentMethod;
 
+      const mockCtPaymentMethod = {
+        id: 'ct_pm_existing_123',
+        version: 1,
+      };
+
       const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentMethods: {
           retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue(mockPaymentMethod),
         },
       } as unknown as Stripe);
 
-      const doesTokenBelongsMock = jest
-        .spyOn(opts.ctPaymentMethodService, 'doesTokenBelongsToCustomer')
-        .mockResolvedValue(true);
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockResolvedValue(mockCtPaymentMethod as any);
 
       const savePaymentMethodMock = jest.spyOn(opts.ctPaymentMethodService, 'save');
 
@@ -1542,12 +1564,16 @@ describe('stripe-payment.service', () => {
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
         .mockResolvedValue(mockGetPaymentResult);
 
+      const createRecurringPaymentJobMock = jest
+        .spyOn(opts.ctRecurringPaymentJobService, 'createRecurringPaymentJobIfApplicable')
+        .mockResolvedValue(null);
+
       // When
       await stripePaymentService.storePaymentMethod(mockEvent);
 
       // Then
       expect(stripeApiMock).toHaveBeenCalled();
-      expect(doesTokenBelongsMock).toHaveBeenCalled();
+      expect(getByTokenValueMock).toHaveBeenCalled();
       expect(savePaymentMethodMock).not.toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledWith({
         id: 'payment_123',
@@ -1555,6 +1581,16 @@ describe('stripe-payment.service', () => {
           token: {
             value: 'pm_test_123',
           },
+        },
+      });
+      expect(createRecurringPaymentJobMock).toHaveBeenCalledWith({
+        originPayment: {
+          id: 'payment_123',
+          typeId: 'payment',
+        },
+        paymentMethod: {
+          id: 'ct_pm_existing_123',
+          typeId: 'payment-method',
         },
       });
       expect(Logger.log.info).toHaveBeenCalledWith(
@@ -1598,9 +1634,9 @@ describe('stripe-payment.service', () => {
         },
       } as unknown as Stripe);
 
-      const doesTokenBelongsMock = jest
-        .spyOn(opts.ctPaymentMethodService, 'doesTokenBelongsToCustomer')
-        .mockResolvedValue(false);
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockRejectedValue(new ErrorResourceNotFound('customer_123'));
 
       const savePaymentMethodMock = jest
         .spyOn(opts.ctPaymentMethodService, 'save')
@@ -1608,14 +1644,20 @@ describe('stripe-payment.service', () => {
 
       const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment');
 
+      const createRecurringPaymentJobMock = jest.spyOn(
+        opts.ctRecurringPaymentJobService,
+        'createRecurringPaymentJobIfApplicable',
+      );
+
       // When
       await stripePaymentService.storePaymentMethod(mockEvent);
 
       // Then
       expect(stripeApiMock).toHaveBeenCalled();
-      expect(doesTokenBelongsMock).toHaveBeenCalled();
+      expect(getByTokenValueMock).toHaveBeenCalled();
       expect(savePaymentMethodMock).toHaveBeenCalled();
       expect(updatePaymentMock).not.toHaveBeenCalled();
+      expect(createRecurringPaymentJobMock).not.toHaveBeenCalled();
     });
 
     test('should handle errors gracefully and log them', async () => {
