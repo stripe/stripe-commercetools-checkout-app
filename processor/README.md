@@ -75,7 +75,7 @@ Make sure commercetools client credential have at least the following permission
 * `manage_orders`
 * `manage_types`
 * `manage_payment_methods`
-* `manage_checkout_recurring_payment_jobs`
+* `manage_recurring_payment_jobs`
 
 ```
 npm run dev

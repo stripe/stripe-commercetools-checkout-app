@@ -101,7 +101,7 @@ export class StripePaymentService extends AbstractPaymentService {
             'manage_checkout_payment_intents',
             'manage_types',
             'manage_payment_methods',
-            'manage_checkout_recurring_payment_jobs',
+            'manage_recurring_payment_jobs',
           ],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
