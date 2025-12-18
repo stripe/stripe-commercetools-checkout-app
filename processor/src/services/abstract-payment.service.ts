@@ -1,7 +1,9 @@
 import {
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
+  CommercetoolsRecurringPaymentJobService,
   ErrorInvalidOperation,
 } from '@commercetools/connect-payments-sdk';
 import {
@@ -23,15 +25,21 @@ export abstract class AbstractPaymentService {
   protected ctCartService: CommercetoolsCartService;
   protected ctPaymentService: CommercetoolsPaymentService;
   protected ctOrderService: CommercetoolsOrderService;
+  protected ctPaymentMethodService: CommercetoolsPaymentMethodService;
+  protected ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService;
 
   protected constructor(
     ctCartService: CommercetoolsCartService,
     ctPaymentService: CommercetoolsPaymentService,
     ctOrderService: CommercetoolsOrderService,
+    ctPaymentMethodService: CommercetoolsPaymentMethodService,
+    ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService,
   ) {
     this.ctCartService = ctCartService;
     this.ctPaymentService = ctPaymentService;
     this.ctOrderService = ctOrderService;
+    this.ctPaymentMethodService = ctPaymentMethodService;
+    this.ctRecurringPaymentJobService = ctRecurringPaymentJobService;
   }
 
   /**

@@ -138,10 +138,15 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
 
       switch (event.type) {
         case StripeEvent.PAYMENT_INTENT__SUCCEEDED:
+        case StripeEvent.CHARGE__SUCCEEDED:
+          log.info(`Received: ${event.type} event of ${event.data.object.id}`);
+          await opts.paymentService.processStripeEvent(event);
+          // Stores payment method in commercetools if customer opted-in during checkout
+          await opts.paymentService.storePaymentMethod(event);
+          break;
         case StripeEvent.PAYMENT_INTENT__CANCELED:
         case StripeEvent.PAYMENT_INTENT__REQUIRED_ACTION:
         case StripeEvent.PAYMENT_INTENT__PAYMENT_FAILED:
-        case StripeEvent.CHARGE__SUCCEEDED:
           log.info(`Received: ${event.type} event of ${event.data.object.id}`);
           await opts.paymentService.processStripeEvent(event);
           break;

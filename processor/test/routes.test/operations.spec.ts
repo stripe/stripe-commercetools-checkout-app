@@ -5,6 +5,7 @@ import {
   AuthorityAuthorizationManager,
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
   ContextProvider,
   JWTAuthenticationHook,
@@ -79,6 +80,7 @@ describe('/operations APIs', () => {
     ctCartService: jest.fn() as unknown as CommercetoolsCartService,
     ctPaymentService: jest.fn() as unknown as CommercetoolsPaymentService,
     ctOrderService: jest.fn() as unknown as CommercetoolsOrderService,
+    ctPaymentMethodService: jest.fn() as unknown as CommercetoolsPaymentMethodService,
   });
 
   beforeAll(async () => {

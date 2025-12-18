@@ -71,9 +71,11 @@ Make sure commercetools client credential have at least the following permission
 * `manage_checkout_payment_intents`
 * `view_sessions`
 * `introspect_oauth_tokens`
-* 'view_api_clients'
-* 'manage_orders'
-* 'manage_types'
+* `view_api_clients`
+* `manage_orders`
+* `manage_types`
+* `manage_payment_methods`
+* `manage_recurring_payment_jobs`
 
 ```
 npm run dev
@@ -105,7 +107,7 @@ Authorization: Bearer <oauth token with manage_sessions scope>
   },
   "metadata": {
     "allowedPaymentMethods": ["card", "ideal", ...],
-    "paymentInterface"?: "<payment interface that will be set on payment method info https://docs.commercetools.com/api/projects/payments#ctp:api:type:PaymentMethodInfo>"
+    "checkoutTransactionItemId"?: "<commercetools Checkout reference that will be set on the payment>"
   }
 }
 ```

@@ -175,6 +175,10 @@ deployAs:
           description: Session API URL (example - https://session.europe-west1.gcp.commercetools.com).
           required: true
           default: https://session.europe-west1.gcp.commercetools.com
+        - key: CTP_CHECKOUT_URL
+          description: Checkout API URL (example - https://checkout.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://checkout.europe-west1.gcp.commercetools.com
         - key: CTP_JWKS_URL
           description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
           required: true
@@ -205,6 +209,9 @@ deployAs:
         - key: MERCHANT_RETURN_URL
           description: Merchant return URL
           required: true
+        - key: PAYMENT_INTERFACE
+          description: The payment interface value used in the commercetools payment/payment methods. Default value is "checkout-stripe".
+          required: false
         - key: STRIPE_COLLECT_BILLING_ADDRESS
           description: Stripe collect billing address information (example - 'auto' | 'never' | 'if_required').
           default: 'auto'
@@ -248,6 +255,8 @@ Here, you can see the details about various variables in the configuration
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can find more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association).
 - `MERCHANT_RETURN_URL`: Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the URL; the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`. 
 - `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default. To enable it, you need to add the expected customer session object. Default value is `{"payment_method_save":"disabled"}`
+  
+  **Important**: When using commercetools Recurring Orders, this configuration will be automatically overridden to enable payment method storage. Recurring payment workflows require the payment method to be saved for future charges, so the connector will set `payment_method_save_usage` to `"off_session"` regardless of your configuration. This ensures compatibility with recurring order processing and future subscription charges.
 - `STRIPE_COLLECT_SHIPPING_ADDRESS`: Stripe allows you to collect the shipping address in the Payment Element. If you want to collect the shipping address, you need to set this value to `never`. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
 - `STRIPE_ENABLE_MULTI_OPERATIONS`: Opt-in feature flag to enable advanced multicapture and multirefund support. When set to `true`, enables processing of multiple partial captures and refunds on a single payment intent. Default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account settings. See [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing) for implementation details.
 

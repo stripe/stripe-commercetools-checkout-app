@@ -3,6 +3,7 @@ import { ConfigResponse, ModifyPayment, StatusResponse } from '../../src/service
 import { paymentSDK } from '../../src/payment-sdk';
 import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service';
 import { DefaultCartService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-cart.service';
+import { ErrorResourceNotFound } from '@commercetools/connect-payments-sdk';
 import {
   mockGetPaymentAmount,
   mockGetPaymentResult,
@@ -101,6 +102,8 @@ describe('stripe-payment.service', () => {
     ctCartService: paymentSDK.ctCartService,
     ctPaymentService: paymentSDK.ctPaymentService,
     ctOrderService: paymentSDK.ctOrderService,
+    ctPaymentMethodService: paymentSDK.ctPaymentMethodService,
+    ctRecurringPaymentJobService: paymentSDK.ctRecurringPaymentJobService,
   };
   const paymentService: AbstractPaymentService = new StripePaymentService(opts);
   const stripePaymentService: StripePaymentService = new StripePaymentService(opts);
@@ -642,6 +645,7 @@ describe('stripe-payment.service', () => {
         mockClientKey: '',
         mockEnvironment: '',
         sessionUrl: '',
+        checkoutUrl: '',
         stripeApiVersion: '',
         stripeApplePayWellKnown: '',
         stripeLayout: '',
@@ -655,6 +659,7 @@ describe('stripe-payment.service', () => {
         stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
         stripeCollectBillingAddress: 'never',
         stripeEnableMultiOperations: false,
+        paymentInterface: 'checkout-stripe',
       });
 
       const getCartMock = jest
@@ -1217,15 +1222,17 @@ describe('stripe-payment.service', () => {
       Stripe.prototype.customerSessions = {
         create: jest.fn(),
       } as unknown as Stripe.CustomerSessionsResource;
+      const isRecurringCartMock = jest.spyOn(DefaultCartService.prototype, 'isRecurringCart').mockReturnValue(false);
       const mockCreateCustomer = jest
         .spyOn(Stripe.prototype.customerSessions, 'create')
         .mockReturnValue(Promise.resolve(mockCreateSessionResult));
 
-      const result = await stripePaymentService.createSession(mockStripeCustomerId);
+      const result = await stripePaymentService.createSession(mockStripeCustomerId, mockGetCartResult());
 
       expect(result).toStrictEqual(mockCreateSessionResult);
       expect(result).toBeDefined();
       expect(mockCreateCustomer).toHaveBeenCalled();
+      expect(isRecurringCartMock).toHaveBeenCalled();
     });
   });
 
@@ -1331,6 +1338,364 @@ describe('stripe-payment.service', () => {
       expect(getCustomFieldUpdateActionsMock).toHaveBeenCalled();
       expect(updateCustomerByIdMock).toHaveBeenCalled();
       expect(Logger.log.info).toHaveBeenCalled();
+    });
+  });
+
+  describe('method storePaymentMethod', () => {
+    test('should skip storage when event has no payment method', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: null,
+            metadata: {
+              ct_customer_id: 'customer_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then - should log skip message and not call any Stripe or CT methods
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'No payment method or customer ID found in event metadata, skipping storage.',
+        expect.objectContaining({
+          eventId: mockEvent.id,
+        }),
+      );
+    });
+
+    test('should skip storage when event has no commercetools customer', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: null,
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then - should log skip message and not call any Stripe or CT methods
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'No payment method or customer ID found in event metadata, skipping storage.',
+        expect.objectContaining({
+          eventId: mockEvent.id,
+        }),
+      );
+    });
+
+    test('should skip storage when Stripe payment method is not attached to a customer', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: 'customer_123',
+              ct_payment_id: 'payment_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      const mockPaymentMethod = {
+        id: 'pm_test_123',
+        customer: null,
+      } as Stripe.PaymentMethod;
+
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentMethods: {
+          retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue(mockPaymentMethod),
+        },
+      } as unknown as Stripe);
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'Stripe payment method not attached to a customer, skipping storage',
+        expect.objectContaining({
+          paymentMethodId: 'pm_test_123',
+        }),
+      );
+    });
+
+    test('should store new payment method successfully', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: 'customer_123',
+              ct_payment_id: 'payment_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      const mockPaymentMethod = {
+        id: 'pm_test_123',
+        customer: 'cus_test_123',
+        type: 'card',
+      } as Stripe.PaymentMethod;
+
+      const mockCtPaymentMethod = {
+        id: 'ct_pm_123',
+        version: 1,
+      };
+
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentMethods: {
+          retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue(mockPaymentMethod),
+        },
+      } as unknown as Stripe);
+
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockRejectedValue(new ErrorResourceNotFound('customer_123'));
+
+      const savePaymentMethodMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'save')
+        .mockResolvedValue(mockCtPaymentMethod as any);
+
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockResolvedValue(mockGetPaymentResult);
+
+      const createRecurringPaymentJobMock = jest
+        .spyOn(opts.ctRecurringPaymentJobService, 'createRecurringPaymentJobIfApplicable')
+        .mockResolvedValue(null);
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(getByTokenValueMock).toHaveBeenCalledWith({
+        customerId: 'customer_123',
+        paymentInterface: expect.any(String),
+        tokenValue: 'pm_test_123',
+      });
+      expect(savePaymentMethodMock).toHaveBeenCalledWith({
+        customerId: 'customer_123',
+        paymentInterface: expect.any(String),
+        token: 'pm_test_123',
+        method: 'card',
+      });
+      expect(updatePaymentMock).toHaveBeenCalledWith({
+        id: 'payment_123',
+        paymentMethodInfo: {
+          token: {
+            value: 'pm_test_123',
+          },
+        },
+      });
+      expect(createRecurringPaymentJobMock).toHaveBeenCalledWith({
+        originPayment: {
+          id: 'payment_123',
+          typeId: 'payment',
+        },
+        paymentMethod: {
+          id: 'ct_pm_123',
+          typeId: 'payment-method',
+        },
+      });
+    });
+
+    test('should skip saving when payment method already exists', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'charge.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: 'customer_123',
+              ct_payment_id: 'payment_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      const mockPaymentMethod = {
+        id: 'pm_test_123',
+        customer: 'cus_test_123',
+        type: 'card',
+      } as Stripe.PaymentMethod;
+
+      const mockCtPaymentMethod = {
+        id: 'ct_pm_existing_123',
+        version: 1,
+      };
+
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentMethods: {
+          retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue(mockPaymentMethod),
+        },
+      } as unknown as Stripe);
+
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockResolvedValue(mockCtPaymentMethod as any);
+
+      const savePaymentMethodMock = jest.spyOn(opts.ctPaymentMethodService, 'save');
+
+      const updatePaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockResolvedValue(mockGetPaymentResult);
+
+      const createRecurringPaymentJobMock = jest
+        .spyOn(opts.ctRecurringPaymentJobService, 'createRecurringPaymentJobIfApplicable')
+        .mockResolvedValue(null);
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(getByTokenValueMock).toHaveBeenCalled();
+      expect(savePaymentMethodMock).not.toHaveBeenCalled();
+      expect(updatePaymentMock).toHaveBeenCalledWith({
+        id: 'payment_123',
+        paymentMethodInfo: {
+          token: {
+            value: 'pm_test_123',
+          },
+        },
+      });
+      expect(createRecurringPaymentJobMock).toHaveBeenCalledWith({
+        originPayment: {
+          id: 'payment_123',
+          typeId: 'payment',
+        },
+        paymentMethod: {
+          id: 'ct_pm_existing_123',
+          typeId: 'payment-method',
+        },
+      });
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'Payment method already stored for customer',
+        expect.objectContaining({
+          ctCustomerId: 'customer_123',
+          stripePaymentMethod: 'pm_test_123',
+        }),
+      );
+    });
+
+    test('should store payment method without updating payment when ctPaymentId is not present', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: 'customer_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      const mockPaymentMethod = {
+        id: 'pm_test_123',
+        customer: 'cus_test_123',
+        type: 'card',
+      } as Stripe.PaymentMethod;
+
+      const mockCtPaymentMethod = {
+        id: 'ct_pm_123',
+        version: 1,
+      };
+
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentMethods: {
+          retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue(mockPaymentMethod),
+        },
+      } as unknown as Stripe);
+
+      const getByTokenValueMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'getByTokenValue')
+        .mockRejectedValue(new ErrorResourceNotFound('customer_123'));
+
+      const savePaymentMethodMock = jest
+        .spyOn(opts.ctPaymentMethodService, 'save')
+        .mockResolvedValue(mockCtPaymentMethod as any);
+
+      const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment');
+
+      const createRecurringPaymentJobMock = jest.spyOn(
+        opts.ctRecurringPaymentJobService,
+        'createRecurringPaymentJobIfApplicable',
+      );
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(getByTokenValueMock).toHaveBeenCalled();
+      expect(savePaymentMethodMock).toHaveBeenCalled();
+      expect(updatePaymentMock).not.toHaveBeenCalled();
+      expect(createRecurringPaymentJobMock).not.toHaveBeenCalled();
+    });
+
+    test('should handle errors gracefully and log them', async () => {
+      // Given
+      const mockEvent = {
+        id: 'evt_test_123',
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            payment_method: 'pm_test_123',
+            metadata: {
+              ct_customer_id: 'customer_123',
+              ct_payment_id: 'payment_123',
+            },
+          },
+        },
+      } as unknown as Stripe.Event;
+
+      const error = new Error('Stripe API error');
+
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentMethods: {
+          retrieve: jest.fn<() => Promise<Stripe.PaymentMethod>>().mockRejectedValue(error),
+        },
+      } as unknown as Stripe);
+
+      // When
+      await stripePaymentService.storePaymentMethod(mockEvent);
+
+      // Then
+      expect(stripeApiMock).toHaveBeenCalled();
+      expect(Logger.log.error).toHaveBeenCalledWith(
+        'Error storing payment method in commercetools',
+        expect.objectContaining({
+          error,
+          eventId: 'evt_test_123',
+        }),
+      );
     });
   });
 });

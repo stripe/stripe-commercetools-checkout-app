@@ -1,4 +1,4 @@
-import { Type, TypeDraft, TypeUpdateAction } from '@commercetools/platform-sdk';
+import { Type, TypeDraft, TypeUpdateAction } from '@commercetools/connect-payments-sdk';
 import { KeyAndVersion } from './customTypeHelper';
 import { paymentSDK } from '../../payment-sdk';
 

@@ -54,6 +54,11 @@ export const getPaymentInterfaceFromContext = (): string | undefined => {
   return authentication?.getPrincipal().paymentInterface;
 };
 
+export const getCheckoutTransactionItemIdFromContext = (): string | undefined => {
+  const authentication = getRequestContext().authentication as SessionAuthentication;
+  return authentication?.getPrincipal().checkoutTransactionItemId;
+};
+
 export const getProcessorUrlFromContext = (): string => {
   const authentication = getRequestContext().authentication as SessionAuthentication;
   return authentication?.getPrincipal().processorUrl;
