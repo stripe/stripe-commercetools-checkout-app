@@ -33,6 +33,21 @@ type StripeRoutesOptions = {
   paymentService: StripePaymentService;
   stripeHeaderAuthHook: StripeHeaderAuthHook;
 };
+const getRegionFromRequest = (request: any): 'US' | 'CA' | 'EU' => {
+  const header = (request.headers['x-gmsb-region'] as string)?.toUpperCase();
+  if (header === 'CA') return 'CA';
+  if (header === 'EU') return 'EU';
+  return 'US'; // default
+};
+const getRegionFromWebhookSecret = (): 'US' | 'CA' | 'EU' => {
+  const secret = getConfig().stripeWebhookSigningSecret;
+ 
+  if (secret === getConfig().stripeSecretKeyUS) return 'US';
+  if (secret === getConfig().stripeSecretKeyCA) return 'CA';
+  if (secret === getConfig().stripeSecretKeyEU) return 'EU';
+ 
+  throw new Error('Unable to determine Stripe region from webhook secret');
+};
 
 export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
   fastify.get<{ Reply: CustomerResponseSchemaDTO }>(
@@ -71,10 +86,12 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
         },
       },
     },
-    async (_, reply) => {
-      const resp = await opts.paymentService.createPaymentIntentStripe();
-      return reply.status(200).send(resp);
-    },
+async (request, reply) => {
+  const region = getRegionFromRequest(request);
+  (request as any).stripeRegion = region;
+  const resp = await opts.paymentService.createPaymentIntentStripe();
+  return reply.status(200).send(resp);
+},
   );
   fastify.post<{
     Body: PaymentIntenConfirmRequestSchemaDTO;
@@ -99,16 +116,25 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
         },
       },
     },
-    async (request, reply) => {
-      const { id } = request.params; // paymentReference
-      try {
-        await opts.paymentService.updatePaymentIntentStripeSuccessful(request.body.paymentIntent, id);
-
-        return reply.status(200).send({ outcome: PaymentModificationStatus.APPROVED });
-      } catch (error) {
-        return reply.status(400).send({ outcome: PaymentModificationStatus.REJECTED, error: JSON.stringify(error) });
-      }
-    },
+async (request, reply) => {
+  const { id } = request.params;
+  const region = getRegionFromRequest(request);
+ 
+  try {
+    await opts.paymentService.updatePaymentIntentStripeSuccessful(
+      request.body.paymentIntent,
+      id,
+      region
+    );
+ 
+    return reply.status(200).send({ outcome: PaymentModificationStatus.APPROVED });
+  } catch (error) {
+    return reply.status(400).send({
+      outcome: PaymentModificationStatus.REJECTED,
+      error: JSON.stringify(error),
+    });
+  }
+},
   );
 };
 
@@ -125,11 +151,13 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
       let event: Stripe.Event;
 
       try {
-        event = await stripeApi().webhooks.constructEvent(
-          request.rawBody as string,
-          signature,
-          getConfig().stripeWebhookSigningSecret,
-        );
+        const region = getRegionFromWebhookSecret();
+ 
+event = await stripeApi(region).webhooks.constructEvent(
+  request.rawBody as string,
+  signature,
+  getConfig().stripeWebhookSigningSecret,
+);
       } catch (error) {
         const err = error as Error;
         log.error(JSON.stringify(err));
@@ -201,6 +229,8 @@ export const configElementRoutes = async (
     },
     async (request, reply) => {
       const { paymentComponent } = request.params;
+      const region = getRegionFromRequest(request);
+      (request as any).stripeRegion = region;
       const resp = await opts.paymentService.initializeCartPayment(paymentComponent);
 
       return reply.status(200).send(resp);

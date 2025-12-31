@@ -74,9 +74,16 @@ deployAs:
         - key: CTP_CLIENT_ID
           description: commercetools client ID with manage_payments, manage_orders, view_sessions, view_api_clients, manage_checkout_payment_intents, introspect_oauth_tokens, manage_types and view_types scopes
           required: true
-        - key: STRIPE_SECRET_KEY
-          description: Stripe secret key (example - sk_*****).
+        - key: STRIPE_SECRET_KEY_US
+          description: Stripe secret key for US region (sk_test_*)
+          required: true
+        - key: STRIPE_SECRET_KEY_CA
+          description: Stripe secret key for CA region (sk_test_*)
+          required: true 
+        - key: STRIPE_SECRET_KEY_EU
+          description: Stripe secret key for EU region (sk_test_*)
           required: true
         - key: STRIPE_WEBHOOK_SIGNING_SECRET
           description: Stripe Webhook signing secret  (example - whsec_*****).
           required: true
+        

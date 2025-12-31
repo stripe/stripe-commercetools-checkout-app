@@ -48,6 +48,7 @@ import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTy
 import { isValidUUID } from '../utils';
 import { updateCustomerById } from '../services/commerce-tools/customerClient';
 
+
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
 
@@ -70,6 +71,18 @@ export class StripePaymentService extends AbstractPaymentService {
    *
    * @returns Promise with mocking object containing configuration information
    */
+  private getStripe(): Stripe {
+  /**
+   * Region resolution strategy:
+   * 1. Read region from request context (set by route)
+   * 2. Default to US
+   */
+  const region =
+    (getConfig() as any).requestRegion ??
+    'US';
+ 
+  return stripeApi(region);
+}
   public async config(): Promise<ConfigResponse> {
     const config = getConfig();
     return {
@@ -108,7 +121,7 @@ export class StripePaymentService extends AbstractPaymentService {
         }),
         async () => {
           try {
-            const paymentMethods = await stripeApi().paymentMethods.list({
+            const paymentMethods = await this.getStripe().paymentMethods.list({
               limit: 3,
             });
             return {
@@ -176,7 +189,7 @@ export class StripePaymentService extends AbstractPaymentService {
       const config = getConfig();
       const paymentIntentId = request.payment.interfaceId as string;
       const amountToBeCaptured = request.amount.centAmount;
-      const stripePaymentIntent: Stripe.PaymentIntent = await stripeApi().paymentIntents.retrieve(paymentIntentId);
+      const stripePaymentIntent: Stripe.PaymentIntent = await this.getStripe().paymentIntents.retrieve(paymentIntentId);
 
       if (!request.payment.amountPlanned.centAmount) {
         throw new Error('Payment amount is not set');
@@ -198,7 +211,7 @@ export class StripePaymentService extends AbstractPaymentService {
         );
       }
 
-      const response = await stripeApi().paymentIntents.capture(paymentIntentId, {
+      const response = await this.getStripe().paymentIntents.capture(paymentIntentId, {
         amount_to_capture: amountToBeCaptured,
         ...(isPartialCapture &&
           config.stripeEnableMultiOperations && {
@@ -237,7 +250,7 @@ export class StripePaymentService extends AbstractPaymentService {
   public async cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse> {
     try {
       const paymentIntentId = request.payment.interfaceId as string;
-      const response = await stripeApi().paymentIntents.cancel(paymentIntentId);
+      const response = await this.getStripe().paymentIntents.cancel(paymentIntentId);
 
       log.info(`Payment modification completed.`, {
         paymentId: paymentIntentId,
@@ -290,7 +303,7 @@ export class StripePaymentService extends AbstractPaymentService {
         });
       }
 
-      const response = await stripeApi().refunds.create({
+      const response = await this.getStripe().refunds.create({
         payment_intent: paymentIntentId,
         amount: amount,
       });
@@ -427,7 +440,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      paymentIntent = await stripeApi().paymentIntents.create(
+      paymentIntent = await this.getStripe().paymentIntents.create(
         {
           ...(stripeCustomerId && {
             customer: stripeCustomerId,
@@ -516,7 +529,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      await stripeApi().paymentIntents.update(
+      await this.getStripe().paymentIntents.update(
         paymentIntent.id,
         {
           metadata: {
@@ -549,7 +562,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {string} paymentReference - The identifier of the payment associated with the PaymentIntent in Stripe.
    * @return {Promise<void>} - A Promise that resolves when the PaymentIntent is successfully updated.
    */
-  public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string): Promise<void> {
+  public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string,region: 'US' | 'CA' | 'EU'): Promise<void> {
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
     });
@@ -660,7 +673,7 @@ export class StripePaymentService extends AbstractPaymentService {
           pi.payment_method_options?.card?.request_multicapture === 'if_available' &&
           typeof pi.latest_charge === 'string'
         ) {
-          const balanceTransactions = await stripeApi().balanceTransactions.list({
+          const balanceTransactions = await this.getStripe().balanceTransactions.list({
             source: pi.latest_charge,
             limit: 10,
           });
@@ -727,7 +740,7 @@ export class StripePaymentService extends AbstractPaymentService {
       }
 
       const { stripePaymentMethodId, ctCustomerId, ctPaymentId } = eventData;
-      const paymentMethod = await stripeApi().paymentMethods.retrieve(stripePaymentMethodId);
+      const paymentMethod = await this.getStripe().paymentMethods.retrieve(stripePaymentMethodId);
 
       if (!paymentMethod.customer) {
         log.info('Stripe payment method not attached to a customer, skipping storage', {
@@ -775,7 +788,7 @@ export class StripePaymentService extends AbstractPaymentService {
     try {
       const updateData = this.stripeEventConverter.convert(event);
       const charge = event.data.object as Stripe.Charge;
-      const refunds = await stripeApi().refunds.list({
+      const refunds = await this.getStripe().refunds.list({
         charge: charge.id,
         created: {
           gte: charge.created,
@@ -892,7 +905,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
   public async validateStripeCustomerId(stripeCustomerId: string, ctCustomerId: string): Promise<boolean> {
     try {
-      const customer = await stripeApi().customers.retrieve(stripeCustomerId);
+      const customer = await this.getStripe().customers.retrieve(stripeCustomerId);
       return Boolean(customer && !customer.deleted && customer.metadata?.ct_customer_id === ctCustomerId);
     } catch (e) {
       log.warn('Error validating Stripe customer ID', { error: e });
@@ -907,7 +920,7 @@ export class StripePaymentService extends AbstractPaymentService {
         throw 'Invalid ctCustomerId: Not a valid UUID';
       }
       const query = `metadata['ct_customer_id']:'${ctCustomerId}'`;
-      const customer = await stripeApi().customers.search({ query });
+      const customer = await this.getStripe().customers.search({ query });
 
       return customer.data[0];
     } catch (e) {
@@ -919,7 +932,7 @@ export class StripePaymentService extends AbstractPaymentService {
   public async createStripeCustomer(cart: Cart, customer: Customer): Promise<Stripe.Customer | undefined> {
     const shippingAddress = this.getStripeCustomerAddress(customer.addresses[0], cart.shippingAddress);
     const email = cart.customerEmail || customer.email || cart.shippingAddress?.email;
-    return await stripeApi().customers.create({
+    return await this.getStripe().customers.create({
       email,
       name: `${customer.firstName} ${customer.lastName}`.trim() || shippingAddress?.name,
       phone: shippingAddress?.phone,
@@ -951,7 +964,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
   public async createSession(stripeCustomerId: string, cart: Cart): Promise<Stripe.CustomerSession | undefined> {
     const paymentConfig = getConfig().stripeSavedPaymentMethodConfig;
-    const session = await stripeApi().customerSessions.create({
+    const session = await this.getStripe().customerSessions.create({
       customer: stripeCustomerId,
       components: {
         payment_element: {
@@ -972,7 +985,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
   public async createEphemeralKey(stripeCustomerId: string) {
     const config = getConfig();
-    const stripe = stripeApi();
+    const stripe = this.getStripe();
     const res = await stripe.ephemeralKeys.create(
       { customer: stripeCustomerId },
       { apiVersion: config.stripeApiVersion },

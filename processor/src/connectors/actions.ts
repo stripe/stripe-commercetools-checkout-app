@@ -15,7 +15,8 @@ import {
   getProductTypeByKey,
 } from '../services/commerce-tools/productTypeClient';
 import { getTypeByKey } from '../services/commerce-tools/customTypeClient';
-
+import { StripeRegion } from '../clients/stripe.client';
+const CONNECTOR_REGION: StripeRegion = 'US';
 export async function handleRequest({
   loggerId,
   startMessage,
@@ -49,7 +50,7 @@ export async function retrieveWebhookEndpoint(weId: string): Promise<Stripe.Webh
   log.info(`[RETRIEVE_WEBHOOK_ENDPOINT] Starting the process for retrieving webhook endpoint[${weId}].`);
 
   try {
-    return await stripeApi().webhookEndpoints.retrieve(weId);
+    return await stripeApi(CONNECTOR_REGION).webhookEndpoints.retrieve(weId);
   } catch (error) {
     log.error('[RETRIEVE_WEBHOOK_ENDPOINT]', error);
   }
@@ -61,7 +62,7 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
   );
 
   try {
-    await stripeApi().webhookEndpoints.update(weId, {
+    await stripeApi(CONNECTOR_REGION).webhookEndpoints.update(weId, {
       enabled_events: [
         'charge.succeeded',
         'charge.updated',
