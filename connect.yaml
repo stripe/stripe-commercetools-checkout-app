@@ -46,8 +46,14 @@ deployAs:
         - key: STRIPE_LAYOUT
           description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
           default: '{"type":"tabs","defaultCollapsed":false}'
-        - key: STRIPE_PUBLISHABLE_KEY
-          description: Stripe Publishable Key
+        - key: STRIPE_PUBLISHABLE_KEY_US
+          description: Stripe secret key for US region (sk_test_*)
+          required: true
+        - key: STRIPE_PUBLISHABLE_KEY_CA
+          description: Stripe secret key for CA region (sk_test_*)
+          required: true
+        - key: STRIPE_PUBLISHABLE_KEY_EU
+          description: Stripe secret key for EU region (sk_test_*)
           required: true
         - key: STRIPE_APPLE_PAY_WELL_KNOWN
           description: Domain association file from Stripe. (example - https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
