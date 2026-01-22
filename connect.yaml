@@ -83,7 +83,13 @@ deployAs:
         - key: STRIPE_SECRET_KEY_EU
           description: Stripe secret key for EU region (sk_test_*)
           required: true
-        - key: STRIPE_WEBHOOK_SIGNING_SECRET
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_US
+          description: Stripe Webhook signing secret  (example - whsec_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_CA
+          description: Stripe Webhook signing secret  (example - whsec_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_EU
           description: Stripe Webhook signing secret  (example - whsec_*****).
           required: true
         
