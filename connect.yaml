@@ -38,7 +38,13 @@ deployAs:
         - key: STRIPE_CAPTURE_METHOD
           description: Stripe capture method (example - manual|automatic).
           default: automatic
-        - key: STRIPE_WEBHOOK_ID
+        - key: STRIPE_WEBHOOK_ID_US
+          description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_ID_CA
+          description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_ID_EU
           description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
           required: true
         - key: STRIPE_APPEARANCE_PAYMENT_ELEMENT
@@ -47,13 +53,13 @@ deployAs:
           description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
           default: '{"type":"tabs","defaultCollapsed":false}'
         - key: STRIPE_PUBLISHABLE_KEY_US
-          description: Stripe secret key for US region (sk_test_*)
+          description: Stripe Publishable Key
           required: true
         - key: STRIPE_PUBLISHABLE_KEY_CA
-          description: Stripe secret key for CA region (sk_test_*)
+          description: Stripe Publishable Key
           required: true
         - key: STRIPE_PUBLISHABLE_KEY_EU
-          description: Stripe secret key for EU region (sk_test_*)
+          description: Stripe Publishable Key
           required: true
         - key: STRIPE_APPLE_PAY_WELL_KNOWN
           description: Domain association file from Stripe. (example - https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association)
@@ -98,4 +104,3 @@ deployAs:
         - key: STRIPE_WEBHOOK_SIGNING_SECRET_EU
           description: Stripe Webhook signing secret  (example - whsec_*****).
           required: true
-        
