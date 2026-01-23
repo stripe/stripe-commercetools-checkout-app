@@ -17,11 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `processStripeEventMultipleCaptured` method for handling `charge.updated` webhook events
 - Enhanced `capturePayment` method with partial capture logic and `final_capture` parameter support
 - Balance transaction tracking for accurate multicapture amount calculations
+- New `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable to override setup_future_usage independently from Customer Session configuration
+- **Stripe Tax Calculation Integration**: Support for automatic tax calculations on payment intents via cart custom field `connectorStripeTax_calculationReferences`
+- **Configurable Custom Type Keys**: New environment variables for customizing commercetools type keys:
+  - `CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY`: Custom type key for launchpad purchase order number
+  - `CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY`: Custom type key for Stripe customer ID storage
+  - `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY`: Custom type key for subscription line items
+  - `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY`: Product type key for subscription information
 
 ### Changed
 - Updated webhook handling to use dedicated method for `charge.refunded` events
 - Improved refund transaction updates with correct refund IDs and amounts
 - Enhanced error handling and logging for refund processing
+- **Updated dependencies** to latest versions:
+  - `stripe` to ^20.1.0 (with default API version `2025-12-15.clover`)
+  - `@commercetools/connect-payments-sdk` to 0.24.0
+  - `fastify` to 5.6.1
+  - `@stripe/stripe-js` to ^5.6.0
+  - `typescript` to 5.9.2
+  - `jest` to 30.x
 - **Simplified payment cancellation logic** - Removed redundant `updatePayment` call during payment cancellation in StripePaymentService
 - **Enhanced event amount handling** - Updated canceled payment events to use proper amount values instead of zero
 - **Improved API response handling** - Payment cancellation now returns Stripe API response ID instead of payment intent ID

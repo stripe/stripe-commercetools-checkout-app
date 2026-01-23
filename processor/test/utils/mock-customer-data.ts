@@ -31,6 +31,7 @@ export const mockCreateSessionResult: Stripe.Response<Stripe.CustomerSession> = 
   created: 1687991030,
   livemode: false,
   customer: 'cus_Example',
+  customer_account: null,
   expires_at: 1687991030,
   object: 'customer_session',
   lastResponse,

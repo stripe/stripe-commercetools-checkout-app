@@ -107,6 +107,12 @@ describe('/operations APIs', () => {
 
   describe('GET /operations/config', () => {
     test('it should return the Stripe client config', async () => {
+      //Given
+      jest.spyOn(spiedPaymentService, 'config').mockResolvedValue({
+        environment: 'TEST',
+        publishableKey: '',
+      });
+
       //When
       const responseGetConfig = await app.inject({
         method: 'GET',

@@ -45,6 +45,7 @@ import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTy
 import { Address } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/common';
 import { isValidUUID } from '../utils';
 import { updateCustomerById } from '../services/commerce-tools/customerClient';
+import { CT_CUSTOM_FIELD_TAX_CALCULATIONS } from '../constants';
 
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
@@ -398,6 +399,44 @@ export class StripePaymentService extends AbstractPaymentService {
   }
 
   /**
+   * Determines the setup_future_usage value for PaymentIntent creation based on configurations.
+   * @returns The setup_future_usage value to use in PaymentIntent, or undefined to not include it
+   */
+  private getPaymentIntentSetupFutureUsage(): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
+    const config = getConfig();
+    const overrideValue = config.stripePaymentIntentSetupFutureUsage;
+
+    // If override is not set, use default behavior (current behavior for existing users)
+    if (overrideValue === undefined) {
+      return config.stripeSavedPaymentMethodConfig?.payment_method_save_usage as
+        Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+    }
+
+    // Normalize the value (trim and lowercase for comparison)
+    const normalizedValue = overrideValue.trim().toLowerCase();
+
+    // Empty string, 'none', 'null', or 'undefined' means don't include setup_future_usage
+    if (normalizedValue === '' || normalizedValue === 'none' || normalizedValue === 'null' || normalizedValue === 'undefined') {
+      log.info('PaymentIntent setup_future_usage is disabled by configuration');
+      return undefined;
+    }
+
+    // Return the override value if it's a valid option
+    if (normalizedValue === 'off_session' || normalizedValue === 'on_session') {
+      return normalizedValue as Stripe.PaymentIntentCreateParams.SetupFutureUsage;
+    }
+
+    // Invalid value: log warning and fall back to default behavior
+    log.warn('Invalid STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE value, using default behavior', {
+      value: overrideValue,
+      validValues: ['', 'none', 'null', 'undefined', 'off_session', 'on_session'],
+    });
+
+    return config.stripeSavedPaymentMethodConfig?.payment_method_save_usage as
+      Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+  }
+
+  /**
    * Creates a payment intent using the Stripe API and create commercetools payment with Initial transaction.
    *
    * @return Promise<PaymentResponseSchemaDTO> A Promise that resolves to a PaymentResponseSchemaDTO object containing the client secret and payment reference.
@@ -410,8 +449,14 @@ export class StripePaymentService extends AbstractPaymentService {
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const captureMethodConfig = config.stripeCaptureMethod;
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
-    const setupFutureUsage = config.stripeSavedPaymentMethodConfig?.payment_method_save_usage;
+    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage();
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
+
+    // Tax calculation integration
+    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
+    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
+    const hasSingleTaxCalculation = taxCalculationCount === 1;
+    const hasTaxCalculations = taxCalculationCount > 0;
 
     let paymentIntent!: Stripe.PaymentIntent;
 
@@ -421,7 +466,7 @@ export class StripePaymentService extends AbstractPaymentService {
         {
           ...(stripeCustomerId && {
             customer: stripeCustomerId,
-            setup_future_usage: setupFutureUsage,
+            ...(setupFutureUsage && { setup_future_usage: setupFutureUsage }),
           }),
           amount: amountPlanned.centAmount,
           currency: amountPlanned.currencyCode,
@@ -442,6 +487,16 @@ export class StripePaymentService extends AbstractPaymentService {
               }),
             },
           },
+          // Tax calculation integration
+          ...(hasSingleTaxCalculation && {
+            hooks: {
+              inputs: {
+                tax: {
+                  calculation: taxCalculationReferences![0],
+                },
+              },
+            },
+          }),
         },
         {
           idempotencyKey,
@@ -454,6 +509,11 @@ export class StripePaymentService extends AbstractPaymentService {
     log.info(`Stripe PaymentIntent created.`, {
       ctCartId: ctCart.id,
       stripePaymentIntentId: paymentIntent.id,
+      // Tax calculation integration
+      ...(hasTaxCalculations && {
+        hasTaxCalculations,
+        taxCalculationCount
+      })
     });
 
     const ctPayment = await this.ctPaymentService.createPayment({
@@ -583,7 +643,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const appearance = stripePaymentElementAppearance;
-    const setupFutureUsage = stripeSavedPaymentMethodConfig.payment_method_save_usage!;
+    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage();
 
     log.info(`Cart and Stripe.Element ${opts} config retrieved.`, {
       cartId: ctCart.id,

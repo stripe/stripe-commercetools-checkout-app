@@ -15,6 +15,7 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - Enhanced refund processing with support for [multiple refunded events](./processor/README.md#enhanced-refund-processing), ensuring accurate refund data synchronization between Stripe and commercetools.
 - Payment cancellation logic with improved amount handling and streamlined processing flow. More information in [Payment Cancellation](./processor/README.md#payment-cancellation)
 - **Multicapture Support**: Comprehensive support for multiple partial captures on the same payment intent, enabling complex fulfillment scenarios and staged payment processing. More information in [Multicapture Support](./processor/README.md#multicapture-support)
+- **Stripe Tax Calculation Integration**: Support for automatic tax calculations on payment intents. When a cart has a tax calculation reference in the custom field `connectorStripeTax_calculationReferences`, it will be automatically applied to the payment intent. More information in [Stripe Tax Calculation](./processor/README.md#stripe-tax-calculation-integration)
 
 ## Prerequisite
 
@@ -112,6 +113,15 @@ Before installing the connector, you must create a Stripe account and obtain the
 12. **STRIPE_WEBHOOK_ID**: This is the unique identifier for the Stripe Webhook Endpoint.
 13. **STRIPE_COLLECT_SHIPPING_ADDRESS**: This is the configuration for the Stripe collect shipping address in the payment element. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
 14. **STRIPE_ENABLE_MULTI_OPERATIONS**: This is an opt-in feature flag to enable advanced multicapture and multirefund support. When enabled (`true`), the connector processes multiple partial captures and refunds on a single payment. The default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account. More information in [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing).
+15. **STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE**: Override the `setup_future_usage` value for PaymentIntent creation. This decouples the PaymentIntent's setup_future_usage from the Customer Session's `payment_method_save_usage` configuration. Possible values:
+    - `off_session`: Payment method will be used for future off-session payments
+    - `on_session`: Payment method will be used for future on-session payments
+    - Empty string, `none`, `null`, or `undefined`: Do NOT include setup_future_usage in PaymentIntent
+16. **CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY**: Custom type key for launchpad purchase order number. Default: `payment-launchpad-purchase-order`
+17. **CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY**: Custom type key for storing Stripe customer ID on commercetools customers. Default: `payment-connector-stripe-customer-id`
+18. **CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY**: Custom type key for subscription line items. Default: `payment-connector-subscription-line-item-type`
+19. **CT_PRODUCT_TYPE_SUBSCRIPTION_KEY**: Product type key for subscription information. Default: `payment-connector-subscription-information`
+20. **STRIPE_API_VERSION**: Stripe API version to use for API requests. Default: `2025-12-15.clover`
 
 
 #### 2. commercetools
@@ -248,8 +258,14 @@ Here, you can see the details about various variables in the configuration
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can find more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association).
 - `MERCHANT_RETURN_URL`: Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the URL; the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`. 
 - `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default. To enable it, you need to add the expected customer session object. Default value is `{"payment_method_save":"disabled"}`
-- `STRIPE_COLLECT_SHIPPING_ADDRESS`: Stripe allows you to collect the shipping address in the Payment Element. If you want to collect the shipping address, you need to set this value to `never`. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
+- `STRIPE_COLLECT_BILLING_ADDRESS`: Stripe allows you to collect the billing address in the Payment Element. Possible values: `auto`, `never`, `if_required`. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
 - `STRIPE_ENABLE_MULTI_OPERATIONS`: Opt-in feature flag to enable advanced multicapture and multirefund support. When set to `true`, enables processing of multiple partial captures and refunds on a single payment intent. Default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account settings. See [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing) for implementation details.
+- `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`: Override the `setup_future_usage` value for PaymentIntent creation independently from Customer Session configuration. Values: `off_session`, `on_session`, or empty/`none`/`null`/`undefined` to exclude it from PaymentIntent.
+- `CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY`: Custom type key for launchpad purchase order number. Default: `payment-launchpad-purchase-order`
+- `CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY`: Custom type key for storing Stripe customer ID. Default: `payment-connector-stripe-customer-id`
+- `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY`: Custom type key for subscription line items. Default: `payment-connector-subscription-line-item-type`
+- `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY`: Product type key for subscription information. Default: `payment-connector-subscription-information`
+- `STRIPE_API_VERSION`: Stripe API version to use for API requests. Default value is `2025-12-15.clover`. This version is used when creating ephemeral keys for customer sessions.
 
 ## Development
 

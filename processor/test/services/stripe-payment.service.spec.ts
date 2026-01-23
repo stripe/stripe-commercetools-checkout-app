@@ -19,6 +19,10 @@ import {
 import {
   mockEvent__paymentIntent_succeeded_captureMethodManual,
   mockEvent__charge_refund_captured,
+  mockEvent__paymentIntent_succeeded_multicapture,
+  mockEvent__charge_updated_multicapture,
+  mockEvent__charge_updated_already_captured,
+  mockEvent__charge_updated_no_amount_change,
 } from '../utils/mock-routes-data';
 import { mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
 import * as Config from '../../src/config/config';
@@ -655,6 +659,7 @@ describe('stripe-payment.service', () => {
         stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
         stripeCollectBillingAddress: 'never',
         stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: undefined,
       });
 
       const getCartMock = jest
@@ -1331,6 +1336,653 @@ describe('stripe-payment.service', () => {
       expect(getCustomFieldUpdateActionsMock).toHaveBeenCalled();
       expect(updateCustomerByIdMock).toHaveBeenCalled();
       expect(Logger.log.info).toHaveBeenCalled();
+    });
+  });
+
+  describe('method status - Stripe DOWN', () => {
+    test('should return Stripe status DOWN when Stripe API fails', async () => {
+      const mockHealthCheckFunction: () => Promise<HealthCheckResult> = async () => {
+        const result: HealthCheckResult = {
+          name: 'CoCo Permissions',
+          status: 'UP',
+          message: 'CoCo Permissions are available',
+          details: {},
+        };
+        return result;
+      };
+      Stripe.prototype.paymentMethods = {
+        list: jest.fn<() => Promise<Stripe.ApiList<Stripe.PaymentMethod>>>().mockRejectedValue(new Error('Stripe API error')),
+      } as unknown as Stripe.PaymentMethodsResource;
+
+      jest.spyOn(StatusHandler, 'healthCheckCommercetoolsPermissions').mockReturnValue(mockHealthCheckFunction);
+      const paymentServiceLocal: AbstractPaymentService = new StripePaymentService(opts);
+      const result: StatusResponse = await paymentServiceLocal.status();
+
+      expect(result?.status).toBeDefined();
+      expect(result?.checks).toHaveLength(2);
+      expect(result?.checks[1]?.name).toStrictEqual('Stripe Status check');
+      expect(result?.checks[1]?.status).toStrictEqual('DOWN');
+    });
+  });
+
+  describe('method capturePayment - partial capture scenarios', () => {
+    test('should reject partial capture when STRIPE_ENABLE_MULTI_OPERATIONS is disabled', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'never',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: undefined,
+      });
+
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'capturePayment',
+              amount: {
+                centAmount: 50000,
+                currencyCode: 'USD',
+              },
+            },
+          ],
+        },
+      };
+
+      const mockPaymentWithAmount = {
+        ...mockGetPaymentResult,
+        amountPlanned: {
+          type: 'centPrecision' as const,
+          currencyCode: 'USD',
+          centAmount: 150000,
+          fractionDigits: 2,
+        },
+      };
+
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockReturnValue(Promise.resolve(mockPaymentWithAmount));
+
+      const mockRetrieveResult = {
+        ...mockStripeRetrievePaymentResult,
+        amount_received: 0,
+      };
+
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentIntents: {
+          retrieve: jest.fn<() => Promise<Stripe.Response<Stripe.PaymentIntent>>>().mockResolvedValue(mockRetrieveResult),
+          capture: jest.fn<() => Promise<Stripe.Response<Stripe.PaymentIntent>>>().mockResolvedValue(mockStripeCapturePaymentResult),
+        },
+      } as unknown as Stripe);
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('rejected');
+    });
+
+    test('should approve partial capture when STRIPE_ENABLE_MULTI_OPERATIONS is enabled', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'never',
+        stripeEnableMultiOperations: true,
+        stripePaymentIntentSetupFutureUsage: undefined,
+      });
+
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'capturePayment',
+              amount: {
+                centAmount: 50000,
+                currencyCode: 'USD',
+              },
+            },
+          ],
+        },
+      };
+
+      const mockPaymentWithAmount = {
+        ...mockGetPaymentResult,
+        amountPlanned: {
+          type: 'centPrecision' as const,
+          currencyCode: 'USD',
+          centAmount: 150000,
+          fractionDigits: 2,
+        },
+      };
+
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockReturnValue(Promise.resolve(mockPaymentWithAmount));
+
+      const mockRetrieveResult = {
+        ...mockStripeRetrievePaymentResult,
+        amount_received: 0,
+      };
+
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentIntents: {
+          retrieve: jest.fn<() => Promise<Stripe.Response<Stripe.PaymentIntent>>>().mockResolvedValue(mockRetrieveResult),
+          capture: jest.fn<() => Promise<Stripe.Response<Stripe.PaymentIntent>>>().mockResolvedValue(mockStripeCapturePaymentResult),
+        },
+      } as unknown as Stripe);
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('approved');
+    });
+  });
+
+  describe('method refundPayment - multiple refunds scenarios', () => {
+    test('should warn when multiple refunds attempted without STRIPE_ENABLE_MULTI_OPERATIONS', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'never',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: undefined,
+      });
+
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'refundPayment',
+              amount: {
+                centAmount: 50000,
+                currencyCode: 'USD',
+              },
+            },
+          ],
+        },
+      };
+
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'hasTransactionInState').mockReturnValue(true);
+      jest.spyOn(Stripe.prototype.refunds, 'create').mockReturnValue(Promise.resolve(mockStripeCreateRefundResult));
+
+      const result = await paymentService.modifyPayment(modifyPaymentOpts);
+      expect(result?.outcome).toStrictEqual('received');
+      expect(Logger.log.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('method reversePayment - no successful transaction', () => {
+    test('should throw error when there is no successful payment transaction to reverse', async () => {
+      const modifyPaymentOpts: ModifyPayment = {
+        paymentId: 'dummy-paymentId',
+        data: {
+          actions: [
+            {
+              action: 'reversePayment',
+            },
+          ],
+        },
+      };
+
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'hasTransactionInState').mockReturnValue(false);
+
+      try {
+        await paymentService.modifyPayment(modifyPaymentOpts);
+        fail('Expected an error to be thrown');
+      } catch (e) {
+        expect(e).toBeDefined();
+      }
+    });
+  });
+
+  describe('method getCustomerSession - customer not found', () => {
+    test('should return undefined when customer is not found', async () => {
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(undefined);
+
+      const result = await stripePaymentService.getCustomerSession();
+
+      expect(result).toBeUndefined();
+      expect(Logger.log.info).toHaveBeenCalled();
+    });
+  });
+
+  describe('method processStripeEvent - multicapture scenarios', () => {
+    test('should handle multicapture payment with multiple balance transactions', async () => {
+      const mockEvent: Stripe.Event = mockEvent__paymentIntent_succeeded_multicapture;
+
+      const test = {
+        id: 'ct_payment_multicapture',
+        pspReference: 'pi_multicapture',
+        paymentMethod: 'card',
+        transactions: [
+          {
+            type: PaymentTransactions.CHARGE,
+            state: PaymentStatus.SUCCESS,
+            amount: {
+              centAmount: 50000,
+              currencyCode: 'USD',
+            },
+          },
+        ],
+      };
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockReturnValue(test);
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        balanceTransactions: {
+          list: jest.fn().mockReturnValue(
+            Promise.resolve({
+              data: [
+                { id: 'txn_1', amount: 25000, currency: 'usd' },
+                { id: 'txn_2', amount: 25000, currency: 'usd' },
+              ],
+              has_more: false,
+              object: 'list',
+              url: '/v1/balance_transactions',
+            }),
+          ),
+        },
+      } as unknown as Stripe);
+
+      const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+
+      await stripePaymentService.processStripeEvent(mockEvent);
+
+      expect(updatePaymentMock).toHaveBeenCalled();
+    });
+
+    test('should handle processStripeEvent error gracefully', async () => {
+      const mockEvent: Stripe.Event = mockEvent__paymentIntent_succeeded_captureMethodManual;
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockImplementation(() => {
+        throw new Error('Conversion error');
+      });
+
+      await stripePaymentService.processStripeEvent(mockEvent);
+      expect(Logger.log.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('method processStripeEventMultipleCaptured', () => {
+    test('should update payment for a valid multicapture charge.updated event', async () => {
+      const mockEvent: Stripe.Event = mockEvent__charge_updated_multicapture;
+
+      const test = {
+        id: 'ct_payment_multicapture',
+        pspReference: 'txn_multicapture',
+        paymentMethod: 'card',
+        transactions: [
+          {
+            type: PaymentTransactions.CHARGE,
+            state: PaymentStatus.SUCCESS,
+            amount: {
+              centAmount: 25000,
+              currencyCode: 'USD',
+            },
+          },
+        ],
+      };
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockReturnValue(test);
+      const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+
+      await stripePaymentService.processStripeEventMultipleCaptured(mockEvent);
+
+      expect(updatePaymentMock).toHaveBeenCalled();
+    });
+
+    test('should skip when charge is already captured', async () => {
+      const mockEvent: Stripe.Event = mockEvent__charge_updated_already_captured;
+
+      const test = {
+        id: 'ct_payment_captured',
+        pspReference: 'txn_captured',
+        paymentMethod: 'card',
+        transactions: [],
+      };
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockReturnValue(test);
+      const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+
+      await stripePaymentService.processStripeEventMultipleCaptured(mockEvent);
+
+      expect(Logger.log.warn).toHaveBeenCalled();
+      expect(updatePaymentMock).not.toHaveBeenCalled();
+    });
+
+    test('should skip when amount_captured did not increase', async () => {
+      const mockEvent: Stripe.Event = mockEvent__charge_updated_no_amount_change;
+
+      const test = {
+        id: 'ct_payment_no_change',
+        pspReference: 'txn_no_change',
+        paymentMethod: 'card',
+        transactions: [],
+      };
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockReturnValue(test);
+      const updatePaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockReturnValue(Promise.resolve(mockGetPaymentResult));
+
+      await stripePaymentService.processStripeEventMultipleCaptured(mockEvent);
+
+      expect(Logger.log.warn).toHaveBeenCalled();
+      expect(updatePaymentMock).not.toHaveBeenCalled();
+    });
+
+    test('should handle processStripeEventMultipleCaptured error gracefully', async () => {
+      const mockEvent: Stripe.Event = mockEvent__charge_updated_multicapture;
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockImplementation(() => {
+        throw new Error('Conversion error');
+      });
+
+      await stripePaymentService.processStripeEventMultipleCaptured(mockEvent);
+      expect(Logger.log.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('method getStripeCustomerAddress', () => {
+    test('should return undefined when both addresses are undefined', () => {
+      const result = stripePaymentService.getStripeCustomerAddress(undefined, undefined);
+      expect(result).toBeUndefined();
+    });
+
+    test('should use fallback address when prioritized address is undefined', () => {
+      const fallbackAddress = {
+        firstName: 'Jane',
+        lastName: 'Doe',
+        streetNumber: '456',
+        streetName: 'Fallback St',
+        city: 'Fallback City',
+        postalCode: '54321',
+        state: 'NY',
+        country: 'US',
+        phone: '+1234567890',
+      };
+
+      const result = stripePaymentService.getStripeCustomerAddress(undefined, fallbackAddress);
+
+      expect(result).toBeDefined();
+      expect(result?.name).toStrictEqual('Jane Doe');
+      expect(result?.address?.city).toStrictEqual('Fallback City');
+    });
+  });
+
+  describe('method getBillingAddress', () => {
+    test('should return undefined when cart has no billing or shipping address', () => {
+      const cartWithoutAddress = {
+        ...mockGetCartResult(),
+        billingAddress: undefined,
+        shippingAddress: undefined,
+      };
+
+      const result = stripePaymentService.getBillingAddress(cartWithoutAddress);
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('method initializeCartPayment - setup_future_usage scenarios', () => {
+    test('should return setupFutureUsage as undefined when override is empty string', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'auto',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: '',
+      });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.setupFutureUsage).toBeUndefined();
+    });
+
+    test('should return setupFutureUsage as undefined when override is none', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'auto',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: 'none',
+      });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.setupFutureUsage).toBeUndefined();
+    });
+
+    test('should return setupFutureUsage as off_session when override is off_session', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'auto',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: 'off_session',
+      });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.setupFutureUsage).toStrictEqual('off_session');
+    });
+
+    test('should return setupFutureUsage as on_session when override is on_session', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'auto',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: 'on_session',
+      });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.setupFutureUsage).toStrictEqual('on_session');
+    });
+
+    test('should fallback to default when override is invalid value', async () => {
+      type PaymentFeatures = Stripe.CustomerSessionCreateParams.Components.PaymentElement.Features;
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        apiUrl: '',
+        authUrl: '',
+        clientId: '',
+        clientSecret: '',
+        healthCheckTimeout: 0,
+        jwksUrl: '',
+        jwtIssuer: '',
+        loggerLevel: '',
+        mockClientKey: '',
+        mockEnvironment: '',
+        sessionUrl: '',
+        stripeApiVersion: '',
+        stripeApplePayWellKnown: '',
+        stripeLayout: '',
+        stripePaymentElementAppearance: '',
+        stripePublishableKey: '',
+        stripeSecretKey: '',
+        stripeWebhookSigningSecret: '',
+        stripeCaptureMethod: 'manual',
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        projectKey: 'your-project-key',
+        stripeSavedPaymentMethodConfig: { payment_method_save: 'disabled', payment_method_save_usage: 'on_session' } as PaymentFeatures,
+        stripeCollectBillingAddress: 'auto',
+        stripeEnableMultiOperations: false,
+        stripePaymentIntentSetupFutureUsage: 'invalid_value',
+      });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(Logger.log.warn).toHaveBeenCalled();
+      expect(result.setupFutureUsage).toStrictEqual('on_session');
+    });
+  });
+
+  describe('method processStripeEventRefunded - error handling', () => {
+    test('should handle processStripeEventRefunded error gracefully', async () => {
+      const mockEvent: Stripe.Event = mockEvent__charge_refund_captured;
+
+      jest.spyOn(StripeEventConverter.prototype, 'convert').mockImplementation(() => {
+        throw new Error('Conversion error');
+      });
+
+      await stripePaymentService.processStripeEventRefunded(mockEvent);
+      expect(Logger.log.error).toHaveBeenCalled();
     });
   });
 });
