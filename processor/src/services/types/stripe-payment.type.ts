@@ -2,15 +2,33 @@ import { PaymentRequestSchemaDTO } from '../../dtos/stripe-payment.dto';
 import {
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
   TransactionData,
 } from '@commercetools/connect-payments-sdk';
 import { PSPInteraction } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type';
 
+// CommercetoolsRecurringPaymentJobService may not be available in all SDK versions
+type CommercetoolsRecurringPaymentJobService = {
+  createRecurringPaymentJobIfApplicable: (params: {
+    originPayment: { id: string; typeId: string };
+    paymentMethod: { id: string; typeId: string };
+  }) => Promise<{ id: string } | null>;
+};
+
+export type PaymentMethodInfoDraft = {
+  method?: string;
+  token?: {
+    value: string;
+  };
+};
+
 export type StripePaymentServiceOptions = {
   ctCartService: CommercetoolsCartService;
   ctPaymentService: CommercetoolsPaymentService;
   ctOrderService: CommercetoolsOrderService;
+  ctPaymentMethodService: CommercetoolsPaymentMethodService;
+  ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService;
 };
 
 export type CreatePayment = {
@@ -23,6 +41,7 @@ export type StripeEventUpdatePayment = {
   pspReference?: string;
   transactions: TransactionData[];
   paymentMethod?: string;
+  paymentMethodInfo?: PaymentMethodInfoDraft;
   pspInteraction?: PSPInteraction;
 };
 

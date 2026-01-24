@@ -20,7 +20,9 @@ export class StripeEventConverter {
     return {
       id: this.getCtPaymentId(data),
       pspReference: paymentIntentId,
-      paymentMethod: paymentMethod,
+      paymentMethodInfo: {
+        method: paymentMethod,
+      },
       pspInteraction: {
         response: JSON.stringify(opts),
       },
@@ -36,13 +38,13 @@ export class StripeEventConverter {
             type: PaymentTransactions.AUTHORIZATION,
             state: PaymentStatus.FAILURE,
             amount: this.populateAmountCanceled(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
           {
             type: PaymentTransactions.CANCEL_AUTHORIZATION,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmountCanceled(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       case StripeEvent.PAYMENT_INTENT__SUCCEEDED:
@@ -51,7 +53,7 @@ export class StripeEventConverter {
             type: PaymentTransactions.CHARGE,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       case StripeEvent.PAYMENT_INTENT__PAYMENT_FAILED:
@@ -60,7 +62,7 @@ export class StripeEventConverter {
             type: PaymentTransactions.AUTHORIZATION,
             state: PaymentStatus.FAILURE,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       case StripeEvent.CHARGE__REFUNDED: {
@@ -69,13 +71,13 @@ export class StripeEventConverter {
             type: PaymentTransactions.REFUND,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
           {
             type: PaymentTransactions.CHARGE_BACK,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       }
@@ -85,7 +87,7 @@ export class StripeEventConverter {
             type: PaymentTransactions.AUTHORIZATION,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       }
@@ -95,7 +97,7 @@ export class StripeEventConverter {
             type: PaymentTransactions.CHARGE,
             state: PaymentStatus.SUCCESS,
             amount: this.populateAmount(event),
-            interactionId: paymentIntentId,
+            interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
       default: {

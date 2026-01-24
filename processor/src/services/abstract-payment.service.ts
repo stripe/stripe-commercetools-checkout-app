@@ -1,9 +1,18 @@
 import {
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
   ErrorInvalidOperation,
 } from '@commercetools/connect-payments-sdk';
+
+// CommercetoolsRecurringPaymentJobService may not be available in all SDK versions
+type CommercetoolsRecurringPaymentJobService = {
+  createRecurringPaymentJobIfApplicable: (params: {
+    originPayment: { id: string; typeId: string };
+    paymentMethod: { id: string; typeId: string };
+  }) => Promise<{ id: string } | null>;
+};
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -23,15 +32,21 @@ export abstract class AbstractPaymentService {
   protected ctCartService: CommercetoolsCartService;
   protected ctPaymentService: CommercetoolsPaymentService;
   protected ctOrderService: CommercetoolsOrderService;
+  protected ctPaymentMethodService: CommercetoolsPaymentMethodService;
+  protected ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService;
 
   protected constructor(
     ctCartService: CommercetoolsCartService,
     ctPaymentService: CommercetoolsPaymentService,
     ctOrderService: CommercetoolsOrderService,
+    ctPaymentMethodService: CommercetoolsPaymentMethodService,
+    ctRecurringPaymentJobService: CommercetoolsRecurringPaymentJobService,
   ) {
     this.ctCartService = ctCartService;
     this.ctPaymentService = ctPaymentService;
     this.ctOrderService = ctOrderService;
+    this.ctPaymentMethodService = ctPaymentMethodService;
+    this.ctRecurringPaymentJobService = ctRecurringPaymentJobService;
   }
 
   /**

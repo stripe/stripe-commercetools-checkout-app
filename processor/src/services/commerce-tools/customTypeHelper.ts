@@ -2,13 +2,11 @@ import {
   CustomFields,
   Type,
   TypeAddFieldDefinitionAction,
-  TypeDraft,
   TypeRemoveFieldDefinitionAction,
-} from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
-import {
   CustomerSetCustomFieldAction,
   CustomerSetCustomTypeAction,
-} from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
+  TypeDraft,
+} from '@commercetools/platform-sdk';
 import { log } from '../../libs/logger';
 import {
   createCustomType,
@@ -23,11 +21,11 @@ export interface KeyAndVersion {
 }
 
 export function hasField(type: Type | TypeDraft, fieldName: string): boolean {
-  return !!type.fieldDefinitions?.some((field) => field.name === fieldName);
+  return !!type.fieldDefinitions?.some((field: { name: string }) => field.name === fieldName);
 }
 
 export function hasAllFields(customType: Type | TypeDraft, type: Type | TypeDraft) {
-  return customType.fieldDefinitions?.every(({ name }) => hasField(type, name));
+  return customType.fieldDefinitions?.every(({ name }: { name: string }) => hasField(type, name));
 }
 
 export function findValidCustomType(allTypes: (Type | TypeDraft)[], customType: Type | TypeDraft) {

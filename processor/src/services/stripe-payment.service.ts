@@ -1,11 +1,14 @@
 import Stripe from 'stripe';
 import {
+  Address,
   Cart,
   ErrorInvalidOperation,
+  ErrorResourceNotFound,
   healthCheckCommercetoolsPermissions,
+  PaymentMethod,
   statusHandler,
 } from '@commercetools/connect-payments-sdk';
-import { Customer } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/customer';
+import { Customer } from '@commercetools/platform-sdk';
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -21,9 +24,9 @@ import { PaymentModificationStatus, PaymentTransactions } from '../dtos/operatio
 import packageJSON from '../../package.json';
 
 import { AbstractPaymentService } from './abstract-payment.service';
-import { getConfig } from '../config/config';
+import { config, getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
-import { CaptureMethod, StripePaymentServiceOptions } from './types/stripe-payment.type';
+import { CaptureMethod, StripeEvent, StripePaymentServiceOptions } from './types/stripe-payment.type';
 import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
@@ -33,8 +36,8 @@ import {
 } from '../dtos/stripe-payment.dto';
 import {
   getCartIdFromContext,
+  getCheckoutTransactionItemIdFromContext,
   getMerchantReturnUrlFromContext,
-  getPaymentInterfaceFromContext,
 } from '../libs/fastify/context/context';
 import { stripeApi, wrapStripeError } from '../clients/stripe.client';
 import { log } from '../libs/logger';
@@ -42,7 +45,6 @@ import crypto from 'crypto';
 import { StripeEventConverter } from './converters/stripeEventConverter';
 import { stripeCustomerIdCustomType, stripeCustomerIdFieldName } from '../custom-types/custom-types';
 import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTypeHelper';
-import { Address } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/common';
 import { isValidUUID } from '../utils';
 import { updateCustomerById } from '../services/commerce-tools/customerClient';
 import { CT_CUSTOM_FIELD_TAX_CALCULATIONS } from '../constants';
@@ -51,7 +53,13 @@ export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
 
   constructor(opts: StripePaymentServiceOptions) {
-    super(opts.ctCartService, opts.ctPaymentService, opts.ctOrderService);
+    super(
+      opts.ctCartService,
+      opts.ctPaymentService,
+      opts.ctOrderService,
+      opts.ctPaymentMethodService,
+      opts.ctRecurringPaymentJobService,
+    );
     this.stripeEventConverter = new StripeEventConverter();
   }
 
@@ -93,6 +101,8 @@ export class StripePaymentService extends AbstractPaymentService {
             'introspect_oauth_tokens',
             'manage_checkout_payment_intents',
             'manage_types',
+            'manage_payment_methods',
+            'manage_recurring_payment_jobs',
           ],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
@@ -383,7 +393,7 @@ export class StripePaymentService extends AbstractPaymentService {
         throw 'Failed to create ephemeral key.';
       }
 
-      const session = await this.createSession(stripeCustomerId);
+      const session = await this.createSession(stripeCustomerId, cart);
       if (!session) {
         throw 'Failed to create session.';
       }
@@ -400,38 +410,52 @@ export class StripePaymentService extends AbstractPaymentService {
 
   /**
    * Determines the setup_future_usage value for PaymentIntent creation based on configurations.
+   * Combines override functionality with recurring cart support.
+   * 
+   * Priority order:
+   * 1. Recurring cart check (recurring carts always use 'off_session' regardless of override)
+   * 2. Override value (if configured and valid)
+   * 3. Default config value
+   * 
+   * @param cart Optional cart to check for recurring status
    * @returns The setup_future_usage value to use in PaymentIntent, or undefined to not include it
    */
-  private getPaymentIntentSetupFutureUsage(): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
+  private getPaymentIntentSetupFutureUsage(cart?: Cart): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
     const config = getConfig();
+    
+    // Priority 1: Recurring carts always require 'off_session' for future charges
+    // This ensures consistency with Customer Session configuration and recurring order requirements
+    if (cart && (this.ctCartService as any).isRecurringCart?.(cart)) {
+      log.info('Recurring cart detected: forcing setup_future_usage to off_session for recurring order compatibility');
+      return 'off_session';
+    }
+
     const overrideValue = config.stripePaymentIntentSetupFutureUsage;
 
-    // If override is not set, use default behavior (current behavior for existing users)
-    if (overrideValue === undefined) {
-      return config.stripeSavedPaymentMethodConfig?.payment_method_save_usage as
-        Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+    // Priority 2: If override is configured, process it
+    if (overrideValue !== undefined) {
+      // Normalize the value (trim and lowercase for comparison)
+      const normalizedValue = overrideValue.trim().toLowerCase();
+
+      // Empty string, 'none', 'null', or 'undefined' means don't include setup_future_usage
+      if (normalizedValue === '' || normalizedValue === 'none' || normalizedValue === 'null' || normalizedValue === 'undefined') {
+        log.info('PaymentIntent setup_future_usage is disabled by configuration');
+        return undefined;
+      }
+
+      // Return the override value if it's a valid option
+      if (normalizedValue === 'off_session' || normalizedValue === 'on_session') {
+        return normalizedValue as Stripe.PaymentIntentCreateParams.SetupFutureUsage;
+      }
+
+      // Invalid value: log warning and continue to default
+      log.warn('Invalid STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE value, using default behavior', {
+        value: overrideValue,
+        validValues: ['', 'none', 'null', 'undefined', 'off_session', 'on_session'],
+      });
     }
 
-    // Normalize the value (trim and lowercase for comparison)
-    const normalizedValue = overrideValue.trim().toLowerCase();
-
-    // Empty string, 'none', 'null', or 'undefined' means don't include setup_future_usage
-    if (normalizedValue === '' || normalizedValue === 'none' || normalizedValue === 'null' || normalizedValue === 'undefined') {
-      log.info('PaymentIntent setup_future_usage is disabled by configuration');
-      return undefined;
-    }
-
-    // Return the override value if it's a valid option
-    if (normalizedValue === 'off_session' || normalizedValue === 'on_session') {
-      return normalizedValue as Stripe.PaymentIntentCreateParams.SetupFutureUsage;
-    }
-
-    // Invalid value: log warning and fall back to default behavior
-    log.warn('Invalid STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE value, using default behavior', {
-      value: overrideValue,
-      validValues: ['', 'none', 'null', 'undefined', 'off_session', 'on_session'],
-    });
-
+    // Priority 3: Fall back to default config value
     return config.stripeSavedPaymentMethodConfig?.payment_method_save_usage as
       Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
   }
@@ -449,7 +473,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const captureMethodConfig = config.stripeCaptureMethod;
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
-    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage();
+    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart);
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
 
     // Tax calculation integration
@@ -518,12 +542,15 @@ export class StripePaymentService extends AbstractPaymentService {
 
     const ctPayment = await this.ctPaymentService.createPayment({
       amountPlanned,
-      paymentMethodInfo: {
-        paymentInterface: getPaymentInterfaceFromContext() || 'stripe',
-        /*name: { // Currently unused fields
-          en: 'Stripe Payment Connector',
-        },*/
-      },
+      ...(getCheckoutTransactionItemIdFromContext() && { checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext() }),
+      ...({
+        paymentMethodInfo: {
+          paymentInterface: config.paymentInterface,
+          /*name: { // Currently unused fields
+            en: 'Stripe Payment Connector',
+          },*/
+        },
+      } as any),
       /*paymentStatus: { // Currently unused fields
         interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
         interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
@@ -633,17 +660,12 @@ export class StripePaymentService extends AbstractPaymentService {
    * @return {Promise<ConfigElementResponseSchemaDTO>} Returns a promise that resolves with the cart information, appearance, and capture method.
    */
   public async initializeCartPayment(opts: string): Promise<ConfigElementResponseSchemaDTO> {
-    const {
-      stripeCaptureMethod,
-      stripePaymentElementAppearance,
-      stripeSavedPaymentMethodConfig,
-      stripeLayout,
-      stripeCollectBillingAddress,
-    } = getConfig();
+    const { stripeCaptureMethod, stripePaymentElementAppearance, stripeLayout, stripeCollectBillingAddress } =
+      getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const appearance = stripePaymentElementAppearance;
-    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage();
+    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart);
 
     log.info(`Cart and Stripe.Element ${opts} config retrieved.`, {
       cartId: ctCart.id,
@@ -747,6 +769,79 @@ export class StripePaymentService extends AbstractPaymentService {
       }
     } catch (e) {
       log.error('Error processing notification', { error: e });
+      return;
+    }
+  }
+
+  /**
+   * Stores a payment method in commercetools when a customer opts to save it.
+   *
+   * This method is called from webhook handlers (payment_intent.succeeded or charge.succeeded)
+   * to save payment methods that customers have chosen to reuse. It performs idempotent storage,
+   * meaning it can be safely called multiple times for the same payment method without creating duplicates.
+   *
+   * The method:
+   * 1. Extracts payment method and customer data from the webhook event
+   * 2. Retrieves the payment method from Stripe to verify it's attached to a customer
+   * 3. Saves the payment method to commercetools if it doesn't already exist
+   * 4. Updates the payment record with the payment method token reference
+   * 5. Creates a recurring payment job if the payment is linked to a recurring cart
+   *
+   * @param event - The Stripe webhook event (PAYMENT_INTENT__SUCCEEDED or CHARGE__SUCCEEDED)
+   * @returns Promise that resolves when the payment method has been stored, or immediately if skipped
+   */
+  public async storePaymentMethod(event: Stripe.Event): Promise<void> {
+    log.info('Storing payment method if opted-in by customer', { event: JSON.stringify(event.id) });
+
+    try {
+      const eventData = this.extractPaymentMethodDataFromEvent(event);
+      if (!eventData) {
+        log.info('No payment method or customer ID found in event metadata, skipping storage.', {
+          eventId: event.id,
+        });
+        return;
+      }
+
+      const { stripePaymentMethodId, ctCustomerId, ctPaymentId } = eventData;
+      const paymentMethod = await stripeApi().paymentMethods.retrieve(stripePaymentMethodId);
+
+      if (!paymentMethod.customer) {
+        log.info('Stripe payment method not attached to a customer, skipping storage', {
+          paymentMethodId: stripePaymentMethodId,
+        });
+        return;
+      }
+
+      const ctPaymentMethod = await this.savePaymentMethodIfNew(paymentMethod, ctCustomerId);
+
+      if (ctPaymentId) {
+        await this.updatePaymentWithToken(ctPaymentId, paymentMethod);
+        log.info('Updated payment with stored payment method token', {
+          paymentId: ctPaymentId,
+          paymentMethodId: ctPaymentMethod.id,
+        });
+
+        // Create a recurring payment job for the stored payment method if the payment is linked to a recurring cart
+        const recurringPaymentJob = await this.ctRecurringPaymentJobService.createRecurringPaymentJobIfApplicable({
+          originPayment: {
+            id: ctPaymentId,
+            typeId: 'payment',
+          },
+          paymentMethod: {
+            id: ctPaymentMethod.id,
+            typeId: 'payment-method',
+          },
+        });
+
+        if (recurringPaymentJob) {
+          log.info('Created recurring payment job for stored payment method', {
+            recurringPaymentJobId: recurringPaymentJob.id,
+            paymentMethodId: ctPaymentMethod.id,
+          });
+        }
+      }
+    } catch (e) {
+      log.error('Error storing payment method in commercetools', { error: e, eventId: event.id });
       return;
     }
   }
@@ -930,14 +1025,20 @@ export class StripePaymentService extends AbstractPaymentService {
     log.info(`Stripe Customer ID "${stripeCustomerId}" saved to customer "${id}".`);
   }
 
-  public async createSession(stripeCustomerId: string): Promise<Stripe.CustomerSession | undefined> {
+  public async createSession(stripeCustomerId: string, cart: Cart): Promise<Stripe.CustomerSession | undefined> {
     const paymentConfig = getConfig().stripeSavedPaymentMethodConfig;
     const session = await stripeApi().customerSessions.create({
       customer: stripeCustomerId,
       components: {
         payment_element: {
           enabled: true,
-          features: { ...paymentConfig },
+          features: {
+            ...paymentConfig,
+            ...((this.ctCartService as any).isRecurringCart?.(cart) && {
+              payment_method_save: 'enabled',
+              payment_method_save_usage: 'off_session',
+            }),
+          },
         },
       },
     });
@@ -999,7 +1100,7 @@ export class StripePaymentService extends AbstractPaymentService {
     }
 
     const getField = (field: keyof Address): string | null => {
-      const value = prioritizedAddress?.[field];
+      const value = prioritizedAddress?.[field as keyof typeof prioritizedAddress];
       return typeof value === 'string' ? value : '';
     };
 
@@ -1017,4 +1118,126 @@ export class StripePaymentService extends AbstractPaymentService {
       },
     });
   }
+
+  /**
+   * Extracts payment method and customer data from Stripe webhook events.
+   *
+   * Supports both PAYMENT_INTENT__SUCCEEDED and CHARGE__SUCCEEDED events,
+   * extracting the payment method ID, commercetools customer ID, and payment ID
+   * from the event metadata.
+   *
+   * @param event - The Stripe webhook event
+   * @returns Object containing extracted IDs, or null if required data is missing
+   */
+  private extractPaymentMethodDataFromEvent(event: Stripe.Event): {
+    stripePaymentMethodId: string;
+    ctCustomerId: string;
+    ctPaymentId: string | null;
+  } | null {
+    let stripePaymentMethod: string | Stripe.PaymentMethod | null = null;
+    let ctCustomerId: string | null = null;
+    let ctPaymentId: string | null = null;
+
+    if (event.type === StripeEvent.PAYMENT_INTENT__SUCCEEDED) {
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      stripePaymentMethod = paymentIntent.payment_method;
+      ctCustomerId = paymentIntent.metadata?.ct_customer_id;
+      ctPaymentId = paymentIntent.metadata?.ct_payment_id;
+    } else if (event.type === StripeEvent.CHARGE__SUCCEEDED) {
+      const charge = event.data.object as Stripe.Charge;
+      stripePaymentMethod = charge.payment_method;
+      ctCustomerId = charge.metadata?.ct_customer_id;
+      ctPaymentId = charge.metadata?.ct_payment_id;
+    }
+
+    if (!stripePaymentMethod || !ctCustomerId) {
+      return null;
+    }
+
+    return {
+      stripePaymentMethodId: stripePaymentMethod as string,
+      ctCustomerId,
+      ctPaymentId,
+    };
+  }
+
+  /**
+   * Saves a Stripe payment method to commercetools if it doesn't already exist.
+   *
+   * Checks if the payment method token already exists for the customer to avoid
+   * duplicates. This implements idempotent behavior - if called multiple times
+   * with the same payment method, it will only be saved once.
+   *
+   * @param paymentMethod - The Stripe PaymentMethod object to save
+   * @param ctCustomerId - The commercetools customer ID
+   */
+  private async savePaymentMethodIfNew(
+    paymentMethod: Stripe.PaymentMethod,
+    ctCustomerId: string,
+  ): Promise<PaymentMethod> {
+    try {
+      const existingPaymentMethod = await this.ctPaymentMethodService.getByTokenValue({
+        customerId: ctCustomerId,
+        paymentInterface: getConfig().paymentInterface,
+        tokenValue: paymentMethod.id,
+      });
+
+      if (existingPaymentMethod) {
+        log.info('Payment method already stored for customer', {
+          ctCustomerId,
+          stripePaymentMethod: paymentMethod.id,
+        });
+        return existingPaymentMethod;
+      }
+    } catch (error) {
+      if (error instanceof ErrorResourceNotFound) {
+        log.debug('Payment method does not exist, will create new one', {
+          ctCustomerId,
+          stripePaymentMethod: paymentMethod.id,
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    const ctPaymentMethod = await this.ctPaymentMethodService.save({
+      customerId: ctCustomerId,
+      paymentInterface: getConfig().paymentInterface,
+      token: paymentMethod.id,
+      method: paymentMethod.type,
+    });
+
+    log.info('Stored payment method for customer', {
+      ctCustomerId,
+      ctPaymentMethod: ctPaymentMethod.id,
+      stripePaymentMethod: paymentMethod.id,
+    });
+
+    return ctPaymentMethod;
+  }
+
+  /**
+   * Updates a commercetools payment with the saved payment method token.
+   *
+   * This associates the payment with the stored payment method, creating a
+   * reference between the payment transaction and the reusable payment method.
+   *
+   * @param ctPaymentId - The commercetools payment ID to update
+   * @param paymentMethod - The Stripe payment method to associate
+   */
+  private async updatePaymentWithToken(ctPaymentId: string, paymentMethod: Stripe.PaymentMethod): Promise<void> {
+    const ctPayment = await this.ctPaymentService.updatePayment({
+      id: ctPaymentId,
+      ...({ paymentMethodInfo: {
+        token: {
+          value: paymentMethod.id,
+        },
+      } } as any),
+    });
+
+    log.info('Updated commercetools payment with stored payment method token', {
+      ctPaymentId: ctPayment.id,
+    });
+  }
+
 }

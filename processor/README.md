@@ -88,9 +88,11 @@ Make sure commercetools client credential have at least the following permission
 * `manage_checkout_payment_intents`
 * `view_sessions`
 * `introspect_oauth_tokens`
-* 'view_api_clients'
-* 'manage_orders'
-* 'manage_types'
+* `view_api_clients`
+* `manage_orders`
+* `manage_types`
+* `manage_payment_methods`
+* `manage_recurring_payment_jobs`
 
 ```
 npm run dev
@@ -122,7 +124,7 @@ Authorization: Bearer <oauth token with manage_sessions scope>
   },
   "metadata": {
     "allowedPaymentMethods": ["card", "ideal", ...],
-    "paymentInterface"?: "<payment interface that will be set on payment method info https://docs.commercetools.com/api/projects/payments#ctp:api:type:PaymentMethodInfo>"
+    "checkoutTransactionItemId"?: "<commercetools Checkout reference that will be set on the payment>"
   }
 }
 ```
@@ -205,6 +207,8 @@ The `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable allows you t
 - `off_session`: Payment method will be used for future off-session payments
 - `on_session`: Payment method will be used for future on-session payments
 - Empty string (`""`), `none`, `null`, or `undefined`: Do NOT include `setup_future_usage` in PaymentIntent
+
+**Important**: When using commercetools Recurring Orders, recurring carts will always use `off_session` for `setup_future_usage` regardless of this override configuration. This ensures consistency with Customer Session configuration and recurring order requirements. The override only applies to non-recurring carts.
 
 This is useful when you want to save payment methods via Customer Session but don't want to set `setup_future_usage` on the PaymentIntent, or vice versa.
 

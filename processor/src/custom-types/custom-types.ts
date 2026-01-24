@@ -1,5 +1,4 @@
-import { TypeDraft } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/type';
-import { ProductTypeDraft } from '@commercetools/platform-sdk/dist/declarations/src/generated/models/product-type';
+import { TypeDraft, ProductTypeDraft } from '@commercetools/platform-sdk';
 
 export const launchpadPurchaseOrderCustomType = {
   key: process.env.CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY || 'payment-launchpad-purchase-order',

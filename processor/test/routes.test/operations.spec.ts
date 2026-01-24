@@ -5,6 +5,7 @@ import {
   AuthorityAuthorizationManager,
   CommercetoolsCartService,
   CommercetoolsOrderService,
+  CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
   ContextProvider,
   JWTAuthenticationHook,
@@ -15,6 +16,14 @@ import {
   SessionHeaderAuthenticationHook,
   SessionHeaderAuthenticationManager,
 } from '@commercetools/connect-payments-sdk';
+
+// CommercetoolsRecurringPaymentJobService may not be available in all SDK versions
+type CommercetoolsRecurringPaymentJobService = {
+  createRecurringPaymentJobIfApplicable: (params: {
+    originPayment: { id: string; typeId: string };
+    paymentMethod: { id: string; typeId: string };
+  }) => Promise<{ id: string } | null>;
+};
 import { IncomingHttpHeaders } from 'node:http';
 import { operationsRoute } from '../../src/routes/operation.route';
 import { StripePaymentService } from '../../src/services/stripe-payment.service';
@@ -79,6 +88,8 @@ describe('/operations APIs', () => {
     ctCartService: jest.fn() as unknown as CommercetoolsCartService,
     ctPaymentService: jest.fn() as unknown as CommercetoolsPaymentService,
     ctOrderService: jest.fn() as unknown as CommercetoolsOrderService,
+    ctPaymentMethodService: jest.fn() as unknown as CommercetoolsPaymentMethodService,
+    ctRecurringPaymentJobService: jest.fn() as unknown as CommercetoolsRecurringPaymentJobService,
   });
 
   beforeAll(async () => {

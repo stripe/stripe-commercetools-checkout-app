@@ -16,7 +16,9 @@ describe('stripeEvent.converter', () => {
     const result = converter.convert(mockEvent__paymentIntent_succeeded_captureMethodAutomatic);
 
     expect(result).toEqual({
-      paymentMethod: undefined,
+      paymentMethodInfo: {
+        method: undefined,
+      },
       id: 'pi_11111',
       pspReference: 'pi_11111',
       pspInteraction: {
@@ -41,7 +43,9 @@ describe('stripeEvent.converter', () => {
 
     expect(result).toEqual({
       id: 'pi_11111',
-      paymentMethod: undefined,
+      paymentMethodInfo: {
+        method: undefined,
+      },
       pspReference: 'pi_11111',
       pspInteraction: {
         response: JSON.stringify(mockEvent__paymentIntent_canceled),
@@ -74,7 +78,9 @@ describe('stripeEvent.converter', () => {
 
     expect(result).toEqual({
       id: undefined,
-      paymentMethod: undefined,
+      paymentMethodInfo: {
+        method: undefined,
+      },
       pspInteraction: {
         response: JSON.stringify(mockEvent__paymentIntent_paymentFailed),
       },
@@ -98,7 +104,9 @@ describe('stripeEvent.converter', () => {
 
     expect(result).toEqual({
       id: 'pi_11111',
-      paymentMethod: 'card',
+      paymentMethodInfo: {
+        method: 'card',
+      },
       pspReference: 'pi_11111',
       pspInteraction: {
         response: JSON.stringify(mockEvent__charge_refund_captured),
@@ -131,7 +139,9 @@ describe('stripeEvent.converter', () => {
 
     expect(result).toEqual({
       id: 'pi_11111',
-      paymentMethod: 'card',
+      paymentMethodInfo: {
+        method: 'card',
+      },
       pspReference: 'pi_11111',
       transactions: [
         {
@@ -175,7 +185,9 @@ describe('stripeEvent.converter', () => {
 
     expect(result).toEqual({
       id: 'pi_11111',
-      paymentMethod: 'card',
+      paymentMethodInfo: {
+        method: 'card',
+      },
       pspReference: 'pi_11111',
       pspInteraction: {
         response: JSON.stringify(mockEvent__charge_succeeded_notCaptured),

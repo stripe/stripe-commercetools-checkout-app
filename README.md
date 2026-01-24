@@ -111,7 +111,7 @@ Before installing the connector, you must create a Stripe account and obtain the
 10. **MERCHANT_RETURN_URL**: This is the return URL used on the confirmPayment return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the URL; the Merchant will need to retrieve the payment intent and look for the metadata ct_payment_id is add in the commercetools Checkout SDK paymentReference.
 11. **STRIPE_CAPTURE_METHOD**: This is the capture method used for the Payment. It can be either `automatic` or `manual`. The default value is `automatic`.
 12. **STRIPE_WEBHOOK_ID**: This is the unique identifier for the Stripe Webhook Endpoint.
-13. **STRIPE_COLLECT_SHIPPING_ADDRESS**: This is the configuration for the Stripe collect shipping address in the payment element. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
+13. **STRIPE_COLLECT_BILLING_ADDRESS**: This is the configuration for the Stripe collect billing address in the payment element. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
 14. **STRIPE_ENABLE_MULTI_OPERATIONS**: This is an opt-in feature flag to enable advanced multicapture and multirefund support. When enabled (`true`), the connector processes multiple partial captures and refunds on a single payment. The default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account. More information in [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing).
 15. **STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE**: Override the `setup_future_usage` value for PaymentIntent creation. This decouples the PaymentIntent's setup_future_usage from the Customer Session's `payment_method_save_usage` configuration. Possible values:
     - `off_session`: Payment method will be used for future off-session payments
@@ -185,6 +185,10 @@ deployAs:
           description: Session API URL (example - https://session.europe-west1.gcp.commercetools.com).
           required: true
           default: https://session.europe-west1.gcp.commercetools.com
+        - key: CTP_CHECKOUT_URL
+          description: Checkout API URL (example - https://checkout.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://checkout.europe-west1.gcp.commercetools.com
         - key: CTP_JWKS_URL
           description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
           required: true
@@ -215,6 +219,9 @@ deployAs:
         - key: MERCHANT_RETURN_URL
           description: Merchant return URL
           required: true
+        - key: PAYMENT_INTERFACE
+          description: The payment interface value used in the commercetools payment/payment methods. Default value is "checkout-stripe".
+          required: false
         - key: STRIPE_COLLECT_BILLING_ADDRESS
           description: Stripe collect billing address information (example - 'auto' | 'never' | 'if_required').
           default: 'auto'
@@ -258,9 +265,11 @@ Here, you can see the details about various variables in the configuration
 - `STRIPE_APPLE_PAY_WELL_KNOWN`: Domain association file from Stripe. We can find more information in this [link](https://stripe.com/files/apple-pay/apple-developer-merchantid-domain-association).
 - `MERCHANT_RETURN_URL`: Merchant return URL used on the [confirmPayment](https://docs.stripe.com/js/payment_intents/confirm_payment) return_url parameter. The Buy Now Pay Later payment methods will send the Stripe payment_intent in the URL; the Merchant will need to retrieve the payment intent and look for the metadata `ct_payment_id` to be added in the commercetools Checkout SDK `paymentReference`. 
 - `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`: Stripe allows you to configure the saved payment methods in the Payment Element, refer to [docs](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default. To enable it, you need to add the expected customer session object. Default value is `{"payment_method_save":"disabled"}`
+  
+  **Important**: When using commercetools Recurring Orders, this configuration will be automatically overridden to enable payment method storage. Recurring payment workflows require the payment method to be saved for future charges, so the connector will set `payment_method_save_usage` to `"off_session"` regardless of your configuration. This ensures compatibility with recurring order processing and future subscription charges.
 - `STRIPE_COLLECT_BILLING_ADDRESS`: Stripe allows you to collect the billing address in the Payment Element. Possible values: `auto`, `never`, `if_required`. The default value is `auto`. More information can be found [here](https://docs.stripe.com/payments/payment-element/control-billing-details-collection).
 - `STRIPE_ENABLE_MULTI_OPERATIONS`: Opt-in feature flag to enable advanced multicapture and multirefund support. When set to `true`, enables processing of multiple partial captures and refunds on a single payment intent. Default value is `false`. **Important**: This feature requires multicapture to be enabled in your Stripe account settings. See [Multicapture Support](./processor/README.md#multicapture-support) and [Enhanced Refund Processing](./processor/README.md#enhanced-refund-processing) for implementation details.
-- `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`: Override the `setup_future_usage` value for PaymentIntent creation independently from Customer Session configuration. Values: `off_session`, `on_session`, or empty/`none`/`null`/`undefined` to exclude it from PaymentIntent.
+- `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`: Override the `setup_future_usage` value for PaymentIntent creation independently from Customer Session configuration. Values: `off_session`, `on_session`, or empty/`none`/`null`/`undefined` to exclude it from PaymentIntent. **Note**: Recurring carts always use `off_session` regardless of this override to ensure compatibility with recurring order processing.
 - `CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY`: Custom type key for launchpad purchase order number. Default: `payment-launchpad-purchase-order`
 - `CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY`: Custom type key for storing Stripe customer ID. Default: `payment-connector-stripe-customer-id`
 - `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY`: Custom type key for subscription line items. Default: `payment-connector-subscription-line-item-type`
