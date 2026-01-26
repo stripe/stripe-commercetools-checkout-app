@@ -34,7 +34,7 @@
     "fastify": "5.6.1",
     "fastify-plugin": "5.1.0",
     "fastify-raw-body": "^5.0.0",
-    "stripe": "^17.7.0",
+    "stripe": "^20.1.0",
     "fluent-schema": "^1.1.0"
   },
   "devDependencies": {
@@ -63,6 +63,7 @@
     "typescript": "5.9.2"
   },
   "overrides": {
-    "path-to-regexp": "3.3.0"
+    "path-to-regexp": "3.3.0",
+    "lodash": "^4.17.23"
   }
 }

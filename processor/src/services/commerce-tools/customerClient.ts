@@ -1,4 +1,4 @@
-import { Customer, CustomerUpdateAction } from '@commercetools/connect-payments-sdk';
+import { Customer, CustomerUpdateAction } from '@commercetools/platform-sdk';
 import { paymentSDK } from '../../payment-sdk';
 
 const apiClient = paymentSDK.ctAPI.client;

@@ -15,6 +15,17 @@ If the `stripeConnector_stripeCustomerId` is presented, the connector will try t
 
 The environment variable `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` configures the saved payment methods. The value needs to be a valid stringified JSON. More information about the properties can be found [here](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features). This feature is disabled by default.
 
+### Configurable Custom Type Keys
+
+The connector uses commercetools Custom Types to store Stripe-related data. The keys for these types can be configured via environment variables:
+
+| Environment Variable | Default Value | Description |
+|---------------------|---------------|-------------|
+| `CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY` | `payment-connector-stripe-customer-id` | Custom type key for storing Stripe customer ID on commercetools customers |
+| `CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY` | `payment-launchpad-purchase-order` | Custom type key for launchpad purchase order number |
+| `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY` | `payment-connector-subscription-line-item-type` | Custom type key for subscription line items |
+| `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY` | `payment-connector-subscription-information` | Product type key for subscription information |
+
 Diagram of the current workflow:
 ![Stripe Customer Workflow.png](../docs/StripeCustomerWorkflow.png)
 
@@ -64,6 +75,12 @@ $ npm run connector:pre-undeploy
 ## Running application
 
 Setup correct environment variables: check `processor/src/config/config.ts` for default values.
+
+### Key Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
 
 Make sure commercetools client credential have at least the following permissions:
 
@@ -178,9 +195,22 @@ The response will provide the necessary information to populate the payment elem
     - `currency`: Currency selected for the cart in session.
 - **appearance**: Optional. Used to customize or theme the payment element rendered by Stripe's prebuilt UI component. It must be a valid [Element Appearance](https://docs.stripe.com/elements/appearance-api).
 - **captureMethod**: The current capture method configured in the payment connector.
-- **setupFutureUsage**: The current setup future usage configured in the payment connector.[More information](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
+- **setupFutureUsage**: The current setup future usage configured in the payment connector. This value can be overridden using the `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable, which decouples it from the Customer Session's `payment_method_save_usage` configuration. [More information](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
 - **layout**: This configuration enables the Layout for the payment component. The value needs to be a valid stringified JSON. [More information](https://docs.stripe.com/payments/payment-element#layout).
 - **collectBillingAddress**: This configuration enables the collection of billing address for the Stripe Payment Element component. The default value is 'auto'. [More information](https://docs.stripe.com/payments/payment-element#collecting-billing-address).
+
+### Setup Future Usage Override
+
+The `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable allows you to override the `setup_future_usage` value for PaymentIntent creation independently from the Customer Session configuration.
+
+#### Possible Values
+- `off_session`: Payment method will be used for future off-session payments
+- `on_session`: Payment method will be used for future on-session payments
+- Empty string (`""`), `none`, `null`, or `undefined`: Do NOT include `setup_future_usage` in PaymentIntent
+
+**Important**: When using commercetools Recurring Orders, recurring carts will always use `off_session` for `setup_future_usage` regardless of this override configuration. This ensures consistency with Customer Session configuration and recurring order requirements. The override only applies to non-recurring carts.
+
+This is useful when you want to save payment methods via Customer Session but don't want to set `setup_future_usage` on the PaymentIntent, or vice versa.
 
 ### Create Payment Intent from Stripe
 This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. 
@@ -392,6 +422,35 @@ The multicapture support includes:
    - `processStripeEventMultipleCaptured` method handles `charge.updated` events
    - Processes partial capture notifications with proper amount calculations
    - Validates capture state changes before processing
+
+## Stripe Tax Calculation Integration
+
+The processor supports automatic tax calculations on payment intents through Stripe Tax. When a commercetools cart has a tax calculation reference stored in the custom field `connectorStripeTax_calculationReferences`, the connector will automatically apply it to the payment intent creation.
+
+### How It Works
+
+1. A tax calculation is created in Stripe Tax and its reference ID is stored in the cart's custom field `connectorStripeTax_calculationReferences`
+2. When creating a payment intent, the connector checks for this custom field
+3. If a single tax calculation reference exists, it's automatically included in the payment intent's `hooks.inputs.tax.calculation` parameter
+4. Stripe applies the pre-calculated tax to the payment
+
+### Requirements
+
+- The cart must have a custom field `connectorStripeTax_calculationReferences` containing an array of tax calculation reference IDs
+- Currently supports single tax calculation per payment (first reference is used if multiple exist)
+- Tax calculation must be created in Stripe before the payment intent
+
+### Example
+
+```json
+{
+  "custom": {
+    "fields": {
+      "connectorStripeTax_calculationReferences": ["taxcalc_1234567890"]
+    }
+  }
+}
+```
 
 ## Enhanced Refund Processing
 

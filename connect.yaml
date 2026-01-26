@@ -67,6 +67,27 @@ deployAs:
         - key: STRIPE_ENABLE_MULTI_OPERATIONS
           description: Enable multicapture and multirefund support. Requires multicapture to be enabled in your Stripe account (example - true | false).
           default: 'false'
+        - key: STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE
+          description: Setup future usage for Payment Intent.
+        - key: STRIPE_API_VERSION
+          description: Stripe API version to use (example - 2025-12-15.clover).
+          default: '2025-12-15.clover'
+        - key: CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY
+          description: Custom type key for launchpad purchase order number.
+          required: true
+          default: 'payment-launchpad-purchase-order'
+        - key: CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY
+          description: Custom type key for Stripe customer ID.
+          required: true
+          default: 'payment-connector-stripe-customer-id'
+        - key: CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY
+          description: Custom type key for subscription line item.
+          required: true
+          default: 'payment-connector-subscription-line-item-type'
+        - key: CT_PRODUCT_TYPE_SUBSCRIPTION_KEY
+          description: Product type key for subscription information.
+          required: true
+          default: 'payment-connector-subscription-information'
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret.

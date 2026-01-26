@@ -38,7 +38,7 @@ export const config = {
   stripePaymentElementAppearance: process.env.STRIPE_APPEARANCE_PAYMENT_ELEMENT,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
   stripeApplePayWellKnown: process.env.STRIPE_APPLE_PAY_WELL_KNOWN || 'mockWellKnown',
-  stripeApiVersion: process.env.STRIPE_API_VERSION || '2025-02-24.acacia',
+  stripeApiVersion: process.env.STRIPE_API_VERSION || '2025-12-15.clover',
   stripeSavedPaymentMethodConfig: getSavedPaymentConfig(),
   stripeLayout: process.env.STRIPE_LAYOUT || '{"type":"tabs","defaultCollapsed":false}',
   stripeCollectBillingAddress: process.env.STRIPE_COLLECT_BILLING_ADDRESS || 'auto',
@@ -59,6 +59,20 @@ export const config = {
    * Environment variable: STRIPE_ENABLE_MULTI_OPERATIONS
    */
   stripeEnableMultiOperations: process.env.STRIPE_ENABLE_MULTI_OPERATIONS === 'true' || false,
+
+  /**
+   * Override setup_future_usage value for PaymentIntent creation
+   *
+   * This setting decouples the PaymentIntent's setup_future_usage from the
+   * Customer Session's payment_method_save_usage configuration.
+   *
+   * Values:
+   * - 'off_session': Payment method will be used for future off-session payments
+   * - 'on_session': Payment method will be used for future on-session payments
+   * - '' (empty), 'none', 'null', or 'undefined': Do NOT include setup_future_usage in PaymentIntent
+   * Environment variable: STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE
+   */
+  stripePaymentIntentSetupFutureUsage: process.env.STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE,
 };
 
 export const getConfig = () => {

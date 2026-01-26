@@ -11,6 +11,11 @@ import {
   ProductType,
 } from '@commercetools/platform-sdk';
 import { mockStripeCustomerId } from './mock-customer-data';
+import {
+  stripeCustomerIdCustomType,
+  stripeCustomerIdFieldName,
+  launchpadPurchaseOrderCustomType,
+} from '../../src/custom-types/custom-types';
 
 export const mock_Stripe_retrieveWebhookEnpoints_response: Stripe.Response<Stripe.WebhookEndpoint> = {
   id: 'we_11111',
@@ -69,7 +74,7 @@ export const mock_CustomType_withFieldDefinition: Type = {
   version: 1,
   createdAt: '2023-01-01T00:00:00.000Z',
   lastModifiedAt: '2023-01-01T00:00:00.000Z',
-  key: 'payment-connector-stripe-customer-id',
+  key: stripeCustomerIdCustomType.key,
   name: {
     en: 'Stripe Customer ID',
   },
@@ -79,7 +84,7 @@ export const mock_CustomType_withFieldDefinition: Type = {
   resourceTypeIds: ['customer'],
   fieldDefinitions: [
     {
-      name: 'stripeConnector_stripeCustomerId',
+      name: stripeCustomerIdFieldName,
       label: {
         en: 'Stripe Customer ID',
       },
@@ -97,7 +102,7 @@ export const mock_CustomType_withManyFieldDefinition: Type = {
   version: 1,
   createdAt: '2023-01-01T00:00:00.000Z',
   lastModifiedAt: '2023-01-01T00:00:00.000Z',
-  key: 'payment-connector-stripe-customer-id',
+  key: stripeCustomerIdCustomType.key,
   name: {
     en: 'Stripe Customer ID',
   },
@@ -107,7 +112,7 @@ export const mock_CustomType_withManyFieldDefinition: Type = {
   resourceTypeIds: ['customer'],
   fieldDefinitions: [
     {
-      name: 'stripeConnector_stripeCustomerId',
+      name: stripeCustomerIdFieldName,
       label: {
         en: 'Stripe Customer ID',
       },
@@ -136,7 +141,7 @@ export const mock_CustomType_withDifferentFieldDefinition: Type = {
   version: 1,
   createdAt: '2023-01-01T00:00:00.000Z',
   lastModifiedAt: '2023-01-01T00:00:00.000Z',
-  key: 'payment-connector-stripe-customer-id-different',
+  key: `${stripeCustomerIdCustomType.key}-different`,
   name: {
     en: 'Stripe Customer ID',
   },
@@ -164,7 +169,7 @@ export const mock_CustomType_withNoFieldDefinition: Type = {
   version: 1,
   createdAt: '2023-01-01T00:00:00.000Z',
   lastModifiedAt: '2023-01-01T00:00:00.000Z',
-  key: 'payment-connector-stripe-customer-id',
+  key: stripeCustomerIdCustomType.key,
   name: {
     en: 'Stripe Customer ID',
   },
@@ -176,7 +181,7 @@ export const mock_CustomType_withNoFieldDefinition: Type = {
 };
 
 export const mock_CustomTypeDraft: TypeDraft = {
-  key: 'payment-connector-stripe-customer-id',
+  key: stripeCustomerIdCustomType.key,
   name: {
     en: 'Stripe Customer ID',
   },
@@ -186,7 +191,7 @@ export const mock_CustomTypeDraft: TypeDraft = {
   resourceTypeIds: ['customer'],
   fieldDefinitions: [
     {
-      name: 'stripeConnector_stripeCustomerId',
+      name: stripeCustomerIdFieldName,
       label: {
         en: 'Stripe Customer ID',
       },
@@ -202,7 +207,7 @@ export const mock_CustomTypeDraft: TypeDraft = {
 //mock the get types for fot launchpad purchase order number
 export const mock_CustomType_withLaunchpadPurchaseOrderNumber: Type = {
   id: 'mock-type-id',
-  key: 'payment-launchpad-purchase-order',
+  key: launchpadPurchaseOrderCustomType.key,
   version: 1,
   name: {
     en: 'Mock Launchpad Purchase Order Number Custom Type',
@@ -232,10 +237,10 @@ export const mock_SetCustomTypeActions: CustomerSetCustomTypeAction[] = [
     action: 'setCustomType',
     type: {
       typeId: 'type',
-      key: 'payment-connector-stripe-customer-id',
+      key: stripeCustomerIdCustomType.key,
     },
     fields: {
-      stripeConnector_stripeCustomerId: mockStripeCustomerId,
+      [stripeCustomerIdFieldName]: mockStripeCustomerId,
     },
   },
 ];
@@ -243,7 +248,7 @@ export const mock_SetCustomTypeActions: CustomerSetCustomTypeAction[] = [
 export const mock_SetCustomFieldActions: CustomerSetCustomFieldAction[] = [
   {
     action: 'setCustomField',
-    name: 'stripeConnector_stripeCustomerId',
+    name: stripeCustomerIdFieldName,
     value: mockStripeCustomerId,
   },
 ];

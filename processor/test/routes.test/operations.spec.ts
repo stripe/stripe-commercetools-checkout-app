@@ -16,6 +16,14 @@ import {
   SessionHeaderAuthenticationHook,
   SessionHeaderAuthenticationManager,
 } from '@commercetools/connect-payments-sdk';
+
+// CommercetoolsRecurringPaymentJobService may not be available in all SDK versions
+type CommercetoolsRecurringPaymentJobService = {
+  createRecurringPaymentJobIfApplicable: (params: {
+    originPayment: { id: string; typeId: string };
+    paymentMethod: { id: string; typeId: string };
+  }) => Promise<{ id: string } | null>;
+};
 import { IncomingHttpHeaders } from 'node:http';
 import { operationsRoute } from '../../src/routes/operation.route';
 import { StripePaymentService } from '../../src/services/stripe-payment.service';
@@ -81,6 +89,7 @@ describe('/operations APIs', () => {
     ctPaymentService: jest.fn() as unknown as CommercetoolsPaymentService,
     ctOrderService: jest.fn() as unknown as CommercetoolsOrderService,
     ctPaymentMethodService: jest.fn() as unknown as CommercetoolsPaymentMethodService,
+    ctRecurringPaymentJobService: jest.fn() as unknown as CommercetoolsRecurringPaymentJobService,
   });
 
   beforeAll(async () => {
@@ -109,6 +118,12 @@ describe('/operations APIs', () => {
 
   describe('GET /operations/config', () => {
     test('it should return the Stripe client config', async () => {
+      //Given
+      jest.spyOn(spiedPaymentService, 'config').mockResolvedValue({
+        environment: 'TEST',
+        publishableKey: '',
+      });
+
       //When
       const responseGetConfig = await app.inject({
         method: 'GET',

@@ -3,9 +3,16 @@ import {
   CommercetoolsOrderService,
   CommercetoolsPaymentMethodService,
   CommercetoolsPaymentService,
-  CommercetoolsRecurringPaymentJobService,
   ErrorInvalidOperation,
 } from '@commercetools/connect-payments-sdk';
+
+// CommercetoolsRecurringPaymentJobService may not be available in all SDK versions
+type CommercetoolsRecurringPaymentJobService = {
+  createRecurringPaymentJobIfApplicable: (params: {
+    originPayment: { id: string; typeId: string };
+    paymentMethod: { id: string; typeId: string };
+  }) => Promise<{ id: string } | null>;
+};
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
