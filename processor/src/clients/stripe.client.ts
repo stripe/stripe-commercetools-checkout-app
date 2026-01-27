@@ -1,4 +1,3 @@
-// stripe.client.ts
 import Stripe from 'stripe';
 import { getConfig } from '../config/config';
 import { StripeApiError, StripeApiErrorData } from '../errors/stripe-api.error';
@@ -37,7 +36,7 @@ export const stripeApi = (): Stripe => {
       url: appInfoUrl,
       partner_id: 'pp_partner_c0mmercet00lsc0NNect', // Stripe partner identifier
     },
-    apiVersion: getConfig().stripeApiVersion as Stripe.LatestApiVersion,
+    //apiVersion: getConfig().stripeApiVersion as Stripe.LatestApiVersion,
   });
 };
  
