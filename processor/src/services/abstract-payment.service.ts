@@ -88,7 +88,7 @@ export abstract class AbstractPaymentService {
    * @param request - contains the amount and {@link https://docs.commercetools.com/api/projects/payments | Payment } defined in composable commerce
    * @returns Promise with the outcome containing operation status and PSP reference
    */
-  abstract capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse>;
+  abstract capturePayment(request: CapturePaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse>;
 
   /**
    * Cancel payment
@@ -99,7 +99,7 @@ export abstract class AbstractPaymentService {
    * @param request - contains {@link https://docs.commercetools.com/api/projects/payments | Payment } defined in composable commerce
    * @returns Promise with outcome containing operation status and PSP reference
    */
-  abstract cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse>;
+  abstract cancelPayment(request: CancelPaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse>;
 
   /**
    * Refund payment
@@ -110,7 +110,7 @@ export abstract class AbstractPaymentService {
    * @param request
    * @returns Promise with outcome containing operation status and PSP reference
    */
-  abstract refundPayment(request: RefundPaymentRequest): Promise<PaymentProviderModificationResponse>;
+  abstract refundPayment(request: RefundPaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse>;
 
   /**
    * Reverse payment
@@ -121,7 +121,7 @@ export abstract class AbstractPaymentService {
    * @param request
    * @returns Promise with outcome containing operation status and PSP reference
    */
-  abstract reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse>;
+  abstract reversePayment(request: ReversePaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse>;
 
   /**
    * Modify payment
@@ -133,7 +133,7 @@ export abstract class AbstractPaymentService {
    * @param opts - input for payment modification including payment ID, action and payment amount
    * @returns Promise with outcome of payment modification after invocation to PSPs
    */
-  public async modifyPayment(opts: ModifyPayment): Promise<PaymentIntentResponseSchemaDTO> {
+  public async modifyPayment(opts: ModifyPayment, region: 'US' | 'CA' | 'EU'): Promise<PaymentIntentResponseSchemaDTO> {
     const ctPayment = await this.ctPaymentService.getPayment({
       id: opts.paymentId,
     });
@@ -143,27 +143,35 @@ export abstract class AbstractPaymentService {
 
     switch (request.action) {
       case 'cancelPayment': {
-        return await this.cancelPayment({ payment: ctPayment, merchantReference: request.merchantReference });
+        return await this.cancelPayment({ payment: ctPayment, merchantReference: request.merchantReference },
+          region
+        );
       }
       case 'capturePayment': {
         return await this.capturePayment({
           payment: ctPayment,
           merchantReference: request.merchantReference,
           amount: request.amount,
-        });
+        },
+        region
+      );
       }
       case 'refundPayment': {
         return await this.refundPayment({
           amount: request.amount,
           payment: ctPayment,
           merchantReference: request.merchantReference,
-        });
+        },
+        region
+      );
       }
       case 'reversePayment': {
         return await this.reversePayment({
           payment: ctPayment,
           merchantReference: request.merchantReference,
-        });
+        },
+        region
+      );
       }
       default: {
         throw new ErrorInvalidOperation(`Operation not supported.`);

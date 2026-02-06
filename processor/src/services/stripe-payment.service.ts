@@ -49,6 +49,7 @@ import { isValidUUID } from '../utils';
 import { updateCustomerById } from '../services/commerce-tools/customerClient';
 import { CT_CUSTOM_FIELD_TAX_CALCULATIONS } from '../constants';
 
+
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
 
@@ -71,6 +72,9 @@ export class StripePaymentService extends AbstractPaymentService {
    *
    * @returns Promise with mocking object containing configuration information
    */
+private getStripe(region: 'US' | 'CA' | 'EU'): Stripe {
+  return stripeApi(region);
+}
   public async config(): Promise<ConfigResponse> {
     const config = getConfig();
     return {
@@ -109,7 +113,7 @@ export class StripePaymentService extends AbstractPaymentService {
         }),
         async () => {
           try {
-            const paymentMethods = await stripeApi().paymentMethods.list({
+            const paymentMethods = await this.getStripe('US').paymentMethods.list({
               limit: 3,
             });
             return {
@@ -172,12 +176,12 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {CapturePaymentRequest} request - Information about the ct payment and the amount.
    * @returns Promise with data containing operation status and PSP reference
    */
-  public async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
+  public async capturePayment(request: CapturePaymentRequest,  region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse> {
     try {
       const config = getConfig();
       const paymentIntentId = request.payment.interfaceId as string;
       const amountToBeCaptured = request.amount.centAmount;
-      const stripePaymentIntent: Stripe.PaymentIntent = await stripeApi().paymentIntents.retrieve(paymentIntentId);
+      const stripePaymentIntent: Stripe.PaymentIntent = await this.getStripe(region).paymentIntents.retrieve(paymentIntentId);
 
       if (!request.payment.amountPlanned.centAmount) {
         throw new Error('Payment amount is not set');
@@ -199,7 +203,7 @@ export class StripePaymentService extends AbstractPaymentService {
         );
       }
 
-      const response = await stripeApi().paymentIntents.capture(paymentIntentId, {
+      const response = await this.getStripe(region).paymentIntents.capture(paymentIntentId, {
         amount_to_capture: amountToBeCaptured,
         ...(isPartialCapture &&
           config.stripeEnableMultiOperations && {
@@ -235,10 +239,10 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {CancelPaymentRequest} request - contains amount and {@link https://docs.commercetools.com/api/projects/payments | Payment } defined in composable commerce
    * @returns Promise with mocking data containing operation status and PSP reference
    */
-  public async cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse> {
+  public async cancelPayment(request: CancelPaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse> {
     try {
       const paymentIntentId = request.payment.interfaceId as string;
-      const response = await stripeApi().paymentIntents.cancel(paymentIntentId);
+      const response = await this.getStripe(region).paymentIntents.cancel(paymentIntentId);
 
       log.info(`Payment modification completed.`, {
         paymentId: paymentIntentId,
@@ -268,7 +272,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {RefundPaymentRequest} request - contains amount and {@link https://docs.commercetools.com/api/projects/payments | Payment } defined in composable commerce
    * @returns Promise with mocking data containing operation status and PSP reference
    */
-  public async refundPayment(request: RefundPaymentRequest): Promise<PaymentProviderModificationResponse> {
+  public async refundPayment(request: RefundPaymentRequest,region: 'US' | 'CA' | 'EU' ): Promise<PaymentProviderModificationResponse> {
     try {
       const config = getConfig();
       const paymentIntentId = request.payment.interfaceId as string;
@@ -291,7 +295,7 @@ export class StripePaymentService extends AbstractPaymentService {
         });
       }
 
-      const response = await stripeApi().refunds.create({
+      const response = await this.getStripe(region).refunds.create({
         payment_intent: paymentIntentId,
         amount: amount,
       });
@@ -324,7 +328,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param request
    * @returns Promise with outcome containing operation status and PSP reference
    */
-  public async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse> {
+  public async reversePayment(request: ReversePaymentRequest, region: 'US' | 'CA' | 'EU'): Promise<PaymentProviderModificationResponse> {
     const hasCharge = this.ctPaymentService.hasTransactionInState({
       payment: request.payment,
       transactionType: 'Charge',
@@ -348,7 +352,9 @@ export class StripePaymentService extends AbstractPaymentService {
         payment: request.payment,
         merchantReference: request.merchantReference,
         amount: request.payment.amountPlanned,
-      });
+      },
+      region
+    );
     }
 
     const hasAuthorization = this.ctPaymentService.hasTransactionInState({
@@ -357,7 +363,9 @@ export class StripePaymentService extends AbstractPaymentService {
       states: ['Success'],
     });
     if (hasAuthorization && !wasPaymentReverted) {
-      return this.cancelPayment({ payment: request.payment });
+      return this.cancelPayment({ payment: request.payment },
+        region
+      );
     }
 
     throw new ErrorInvalidOperation('There is no successful payment transaction to reverse.');
@@ -368,7 +376,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * for the Stripe customer.
    * @returns Promise with the stripeCustomerId, ephemeralKey and sessionId.
    */
-  public async getCustomerSession(): Promise<CustomerResponseSchemaDTO | undefined> {
+  public async getCustomerSession(region: 'US' | 'CA' | 'EU'): Promise<CustomerResponseSchemaDTO | undefined> {
     try {
       const cart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
       const ctCustomerId = cart.customerId;
@@ -383,17 +391,17 @@ export class StripePaymentService extends AbstractPaymentService {
         return;
       }
 
-      const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(cart, customer);
+      const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(cart, customer, region);
       if (!stripeCustomerId) {
         throw 'Failed to get stripe customer id.';
       }
 
-      const ephemeralKey = await this.createEphemeralKey(stripeCustomerId);
+      const ephemeralKey = await this.createEphemeralKey(stripeCustomerId, region);
       if (!ephemeralKey) {
         throw 'Failed to create ephemeral key.';
       }
 
-      const session = await this.createSession(stripeCustomerId, cart);
+      const session = await this.createSession(stripeCustomerId, cart, region);
       if (!session) {
         throw 'Failed to create session.';
       }
@@ -465,7 +473,10 @@ export class StripePaymentService extends AbstractPaymentService {
    *
    * @return Promise<PaymentResponseSchemaDTO> A Promise that resolves to a PaymentResponseSchemaDTO object containing the client secret and payment reference.
    */
-  public async createPaymentIntentStripe(): Promise<PaymentResponseSchemaDTO> {
+public async createPaymentIntentStripe(
+  region: 'US' | 'CA' | 'EU'
+): Promise<PaymentResponseSchemaDTO> {
+
     const config = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const customer = await this.getCtCustomer(ctCart.customerId!);
@@ -486,7 +497,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      paymentIntent = await stripeApi().paymentIntents.create(
+      paymentIntent = await this.getStripe(region).paymentIntents.create(
         {
           ...(stripeCustomerId && {
             customer: stripeCustomerId,
@@ -592,7 +603,7 @@ export class StripePaymentService extends AbstractPaymentService {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      await stripeApi().paymentIntents.update(
+      await this.getStripe(region).paymentIntents.update(
         paymentIntent.id,
         {
           metadata: {
@@ -625,7 +636,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {string} paymentReference - The identifier of the payment associated with the PaymentIntent in Stripe.
    * @return {Promise<void>} - A Promise that resolves when the PaymentIntent is successfully updated.
    */
-  public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string): Promise<void> {
+  public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string,region: 'US' | 'CA' | 'EU'): Promise<void> {
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
     });
@@ -723,7 +734,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param {Stripe.Event} event - The Stripe event object to process.
    * @returns {Promise<void>} - Resolves when the payment has been updated.
    */
-  public async processStripeEvent(event: Stripe.Event): Promise<void> {
+  public async processStripeEvent(event: Stripe.Event, region: 'US' | 'CA' | 'EU'): Promise<void> {
     log.info('Processing notification', { event: JSON.stringify(event.id) });
     try {
       const updateData = this.stripeEventConverter.convert(event);
@@ -736,7 +747,7 @@ export class StripePaymentService extends AbstractPaymentService {
           pi.payment_method_options?.card?.request_multicapture === 'if_available' &&
           typeof pi.latest_charge === 'string'
         ) {
-          const balanceTransactions = await stripeApi().balanceTransactions.list({
+          const balanceTransactions = await this.getStripe(region).balanceTransactions.list({
             source: pi.latest_charge,
             limit: 10,
           });
@@ -790,7 +801,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param event - The Stripe webhook event (PAYMENT_INTENT__SUCCEEDED or CHARGE__SUCCEEDED)
    * @returns Promise that resolves when the payment method has been stored, or immediately if skipped
    */
-  public async storePaymentMethod(event: Stripe.Event): Promise<void> {
+  public async storePaymentMethod(event: Stripe.Event, region: 'US' | 'CA' | 'EU'): Promise<void> {
     log.info('Storing payment method if opted-in by customer', { event: JSON.stringify(event.id) });
 
     try {
@@ -803,7 +814,7 @@ export class StripePaymentService extends AbstractPaymentService {
       }
 
       const { stripePaymentMethodId, ctCustomerId, ctPaymentId } = eventData;
-      const paymentMethod = await stripeApi().paymentMethods.retrieve(stripePaymentMethodId);
+      const paymentMethod = await this.getStripe(region).paymentMethods.retrieve(stripePaymentMethodId);
 
       if (!paymentMethod.customer) {
         log.info('Stripe payment method not attached to a customer, skipping storage', {
@@ -846,12 +857,12 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async processStripeEventRefunded(event: Stripe.Event): Promise<void> {
+  public async processStripeEventRefunded(event: Stripe.Event, region: 'US' | 'CA' | 'EU'): Promise<void> {
     log.info('Processing notification', { event: JSON.stringify(event.id) });
     try {
       const updateData = this.stripeEventConverter.convert(event);
       const charge = event.data.object as Stripe.Charge;
-      const refunds = await stripeApi().refunds.list({
+      const refunds = await this.getStripe(region).refunds.list({
         charge: charge.id,
         created: {
           gte: charge.created,
@@ -939,24 +950,24 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async retrieveOrCreateStripeCustomerId(cart: Cart, customer: Customer): Promise<string | undefined> {
+  public async retrieveOrCreateStripeCustomerId(cart: Cart, customer: Customer, region: 'US' | 'CA' | 'EU'): Promise<string | undefined> {
     const savedCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
     if (savedCustomerId) {
-      const isValid = await this.validateStripeCustomerId(savedCustomerId, customer.id);
+      const isValid = await this.validateStripeCustomerId(savedCustomerId, customer.id, region);
       if (isValid) {
         log.info('Customer has a valid Stripe Customer ID saved.', { stripeCustomerId: savedCustomerId });
         return savedCustomerId;
       }
     }
 
-    const existingCustomer = await this.findStripeCustomer(customer.id);
+    const existingCustomer = await this.findStripeCustomer(customer.id, region);
     if (existingCustomer) {
       await this.saveStripeCustomerId(existingCustomer?.id, customer);
 
       return existingCustomer.id;
     }
 
-    const newCustomer = await this.createStripeCustomer(cart, customer);
+    const newCustomer = await this.createStripeCustomer(cart, customer, region);
     if (newCustomer) {
       await this.saveStripeCustomerId(newCustomer?.id, customer);
 
@@ -966,9 +977,9 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async validateStripeCustomerId(stripeCustomerId: string, ctCustomerId: string): Promise<boolean> {
+  public async validateStripeCustomerId(stripeCustomerId: string, ctCustomerId: string, region: 'US' | 'CA' | 'EU'): Promise<boolean> {
     try {
-      const customer = await stripeApi().customers.retrieve(stripeCustomerId);
+      const customer = await this.getStripe(region).customers.retrieve(stripeCustomerId);
       return Boolean(customer && !customer.deleted && customer.metadata?.ct_customer_id === ctCustomerId);
     } catch (e) {
       log.warn('Error validating Stripe customer ID', { error: e });
@@ -976,14 +987,14 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async findStripeCustomer(ctCustomerId: string): Promise<Stripe.Customer | undefined> {
+  public async findStripeCustomer(ctCustomerId: string, region: 'US' | 'CA' | 'EU'): Promise<Stripe.Customer | undefined> {
     try {
       if (!isValidUUID(ctCustomerId)) {
         log.warn('Invalid ctCustomerId: Not a valid UUID:', { ctCustomerId });
         throw 'Invalid ctCustomerId: Not a valid UUID';
       }
       const query = `metadata['ct_customer_id']:'${ctCustomerId}'`;
-      const customer = await stripeApi().customers.search({ query });
+      const customer = await this.getStripe(region).customers.search({ query });
 
       return customer.data[0];
     } catch (e) {
@@ -992,10 +1003,10 @@ export class StripePaymentService extends AbstractPaymentService {
     }
   }
 
-  public async createStripeCustomer(cart: Cart, customer: Customer): Promise<Stripe.Customer | undefined> {
+  public async createStripeCustomer(cart: Cart, customer: Customer, region: 'US' | 'CA' | 'EU'): Promise<Stripe.Customer | undefined> {
     const shippingAddress = this.getStripeCustomerAddress(customer.addresses[0], cart.shippingAddress);
     const email = cart.customerEmail || customer.email || cart.shippingAddress?.email;
-    return await stripeApi().customers.create({
+    return await this.getStripe(region).customers.create({
       email,
       name: `${customer.firstName} ${customer.lastName}`.trim() || shippingAddress?.name,
       phone: shippingAddress?.phone,
@@ -1025,9 +1036,9 @@ export class StripePaymentService extends AbstractPaymentService {
     log.info(`Stripe Customer ID "${stripeCustomerId}" saved to customer "${id}".`);
   }
 
-  public async createSession(stripeCustomerId: string, cart: Cart): Promise<Stripe.CustomerSession | undefined> {
+  public async createSession(stripeCustomerId: string, cart: Cart, region: 'US' | 'CA' | 'EU'): Promise<Stripe.CustomerSession | undefined> {
     const paymentConfig = getConfig().stripeSavedPaymentMethodConfig;
-    const session = await stripeApi().customerSessions.create({
+    const session = await this.getStripe(region).customerSessions.create({
       customer: stripeCustomerId,
       components: {
         payment_element: {
@@ -1046,9 +1057,9 @@ export class StripePaymentService extends AbstractPaymentService {
     return session;
   }
 
-  public async createEphemeralKey(stripeCustomerId: string) {
+  public async createEphemeralKey(stripeCustomerId: string, region: 'US' | 'CA' | 'EU') {
     const config = getConfig();
-    const stripe = stripeApi();
+    const stripe = this.getStripe(region);
     const res = await stripe.ephemeralKeys.create(
       { customer: stripeCustomerId },
       { apiVersion: config.stripeApiVersion },

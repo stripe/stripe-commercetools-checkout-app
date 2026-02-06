@@ -3,15 +3,27 @@ import { getConfig } from '../config/config';
 import { StripeApiError, StripeApiErrorData } from '../errors/stripe-api.error';
 import { log } from '../libs/logger';
 
-export const stripeApi = (): Stripe => {
+export type StripeRegion = 'US' | 'CA' | 'EU';
+
+export const stripeApi = (region: StripeRegion): Stripe => {
   const properties = new Map(Object.entries(process.env));
   const appInfoUrl = properties.get('CONNECT_SERVICE_URL') ?? 'https://example.com';
-  return new Stripe(getConfig().stripeSecretKey, {
+
+  const config = getConfig();
+
+  const secretKey =
+    region === 'US'
+      ? config.stripeSecretKeyUS
+      : region === 'CA'
+      ? config.stripeSecretKeyCA
+      : config.stripeSecretKeyEU;
+
+  return new Stripe(secretKey, {
     appInfo: {
       name: 'Stripe app for Commercetools Connect',
       version: '1.0.00',
-      url: appInfoUrl, //need to be updated
-      partner_id: 'pp_partner_c0mmercet00lsc0NNect', // Used by Stripe to identify your connector
+      url: appInfoUrl,
+      partner_id: 'pp_partner_c0mmercet00lsc0NNect',
     },
   });
 };
