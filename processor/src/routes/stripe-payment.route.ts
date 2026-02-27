@@ -35,7 +35,7 @@ type StripeRoutesOptions = {
 };
 
 export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
-  fastify.get<{ Reply: CustomerResponseSchemaDTO }>(
+  fastify.get<{ Reply: CustomerResponseSchemaDTO | null }>(
     '/customer/session',
     {
       preHandler: [opts.sessionHeaderAuthHook.authenticate()],
@@ -49,7 +49,7 @@ export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPlug
     async (_, reply) => {
       const resp = await opts.paymentService.getCustomerSession();
       if (!resp) {
-        return reply.status(204).send(resp);
+        return reply.status(204).send(null);
       }
       return reply.status(200).send(resp);
     },
@@ -71,8 +71,11 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
         },
       },
     },
-    async (_, reply) => {
-      const resp = await opts.paymentService.createPaymentIntentStripe();
+    async (request, reply) => {
+      const isExpressCheckout =
+        request.headers['x-express-checkout'] === 'true' ||
+        request.headers['x-express-checkout'] === '1';
+      const resp = await opts.paymentService.createPaymentIntentStripe(isExpressCheckout);
       return reply.status(200).send(resp);
     },
   );

@@ -16,6 +16,7 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - Payment cancellation logic with improved amount handling and streamlined processing flow. More information in [Payment Cancellation](./processor/README.md#payment-cancellation)
 - **Multicapture Support**: Comprehensive support for multiple partial captures on the same payment intent, enabling complex fulfillment scenarios and staged payment processing. More information in [Multicapture Support](./processor/README.md#multicapture-support)
 - **Stripe Tax Calculation Integration**: Support for automatic tax calculations on payment intents. When a cart has a tax calculation reference in the custom field `connectorStripeTax_calculationReferences`, it will be automatically applied to the payment intent. More information in [Stripe Tax Calculation](./processor/README.md#stripe-tax-calculation-integration)
+- **Stripe Express Checkout**: Support for the [Stripe Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element), with shipping address and method callbacks and PaymentIntent created without shipping when the frontend sends the `x-express-checkout` header. More information in [Development of Enabler](./enabler/README.md#express-checkout).
 
 ## Prerequisite
 
@@ -37,7 +38,7 @@ Configure Stripe secret and public keys so the Connect application can handle en
 
 The `connect-payment-integration-stripe` contains two modules:
 
-- **Enabler**: This is a wrapper implementation where Stripe frontend [Payment Element](https://docs.stripe.com/payments/payment-element) components are embedded. It gives checkout the control over when and how to load the connector frontend based on business configuration.
+- **Enabler**: This is a wrapper implementation where Stripe frontend [Payment Element](https://docs.stripe.com/payments/payment-element) and [Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element) components are embedded. It gives checkout the control over when and how to load the connector frontend based on business configuration. Use `createExpressBuilder(type)` (e.g. `type: 'dropin'`) to load the Stripe Express Checkout component. More information in [Express Checkout](./enabler/README.md#express-checkout).
 - **Processor**: This functions as a backend service and middleware for integration with the Stripe platform. It interacts with Stripe for transactions and updates the payment entity within Composable Commerce. Finding the Stripe customer that own the commercetools cart, or creating the customer and adding the information to the custome field of the cart. Additionally, it supports a listener for triggers related to Stripe webhook events to update the payment entity with `connect-payment-sdk` based on webhook events.
 
 Regarding the development of a processor or enabler module, please refer to the following documentation:
@@ -60,8 +61,8 @@ Regarding the development of a processor or enabler module, please refer to the 
         - Create Stripe customer session
         - Refund processing with support for multiple refunded events and accurate data synchronization
 4. **Enabler**
-    - Assists in creating the [Stripe Payment Element](https://docs.stripe.com/payments/payment-element) component used as a payment method in the commercetools Checkout.
-    - Connects to any sample site that wants to integrate the connector, providing the available payment components for seamless integration.
+    - Assists in creating the [Stripe Payment Element](https://docs.stripe.com/payments/payment-element) and [Stripe Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element) components used as payment methods in the commercetools Checkout.
+    - Connects to any sample site that wants to integrate the connector, providing the available payment components (dropins, components, and express) for seamless integration.
 5. **Stripe**
     - The external payment service provider that handles various payment operations sends webhooks for events such as authorization, capture, refund, and cancel.
 

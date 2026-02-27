@@ -150,6 +150,16 @@ describe('stripe-payment.service', () => {
       const result: SupportedPaymentComponentsSchemaDTO = await paymentService.getSupportedPaymentComponents();
       expect(result?.dropins).toHaveLength(1);
       expect(result?.dropins[0]?.type).toStrictEqual('embedded');
+      expect(result?.express).toHaveLength(1);
+      expect(result?.express[0]?.type).toStrictEqual('dropin');
+    });
+
+    test('should return dropins and express without affecting each other', async () => {
+      const result: SupportedPaymentComponentsSchemaDTO = await paymentService.getSupportedPaymentComponents();
+      expect(result?.dropins).toHaveLength(1);
+      expect(result?.dropins[0]?.type).toStrictEqual('embedded');
+      expect(result?.express).toHaveLength(1);
+      expect(result?.express[0]?.type).toStrictEqual('dropin');
     });
   });
 
@@ -734,6 +744,24 @@ describe('stripe-payment.service', () => {
       expect(getPaymentAmountMock).toHaveBeenCalled();
       expect(stripeApiMock).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
+    });
+
+    test('should create PaymentIntent without shipping when expressCheckout is true', async () => {
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(true);
+
+      const createArgs = createSpy.mock.calls[0][0];
+      expect(createArgs).not.toHaveProperty('shipping');
     });
   });
 

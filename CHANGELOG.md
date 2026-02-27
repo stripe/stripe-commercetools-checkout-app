@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY`: Custom type key for Stripe customer ID storage
   - `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY`: Custom type key for subscription line items
   - `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY`: Product type key for subscription information
+- **Stripe Express Checkout**: Enabler exposes Express Checkout API (`PaymentExpressBuilder`, `ExpressComponent`, `ExpressOptions`), `DefaultExpressComponent` and `StripeExpressComponent` (Stripe ExpressCheckoutElement), shipping address/method callbacks and `onPayButtonClick` session flow; payment components config extended with `express[]` (e.g. `type: 'dropin'`). Processor supports `x-express-checkout` header on `POST /payments` to create PaymentIntent without shipping for Express Checkout Element; `SupportedExpressPaymentData` and `express` array in payment components schema; `createPaymentIntentStripe(expressCheckout)` omits shipping when true.
 
 ### Changed
 - Updated webhook handling to use dedicated method for `charge.refunded` events

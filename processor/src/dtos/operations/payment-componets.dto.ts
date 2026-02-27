@@ -14,6 +14,10 @@ export const SupportedPaymentComponentsData = Type.Object({
   subtypes: Type.Optional(Type.Array(Type.String())),
 });
 
+export const SupportedExpressPaymentData = Type.Object({
+  type: Type.String(),
+});
+
 /**
  * Supported payment components schema.
  *
@@ -31,12 +35,18 @@ export const SupportedPaymentComponentsData = Type.Object({
  *     {
  *       "type": "applepay"
  *     }
+ *   ],
+ *   "express": [
+ *     {
+ *       "type": "dropin"
+ *     }
  *   ]
  * }
  */
 export const SupportedPaymentComponentsSchema = Type.Object({
   dropins: Type.Array(SupportedPaymentDropinsData),
   components: Type.Array(SupportedPaymentComponentsData),
+  express: Type.Array(SupportedExpressPaymentData),
 });
 
 export enum PaymentComponentsSupported {

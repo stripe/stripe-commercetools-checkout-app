@@ -578,6 +578,11 @@ export const mockRoute__paymentsComponents_succeed: SupportedPaymentComponentsSc
       type: 'expressCheckout',
     },
   ],
+  express: [
+    {
+      type: 'dropin',
+    },
+  ],
 };
 
 export const mockRoute__paymentIntent_succeed: PaymentIntentResponseSchemaDTO = {

@@ -19,6 +19,7 @@
     var __VITE_PROCESSOR_URL__ = !'%VITE_PROCESSOR_URL%'.startsWith('%') && '%VITE_PROCESSOR_URL%';
   </script>
   <script src="../dev-utils/session.js"></script>
+  <script src="../dev-utils/checkout.js"></script>
 </head>
 <body>
 <main role="main">
@@ -101,6 +102,12 @@
             option.textContent = `dropin-${method.type}`;
             paymentMethodSelect.appendChild(option);
           });
+          paymentMethods.express?.forEach((method) => {
+            const option = document.createElement("option");
+            option.value = method.type;
+            option.textContent = `express-${method.type}`;
+            paymentMethodSelect.appendChild(option);
+          });
         });
 
         document
@@ -108,6 +115,7 @@
           .addEventListener("click", async (event) => {
             event.preventDefault();
             const cartId = document.getElementById("cartId").value;
+            ckoCartId = cartId;
             const sessionId = await getSessionId(cartId);
 
             const paymentMethodSelect =
@@ -117,6 +125,7 @@
                     paymentMethodSelect.selectedIndex
                     ].text;
             const isDropin = selectedText.startsWith('dropin');
+            const isExpress = selectedText.startsWith('express');
 
             const enabler = new Enabler({
               processorUrl: __VITE_PROCESSOR_URL__,
@@ -132,7 +141,9 @@
 
             let builder;
 
-            if(isDropin){
+            if (isExpress) {
+              builder = await enabler.createExpressBuilder(selectedValue);
+            } else if (isDropin) {
               builder = await enabler.createDropinBuilder(selectedValue);
             } else {
               builder = await enabler.createComponentBuilder(selectedValue);
@@ -156,9 +167,43 @@
                     return Promise.resolve(); // change to true, to test payment flow
                   },
                 }),
+            ...(isExpress
+              ? {
+                  onPayButtonClick: async () => {
+                    return { sessionId: sessionId };
+                  },
+                  onShippingAddressSelected: async ({ address }) => {
+                    await setShippingAddress({ address });
+                  },
+                  getShippingMethods: async ({ address }) => {
+                    return await getShippingMethods({ address });
+                  },
+                  onShippingMethodSelected: async ({ shippingMethod }) => {
+                    await setShippingMethod({ shippingMethod });
+                  },
+                  onPaymentSubmit: async ({ shippingAddress, billingAddress }) => {
+                    if (shippingAddress?.country) {
+                      await setShippingAddress({ address: shippingAddress });
+                    }
+                    if (billingAddress?.country) {
+                      await setBillingAddress({ address: billingAddress });
+                    }
+                  },
+                  onAmountUpdated: async (amount) => {},
+                  onCancel: async () => {},
+                  getCurrentCartSubtotal: getCurrentCartSubtotal,
+                  initialAmount: {
+                    centAmount: 2000,
+                    currencyCode: 'EUR',
+                    fractionDigits: 2,
+                  },
+                }
+              : {}),
             });
             if (builder.componentHasSubmit) {
               if (selectedValue === 'card' || selectedValue === 'purchaseorder' ) {
+                component.mount("#container--external");
+              } else if (isExpress) {
                 component.mount("#container--external");
               }
 
