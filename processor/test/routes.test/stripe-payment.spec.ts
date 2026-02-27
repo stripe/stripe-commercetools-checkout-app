@@ -511,6 +511,22 @@ describe('Stripe Payment APIs', () => {
       expect(responseGetConfig.json()).toEqual(mockRoute__payments_succeed);
       expect(spiedPaymentService.createPaymentIntentStripe).toHaveBeenCalled();
     });
+
+    test('should call createPaymentIntentStripe with true when x-express-checkout header is present', async () => {
+      jest.spyOn(spiedPaymentService, 'createPaymentIntentStripe').mockResolvedValue(mockRoute__payments_succeed);
+
+      await fastifyApp.inject({
+        method: 'GET',
+        url: `/payments`,
+        headers: {
+          'x-session-id': sessionId,
+          'x-express-checkout': 'true',
+          'content-type': 'application/json',
+        },
+      });
+
+      expect(spiedPaymentService.createPaymentIntentStripe).toHaveBeenCalledWith(true);
+    });
   });
 
   describe('POST /confirmPayments/:id', () => {

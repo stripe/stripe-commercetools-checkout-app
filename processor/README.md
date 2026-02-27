@@ -213,9 +213,13 @@ The `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable allows you t
 This is useful when you want to save payment methods via Customer Session but don't want to set `setup_future_usage` on the PaymentIntent, or vice versa.
 
 ### Create Payment Intent from Stripe
-This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. 
+This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. When using [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element), the frontend calls this endpoint on pay-button click (via `onPayButtonClick`); sending the `x-express-checkout` header causes the PaymentIntent to be created without shipping, so the Express Checkout Element can set shipping at confirm.
+
 #### Endpoint
 `POST /payments`
+
+#### Request Headers
+- **x-express-checkout** (optional): When set to `'true'` or `'1'`, the PaymentIntent is created without a `shipping` object so the Stripe Express Checkout Element can collect and set shipping at confirmation time. Omit or set to any other value for standard (Payment Element) flow.
 
 #### Query Parameters
 N/A
@@ -298,7 +302,7 @@ Private endpoint protected by JSON Web Token that exposes the payment methods su
 N/A
 
 #### Response Parameters
-The connector supports payment methods such as [Payment element](https://docs.stripe.com/payments/payment-element) embedded as a drop-in 
+The connector supports payment methods such as [Payment element](https://docs.stripe.com/payments/payment-element) embedded as a drop-in, and [Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element) via the `express` array. The `express` array lists supported Express Checkout types (e.g. `type: 'dropin'` for Stripe Express Checkout).
 
 ```
 {
@@ -308,6 +312,11 @@ The connector supports payment methods such as [Payment element](https://docs.st
         },
     ],
     components: [],
+    express: [
+        {
+          type: 'dropin',
+        },
+    ],
 }
 ```
 

@@ -159,6 +159,11 @@ export class StripePaymentService extends AbstractPaymentService {
         },
       ],
       components: [],
+      express: [
+        {
+          type: 'dropin',
+        },
+      ],
     };
   }
 
@@ -463,9 +468,10 @@ export class StripePaymentService extends AbstractPaymentService {
   /**
    * Creates a payment intent using the Stripe API and create commercetools payment with Initial transaction.
    *
+   * @param expressCheckout When true, shipping is omitted on the PaymentIntent so the Express Checkout Element can set it at confirm (default false).
    * @return Promise<PaymentResponseSchemaDTO> A Promise that resolves to a PaymentResponseSchemaDTO object containing the client secret and payment reference.
    */
-  public async createPaymentIntentStripe(): Promise<PaymentResponseSchemaDTO> {
+  public async createPaymentIntentStripe(expressCheckout = false): Promise<PaymentResponseSchemaDTO> {
     const config = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const customer = await this.getCtCustomer(ctCart.customerId!);
@@ -486,46 +492,22 @@ export class StripePaymentService extends AbstractPaymentService {
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      paymentIntent = await stripeApi().paymentIntents.create(
-        {
-          ...(stripeCustomerId && {
-            customer: stripeCustomerId,
-            ...(setupFutureUsage && { setup_future_usage: setupFutureUsage }),
-          }),
-          amount: amountPlanned.centAmount,
-          currency: amountPlanned.currencyCode,
-          automatic_payment_methods: {
-            enabled: true,
-          },
-          capture_method: captureMethodConfig as CaptureMethod,
-          metadata: {
-            cart_id: ctCart.id,
-            ct_project_key: config.projectKey,
-            ...(ctCart.customerId ? { ct_customer_id: ctCart.customerId } : null),
-          },
-          shipping: shippingAddress,
-          payment_method_options: {
-            card: {
-              ...(config.stripeEnableMultiOperations && {
-                request_multicapture: 'if_available',
-              }),
-            },
-          },
-          // Tax calculation integration
-          ...(hasSingleTaxCalculation && {
-            hooks: {
-              inputs: {
-                tax: {
-                  calculation: taxCalculationReferences![0],
-                },
-              },
-            },
-          }),
-        },
-        {
-          idempotencyKey,
-        },
-      );
+      const createParams = this.buildPaymentIntentCreateParams({
+        ctCart,
+        amountPlanned,
+        expressCheckout,
+        shippingAddress,
+        stripeCustomerId,
+        setupFutureUsage,
+        captureMethod: captureMethodConfig as CaptureMethod,
+        projectKey: config.projectKey,
+        stripeEnableMultiOperations: config.stripeEnableMultiOperations,
+        hasSingleTaxCalculation,
+        taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
+      });
+      paymentIntent = await stripeApi().paymentIntents.create(createParams, {
+        idempotencyKey,
+      });
     } catch (e) {
       throw wrapStripeError(e);
     }
@@ -614,6 +596,77 @@ export class StripePaymentService extends AbstractPaymentService {
       cartId: ctCart.id,
       ...(config.stripeCollectBillingAddress !== 'auto' && {
         billingAddress: this.getBillingAddress(ctCart),
+      }),
+    };
+  }
+
+  /**
+   * Builds the params object for Stripe PaymentIntent creation.
+   * Centralizes conditional fields (customer, setup_future_usage, shipping, tax hooks, multicapture) so that
+   * createPaymentIntentStripe keeps a lower cognitive complexity.
+   *
+   * @param params - Cart, amount, config-derived values and optional customer/shipping/tax data.
+   * @returns Stripe.PaymentIntentCreateParams to pass as first argument to paymentIntents.create().
+   */
+  private buildPaymentIntentCreateParams(params: {
+    ctCart: Cart;
+    amountPlanned: { centAmount: number; currencyCode: string };
+    expressCheckout: boolean;
+    shippingAddress: Stripe.PaymentIntentCreateParams.Shipping | null | undefined;
+    stripeCustomerId: string | undefined;
+    setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+    captureMethod: CaptureMethod;
+    projectKey: string;
+    stripeEnableMultiOperations: boolean;
+    hasSingleTaxCalculation: boolean;
+    taxCalculationReference: string | undefined;
+  }): Stripe.PaymentIntentCreateParams {
+    const {
+      ctCart,
+      amountPlanned,
+      expressCheckout,
+      shippingAddress,
+      stripeCustomerId,
+      setupFutureUsage,
+      captureMethod,
+      projectKey,
+      stripeEnableMultiOperations,
+      hasSingleTaxCalculation,
+      taxCalculationReference,
+    } = params;
+
+    return {
+      ...(stripeCustomerId && {
+        customer: stripeCustomerId,
+        ...(setupFutureUsage && { setup_future_usage: setupFutureUsage }),
+      }),
+      amount: amountPlanned.centAmount,
+      currency: amountPlanned.currencyCode,
+      automatic_payment_methods: {
+        enabled: true,
+      },
+      capture_method: captureMethod,
+      metadata: {
+        cart_id: ctCart.id,
+        ct_project_key: projectKey,
+        ...(ctCart.customerId ? { ct_customer_id: ctCart.customerId } : null),
+      },
+      ...(!expressCheckout && shippingAddress != null && { shipping: shippingAddress }),
+      payment_method_options: {
+        card: {
+          ...(stripeEnableMultiOperations && {
+            request_multicapture: 'if_available',
+          }),
+        },
+      },
+      ...(hasSingleTaxCalculation && {
+        hooks: {
+          inputs: {
+            tax: {
+              calculation: taxCalculationReference!,
+            },
+          },
+        },
       }),
     };
   }

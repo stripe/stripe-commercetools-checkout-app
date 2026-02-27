@@ -34,6 +34,22 @@ To enable Google Pay, you must ensure the following conditions are satisfied:
     - Ensure **Google Pay** is enabled via your Stripe dashboard.
     - Stripe automatically manages domain validation for Google Pay—manual setup is not required.
 
+## Express Checkout
+
+The enabler supports [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element) via a dedicated builder and component. Use `createExpressBuilder(type)` to obtain an Express Checkout builder; the supported type is `'dropin'`, which builds the Stripe Express Checkout Element (ExpressCheckoutElement).
+
+### Flow
+
+1. Checkout calls `enabler.createExpressBuilder('dropin')` and uses the builder to create and mount the Express component with options (callbacks, initial amount).
+2. When the user clicks the pay button, the component invokes `onPayButtonClick`, which should create a session and call the processor `POST /payments` with the header `x-express-checkout: true` to create a PaymentIntent without shipping.
+3. The user selects shipping address and method in the Express Checkout modal; the component calls `onShippingAddressSelected`, `getShippingMethods`, and `onShippingMethodSelected` so the merchant can update the cart (e.g. via commercetools APIs).
+4. On confirm, the Express Checkout Element completes the payment with shipping; the component can notify checkout via `onPaymentSubmit` and `onComplete`.
+
+### Options
+
+Configure the Express component with `ExpressOptions`: `initialAmount`, `onPayButtonClick`, `onShippingAddressSelected`, `getShippingMethods`, `onShippingMethodSelected`, `onPaymentSubmit`, `onCancel`, `onComplete`, and optionally `getCurrentCartSubtotal` and `onAmountUpdated` for dynamic amount updates when address or shipping method changes.
+
+For a working example integrating with commercetools (cart, shipping methods, address updates), see the dev utilities in `dev-utils/checkout.js`.
 
 ## Getting Started
 Please run following npm commands under `enabler` folder for development work in local environment.

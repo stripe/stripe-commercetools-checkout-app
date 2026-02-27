@@ -31,6 +31,8 @@
   },
   "overrides": {
     "path-to-regexp": "3.3.0",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "ajv": "^8.18.0",
+    "minimatch": "^3.1.3"
   }
 }

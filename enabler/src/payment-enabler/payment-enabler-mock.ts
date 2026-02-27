@@ -3,8 +3,10 @@ import {
   PaymentComponentBuilder,
   PaymentDropinBuilder,
   PaymentEnabler, PaymentResult,
+  PaymentExpressBuilder,
 } from "./payment-enabler";
 import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
+import { StripeExpressBuilder } from "../express/dropin-express";
 import {
   Appearance,
   LayoutObject,
@@ -18,7 +20,7 @@ import {
   ConfigElementResponseSchemaDTO,
   ConfigResponseSchemaDTO,
   CustomerResponseSchemaDTO
-} from "../dtos/mock-payment.dto.ts";
+} from "../dtos/mock-payment.dto";
 import { parseJSON } from "../utils";
 
 declare global {
@@ -39,6 +41,7 @@ export type BaseOptions = {
   paymentElement: StripePaymentElement; // MVP https://docs.stripe.com/payments/payment-element
   elements: StripeElements; // MVP https://docs.stripe.com/js/elements_object
   stripeCustomerId?: string;
+  expressCheckout?: boolean; // When true, processor omits shipping on PaymentIntent (Express only).
 };
 
 interface ElementsOptions {
@@ -125,6 +128,25 @@ export class MockPaymentEnabler implements PaymentEnabler {
       );
     }
     return new supportedMethods[type](setupData.baseOptions);
+  }
+
+  async createExpressBuilder(
+    type: string
+  ): Promise<PaymentExpressBuilder | never> {
+    const { baseOptions } = await this.setupData;
+    const supportedMethods: Record<string, typeof StripeExpressBuilder> = {
+      dropin: StripeExpressBuilder,
+    };
+
+    if (!Object.keys(supportedMethods).includes(type)) {
+      throw new Error(
+        `Express checkout type not supported: ${type}. Supported types: ${Object.keys(
+          supportedMethods
+        ).join(", ")}`
+      );
+    }
+
+    return new supportedMethods[type]({ ...baseOptions, expressCheckout: true });
   }
 
   private static async getStripeSDK(configEnvResponse: ConfigResponseSchemaDTO): Promise<Stripe | null> {
