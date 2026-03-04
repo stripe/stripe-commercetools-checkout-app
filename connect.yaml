@@ -38,15 +38,32 @@ deployAs:
         - key: STRIPE_CAPTURE_METHOD
           description: Stripe capture method (example - manual|automatic).
           default: automatic
-        - key: STRIPE_WEBHOOK_ID
+        - key: STRIPE_WEBHOOK_ID_US
+          description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_ID_CA
+          description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_ID_EU
           description: Stripe unique identifier for the Webhook Endpoints (example - we_*****).
           required: true
         - key: STRIPE_APPEARANCE_PAYMENT_ELEMENT
           description: Stripe Appearance for Payment Element (example - {"theme":"night","labels":"floating"} ).
+        - key: STRIPE_APPEARANCE_EXPRESS_CHECKOUT
+          description: Stripe Appearance for Express Checkout (example - {"theme":"stripe","variables":{"colorPrimary":"\#0570DE","colorBackground":"\#FFFFFF","colorText":"\#30313D","colorDanger":"\#DF1B41","fontFamily":"Ideal Sans,system-ui,sansserif","spacingUnit":"2px","borderRadius":"4px"}}).
         - key: STRIPE_LAYOUT
           description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
           default: '{"type":"tabs","defaultCollapsed":false}'
-        - key: STRIPE_PUBLISHABLE_KEY
+        - key: STRIPE_LAYOUT
+          description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
+          default: '{"type":"tabs","defaultCollapsed":false}'
+        - key: STRIPE_PUBLISHABLE_KEY_US
+          description: Stripe Publishable Key
+          required: true
+        - key: STRIPE_PUBLISHABLE_KEY_CA
+          description: Stripe Publishable Key
+          required: true
+        - key: STRIPE_PUBLISHABLE_KEY_EU
           description: Stripe Publishable Key
           required: true
         - key: STRIPE_APPLE_PAY_WELL_KNOWN
@@ -95,9 +112,21 @@ deployAs:
         - key: CTP_CLIENT_ID
           description: commercetools client ID with manage_payments, manage_orders, view_sessions, view_api_clients, manage_checkout_payment_intents, introspect_oauth_tokens, manage_types and view_types scopes
           required: true
-        - key: STRIPE_SECRET_KEY
-          description: Stripe secret key (example - sk_*****).
+        - key: STRIPE_SECRET_KEY_US
+          description: Stripe secret key for US region (sk_test_*)
           required: true
-        - key: STRIPE_WEBHOOK_SIGNING_SECRET
+        - key: STRIPE_SECRET_KEY_CA
+          description: Stripe secret key for CA region (sk_test_*)
+          required: true 
+        - key: STRIPE_SECRET_KEY_EU
+          description: Stripe secret key for EU region (sk_test_*)
+          required: true
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_US
+          description: Stripe Webhook signing secret  (example - whsec_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_CA
+          description: Stripe Webhook signing secret  (example - whsec_*****).
+          required: true
+        - key: STRIPE_WEBHOOK_SIGNING_SECRET_EU
           description: Stripe Webhook signing secret  (example - whsec_*****).
           required: true
