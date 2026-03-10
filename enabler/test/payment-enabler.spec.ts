@@ -37,6 +37,16 @@ describe('MockPaymentEnabler - Express Checkout', () => {
     
     // Mock fetch for multiple calls
     (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      // Mock /express-config (used by createExpressBuilder when sessionId is empty)
+      if (url.includes('/express-config')) {
+        return Promise.resolve({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            publishableKey: 'pk_test_1234567890',
+            environment: 'test',
+          }),
+        });
+      }
       // Mock /config-element/payment
       if (url.includes('/config-element/')) {
         return Promise.resolve({
@@ -74,14 +84,11 @@ describe('MockPaymentEnabler - Express Checkout', () => {
     });
   });
 
-  test('should create express builder for type "dropin"', async () => {
+  test('should create express builder for type "dropin" (with session)', async () => {
     const enabler = new MockPaymentEnabler({
       processorUrl: 'http://localhost:3000',
       sessionId: 'test-session',
     });
-
-    // Wait for setup to complete
-    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const builder = await enabler.createExpressBuilder('dropin');
     expect(builder).toBeDefined();
@@ -107,11 +114,33 @@ describe('MockPaymentEnabler - Express Checkout', () => {
       sessionId: 'test-session',
     });
 
-    // Wait for setup to complete
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
     await expect(enabler.createExpressBuilder('invalid')).rejects.toThrow(
       'Express checkout type not supported'
     );
+  });
+
+  test('should create express builder without session using POST /express-config', async () => {
+    const enabler = new MockPaymentEnabler({
+      processorUrl: 'http://localhost:3000',
+      sessionId: '',
+    });
+
+    const builder = await enabler.createExpressBuilder('dropin');
+    expect(builder).toBeDefined();
+    expect(builder.build).toBeDefined();
+
+    const expressOptions = {
+      onPayButtonClick: jest.fn().mockResolvedValue({ sessionId: 'test-session-id' }),
+      onShippingAddressSelected: jest.fn().mockResolvedValue(undefined),
+      getShippingMethods: jest.fn().mockResolvedValue([]),
+      onShippingMethodSelected: jest.fn().mockResolvedValue(undefined),
+      onPaymentSubmit: jest.fn().mockResolvedValue(undefined),
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      initialAmount: { centAmount: 2000, currencyCode: 'EUR', fractionDigits: 2 },
+    };
+    const component = builder.build(expressOptions as any);
+    expect((component as any).baseOptions?.expressCheckout).toBe(true);
+    expect((global.fetch as jest.Mock).mock.calls.some((call: unknown[]) => String(call[0]).includes('/express-config'))).toBe(true);
   });
 });

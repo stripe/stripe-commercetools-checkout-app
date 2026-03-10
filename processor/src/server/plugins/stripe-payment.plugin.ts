@@ -3,9 +3,11 @@ import { paymentSDK } from '../../payment-sdk';
 import {
   configElementRoutes,
   customerRoutes,
+  expressConfigRoutes,
   paymentRoutes,
   stripeWebhooksRoutes,
 } from '../../routes/stripe-payment.route';
+import { corsAuthHook } from '../../libs/fastify/cors/cors';
 import { StripePaymentService } from '../../services/stripe-payment.service';
 import { StripeHeaderAuthHook } from '../../libs/fastify/hooks/stripe-header-auth.hook';
 
@@ -39,5 +41,10 @@ export default async function (server: FastifyInstance) {
   await server.register(configElementRoutes, {
     paymentService: stripePaymentService,
     sessionHeaderAuthHook: paymentSDK.sessionHeaderAuthHookFn,
+  });
+
+  await server.register(expressConfigRoutes, {
+    paymentService: stripePaymentService,
+    corsAuthHook,
   });
 }

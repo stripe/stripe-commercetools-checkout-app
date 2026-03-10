@@ -69,21 +69,18 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       throw new Error('Stripe Elements not initialized');
     }
 
-    // Call onPayButtonClick to get sessionId (as per template requirement)
-    try {
-      const { sessionId } = await this.expressOptions.onPayButtonClick();
-      this.currentSessionId = sessionId;
-    } catch (error) {
-      this.baseOptions.onError?.(new Error('Failed to get session ID for Express Checkout.'));
-      throw new Error('Failed to get sessionId from onPayButtonClick');
-    }
+    // Mount only renders the button; session is obtained when user clicks Pay or when modal opens (ensureSessionId).
+    // Amount/currency belong on the Elements instance, not on expressCheckout options (Stripe API).
+    const { centAmount, currencyCode } = this.expressOptions.initialAmount;
+    const currency = currencyCode.toLowerCase();
+    this.baseOptions.elements.update({
+      amount: centAmount,
+      ...(currency && { currency }),
+    });
 
-    // Use type assertion since expressCheckout may not be in the type definitions yet
-    // Cast elements.create to any to bypass type checking for expressCheckout
+    // expressCheckout element only accepts layout, buttonTheme, and shipping/billing collection options (not amount/currency).
     const createElement = this.baseOptions.elements.create as any;
     this.expressCheckoutElement = createElement('expressCheckout', {
-      amount: this.expressOptions.initialAmount.centAmount,
-      currency: this.expressOptions.initialAmount.currencyCode.toLowerCase(),
       shippingAddressRequired: true,
       billingAddressRequired: true,
     }) as StripeExpressCheckoutElement;
@@ -134,9 +131,25 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     return this.expressOptions.initialAmount;
   }
 
+  /**
+   * Ensures we have a session ID for the Processor (x-session-id).
+   * Called when user clicks Pay or when modal opens; supports both sessionId and cart-only flows.
+   */
+  private async ensureSessionId(): Promise<void> {
+    if (this.currentSessionId) return;
+    try {
+      const { sessionId } = await this.expressOptions.onPayButtonClick();
+      this.currentSessionId = sessionId;
+    } catch (error) {
+      this.baseOptions.onError?.(new Error('Failed to get session ID for Express Checkout.'));
+      throw new Error('Failed to get sessionId from onPayButtonClick');
+    }
+  }
+
   private async handleShippingAddressChange(event: any): Promise<void> {
     const { address: stripeAddress, resolve, reject } = event;
     try {
+      await this.ensureSessionId();
       const expressAddress = this.convertToExpressAddress(stripeAddress);
 
       await this.setShippingAddress({ address: expressAddress });
@@ -245,6 +258,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
    */
   private async handlePaymentConfirm(): Promise<void> {
     try {
+      await this.ensureSessionId();
       // Step 1: Validate elements (paymentMethod already authorized is in elements)
       const { error: submitError } = await this.baseOptions.elements.submit();
 

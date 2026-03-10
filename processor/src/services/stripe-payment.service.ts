@@ -636,7 +636,8 @@ export class StripePaymentService extends AbstractPaymentService {
     } = params;
 
     return {
-      ...(stripeCustomerId && {
+      // Express Checkout uses one-shot payment: no customer/setup_future_usage so the PI matches frontend Elements (created without them).
+      ...(!expressCheckout && stripeCustomerId && {
         customer: stripeCustomerId,
         ...(setupFutureUsage && { setup_future_usage: setupFutureUsage }),
       }),
@@ -673,10 +674,13 @@ export class StripePaymentService extends AbstractPaymentService {
 
   /**
    * Update the PaymentIntent in Stripe to mark the Authorization in commercetools as successful.
+   * Validates the PaymentIntent with Stripe (retrieve), status, metadata.ct_payment_id, and amount/currency
+   * before updating the payment in CT. On any validation failure, logs a warning and throws (no update).
    *
    * @param {string} paymentIntentId - The Intent id created in Stripe.
    * @param {string} paymentReference - The identifier of the payment associated with the PaymentIntent in Stripe.
    * @return {Promise<void>} - A Promise that resolves when the PaymentIntent is successfully updated.
+   * @throws Error when validation fails (status, metadata, or amount/currency mismatch).
    */
   public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string): Promise<void> {
     const ctCart = await this.ctCartService.getCart({
@@ -687,6 +691,61 @@ export class StripePaymentService extends AbstractPaymentService {
       id: paymentReference,
     });
     const amountPlanned = ctPayment.amountPlanned;
+
+    // (1) Retrieve the PaymentIntent from Stripe (source of truth)
+    let stripePaymentIntent: Stripe.PaymentIntent;
+    try {
+      stripePaymentIntent = await stripeApi().paymentIntents.retrieve(paymentIntentId);
+    } catch (e) {
+      log.warn('updatePaymentIntentStripeSuccessful: failed to retrieve PaymentIntent from Stripe', {
+        paymentIntentId,
+        paymentReference,
+        error: e,
+      });
+      throw new Error(`Invalid PaymentIntent: could not retrieve from Stripe`);
+    }
+
+    // (2) Check status — only proceed if succeeded or requires_capture
+    const allowedStatuses = ['succeeded', 'requires_capture'];
+    if (!allowedStatuses.includes(stripePaymentIntent.status)) {
+      log.warn('updatePaymentIntentStripeSuccessful: PaymentIntent status not allowed', {
+        paymentIntentId,
+        paymentReference,
+        status: stripePaymentIntent.status,
+        allowedStatuses,
+      });
+      throw new Error(`Invalid PaymentIntent: status "${stripePaymentIntent.status}" is not allowed`);
+    }
+
+    // (3) Validate metadata — require metadata.ct_payment_id === paymentReference
+    const metadataCtPaymentId = stripePaymentIntent.metadata?.ct_payment_id;
+    if (metadataCtPaymentId !== paymentReference) {
+      log.warn('updatePaymentIntentStripeSuccessful: metadata.ct_payment_id does not match paymentReference', {
+        paymentIntentId,
+        paymentReference,
+        metadataCtPaymentId: metadataCtPaymentId ?? null,
+      });
+      throw new Error(`Invalid PaymentIntent: metadata.ct_payment_id does not match this payment`);
+    }
+
+    // (4) Validate amount/currency — must match ctPayment.amountPlanned
+    const stripeAmount = stripePaymentIntent.amount;
+    const stripeCurrency = (stripePaymentIntent.currency ?? '').toLowerCase();
+    const expectedCentAmount = amountPlanned.centAmount;
+    const expectedCurrency = (amountPlanned.currencyCode ?? '').toLowerCase();
+    if (stripeAmount !== expectedCentAmount || stripeCurrency !== expectedCurrency) {
+      log.warn('updatePaymentIntentStripeSuccessful: amount or currency mismatch', {
+        paymentIntentId,
+        paymentReference,
+        stripeAmount,
+        stripeCurrency,
+        expectedCentAmount,
+        expectedCurrency,
+      });
+      throw new Error(
+        `Invalid PaymentIntent: amount/currency mismatch (Stripe: ${stripeAmount} ${stripeCurrency}, expected: ${expectedCentAmount} ${expectedCurrency})`,
+      );
+    }
 
     log.info(`PaymentIntent confirmed.`, {
       ctCartId: ctCart.id,

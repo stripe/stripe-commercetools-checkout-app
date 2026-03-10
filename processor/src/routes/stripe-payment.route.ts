@@ -9,6 +9,8 @@ import {
   PaymentResponseSchema,
   PaymentResponseSchemaDTO,
 } from '../dtos/stripe-payment.dto';
+import { ConfigResponseSchema, ConfigResponseSchemaDTO } from '../dtos/operations/config.dto';
+import { corsAuthHook } from '../libs/fastify/cors/cors';
 import { log } from '../libs/logger';
 import { stripeApi } from '../clients/stripe.client';
 import { StripePaymentService } from '../services/stripe-payment.service';
@@ -32,6 +34,11 @@ type PaymentRoutesOptions = {
 type StripeRoutesOptions = {
   paymentService: StripePaymentService;
   stripeHeaderAuthHook: StripeHeaderAuthHook;
+};
+
+type ExpressConfigRoutesOptions = {
+  paymentService: StripePaymentService;
+  corsAuthHook: typeof corsAuthHook;
 };
 
 export const customerRoutes = async (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
@@ -213,4 +220,29 @@ export const configElementRoutes = async (
     const resp = opts.paymentService.applePayConfig();
     return reply.status(200).send(resp);
   });
+};
+
+/**
+ * Express config route: public config for rendering Express buttons without session.
+ * Secured by CORS (Origin validation) only; no session required.
+ */
+export const expressConfigRoutes = async (
+  fastify: FastifyInstance,
+  opts: FastifyPluginOptions & ExpressConfigRoutesOptions,
+) => {
+  fastify.post<{ Reply: ConfigResponseSchemaDTO }>(
+    '/express-config',
+    {
+      preHandler: [opts.corsAuthHook()],
+      schema: {
+        response: {
+          200: ConfigResponseSchema,
+        },
+      },
+    },
+    async (_, reply) => {
+      const config = await opts.paymentService.config();
+      return reply.status(200).send(config);
+    },
+  );
 };

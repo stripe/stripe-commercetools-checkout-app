@@ -116,8 +116,6 @@
             event.preventDefault();
             const cartId = document.getElementById("cartId").value;
             ckoCartId = cartId;
-            const sessionId = await getSessionId(cartId);
-
             const paymentMethodSelect =
                     document.getElementById("paymentMethod");
             const selectedValue = paymentMethodSelect.value;
@@ -127,10 +125,25 @@
             const isDropin = selectedText.startsWith('dropin');
             const isExpress = selectedText.startsWith('express');
 
+            let cartCurrency = "USD";
+            let expressInitialAmount = null;
+            if (cartId && isExpress) {
+              try {
+                const cart = await getCart();
+                cartCurrency = cart?.totalPrice?.currencyCode ?? "USD";
+                expressInitialAmount = await getCurrentCartSubtotal();
+              } catch (e) {
+                console.warn("Could not load cart for currency/amount, using USD", e);
+                expressInitialAmount = { centAmount: 0, currencyCode: "USD", fractionDigits: 2 };
+              }
+            }
+
+            const sessionId = isExpress ? '' : (await getSessionId(cartId));
+
             const enabler = new Enabler({
               processorUrl: __VITE_PROCESSOR_URL__,
               sessionId: sessionId,
-              currency: "EUR",
+              currency: cartCurrency,
               onComplete: ({ isSuccess, paymentReference }) => {
                 console.log("onComplete", { isSuccess, paymentReference });
               },
@@ -170,7 +183,12 @@
             ...(isExpress
               ? {
                   onPayButtonClick: async () => {
-                    return { sessionId: sessionId };
+                    if (!ckoCartId || !ckoCartId.trim()) {
+                      alert("Enter Cart ID and click Create checkout first.");
+                      return Promise.reject(new Error("Cart ID required"));
+                    }
+                    const sessionIdForExpress = await getSessionId(ckoCartId);
+                    return { sessionId: sessionIdForExpress };
                   },
                   onShippingAddressSelected: async ({ address }) => {
                     await setShippingAddress({ address });
@@ -192,11 +210,14 @@
                   onAmountUpdated: async (amount) => {},
                   onCancel: async () => {},
                   getCurrentCartSubtotal: getCurrentCartSubtotal,
-                  initialAmount: {
-                    centAmount: 2000,
-                    currencyCode: 'EUR',
-                    fractionDigits: 2,
-                  },
+                  initialAmount: (() => {
+                    const c = expressInitialAmount;
+                    return {
+                      centAmount: c?.centAmount ?? 0,
+                      currencyCode: c?.currencyCode ?? cartCurrency,
+                      fractionDigits: c?.fractionDigits ?? 2,
+                    };
+                  })(),
                 }
               : {}),
             });
