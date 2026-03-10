@@ -36,14 +36,14 @@ To enable Google Pay, you must ensure the following conditions are satisfied:
 
 ## Express Checkout
 
-The enabler supports [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element) via a dedicated builder and component. Use `createExpressBuilder(type)` to obtain an Express Checkout builder; the supported type is `'dropin'`, which builds the Stripe Express Checkout Element (ExpressCheckoutElement).
+The enabler supports [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element) via a dedicated builder and component. Use `createExpressBuilder(type)` to obtain an Express Checkout builder; the supported type is `'dropin'`, which builds the Stripe Express Checkout Element (ExpressCheckoutElement). Express Checkout can be used **with an existing session ID** (when the Enabler is created with a session) or **with cart only** (checkout creates the CTP session in `onPayButtonClick` and returns it).
 
 ### Flow
 
-1. Checkout calls `enabler.createExpressBuilder('dropin')` and uses the builder to create and mount the Express component with options (callbacks, initial amount).
-2. When the user clicks the pay button, the component invokes `onPayButtonClick`, which should create a session and call the processor `POST /payments` with the header `x-express-checkout: true` to create a PaymentIntent without shipping.
-3. The user selects shipping address and method in the Express Checkout modal; the component calls `onShippingAddressSelected`, `getShippingMethods`, and `onShippingMethodSelected` so the merchant can update the cart (e.g. via commercetools APIs).
-4. On confirm, the Express Checkout Element completes the payment with shipping; the component can notify checkout via `onPaymentSubmit` and `onComplete`.
+1. Checkout calls `enabler.createExpressBuilder('dropin')` and uses the builder to create and mount the Express component with options (callbacks, initial amount). On mount, the component only renders the Express button(s); no session is requested yet. The initial amount can be provided at build time in `ExpressOptions`.
+2. When the user clicks the pay button, the modal opens. The component then invokes `onPayButtonClick` to obtain the CTP cart session (checkout may provide an existing session ID or create one from the cart). The Enabler does not call the processor at this step.
+3. The user selects shipping address and method in the Express Checkout modal; the component calls `onShippingAddressSelected`, `getShippingMethods`, and `onShippingMethodSelected` so the merchant (checkout) can update the cart; the Enabler only invokes these callbacks and does not persist data to the cart itself.
+4. On confirm, the component calls the processor `GET /payments` with headers `x-session-id` and `x-express-checkout: true` to create a PaymentIntent without shipping, then completes the payment with Stripe and notifies checkout via `onPaymentSubmit` and `onComplete`.
 
 ### Options
 

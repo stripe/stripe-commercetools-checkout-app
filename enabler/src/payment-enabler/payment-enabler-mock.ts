@@ -59,10 +59,32 @@ interface ElementsOptions {
 }
 
 export class MockPaymentEnabler implements PaymentEnabler {
-  setupData: Promise<{ baseOptions: BaseOptions }>;
+  private sessionFlowSetupData: Promise<{ baseOptions: BaseOptions }> | null = null;
+  private expressSetupData: Promise<{ baseOptions: BaseOptions }> | null = null;
+  private options: EnablerOptions;
 
   constructor(options: EnablerOptions) {
-    this.setupData = MockPaymentEnabler._Setup(options);
+    this.options = options;
+  }
+
+  /**
+   * Session flow init: runs _Setup on first use (dropin/component). Cached per enabler instance.
+   */
+  private getSessionFlowBaseOptions(): Promise<{ baseOptions: BaseOptions }> {
+    if (!this.sessionFlowSetupData) {
+      this.sessionFlowSetupData = MockPaymentEnabler._Setup(this.options);
+    }
+    return this.sessionFlowSetupData;
+  }
+
+  /**
+   * Express init without session: uses POST /express-config (CORS only). Cached per enabler instance.
+   */
+  private getExpressBaseOptions(): Promise<{ baseOptions: BaseOptions }> {
+    if (!this.expressSetupData) {
+      this.expressSetupData = MockPaymentEnabler._SetupExpress(this.options);
+    }
+    return this.expressSetupData;
   }
 
   private static _Setup = async (
@@ -93,7 +115,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
   async createComponentBuilder(
     type: string
   ): Promise<PaymentComponentBuilder | never> {
-    const { baseOptions } = await this.setupData;
+    const { baseOptions } = await this.getSessionFlowBaseOptions();
     const supportedMethods = {};
 
     if (!Object.keys(supportedMethods).includes(type)) {
@@ -110,8 +132,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
   async createDropinBuilder(
     type: DropinType
   ): Promise<PaymentDropinBuilder | never> {
-
-    const setupData = await this.setupData;
+    const setupData = await this.getSessionFlowBaseOptions();
     if (!setupData) {
       throw new Error("StripePaymentEnabler not initialized");
     }
@@ -133,7 +154,9 @@ export class MockPaymentEnabler implements PaymentEnabler {
   async createExpressBuilder(
     type: string
   ): Promise<PaymentExpressBuilder | never> {
-    const { baseOptions } = await this.setupData;
+    const { baseOptions } = this.options.sessionId
+      ? await this.getSessionFlowBaseOptions()
+      : await this.getExpressBaseOptions();
     const supportedMethods: Record<string, typeof StripeExpressBuilder> = {
       dropin: StripeExpressBuilder,
     };
@@ -187,6 +210,51 @@ export class MockPaymentEnabler implements PaymentEnabler {
       return null;
     }
   }
+
+  /**
+   * Fetches Express config from POST /express-config (no session). Used when rendering Express buttons without session.
+   */
+  private static _SetupExpress = async (
+    options: EnablerOptions
+  ): Promise<{ baseOptions: BaseOptions }> => {
+    const res = await fetch(`${options.processorUrl}/express-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      if (res.status === 403) {
+        throw new Error('Unauthorized error fetching express config');
+      }
+      throw new Error('Not able to initialize Express Checkout');
+    }
+    const configEnvResponse: ConfigResponseSchemaDTO = await res.json();
+    const stripeSDK = await MockPaymentEnabler.getStripeSDK(configEnvResponse);
+    if (!stripeSDK) throw new Error('Failed to load Stripe SDK for Express.');
+    const opts = options as EnablerOptions & { currencyCode?: string; currency?: string };
+    const currency = (opts.currencyCode || opts.currency || 'usd').toLowerCase();
+    const elements = stripeSDK.elements({
+      mode: 'payment',
+      amount: 1,
+      currency,
+    });
+    const environment = configEnvResponse.publishableKey.includes('_test_')
+      ? 'test'
+      : configEnvResponse.environment;
+    return {
+      baseOptions: {
+        sdk: stripeSDK,
+        environment,
+        processorUrl: options.processorUrl,
+        sessionId: options.sessionId,
+        onComplete: options.onComplete || (() => {}),
+        onError: options.onError || (() => {}),
+        paymentElement: null as unknown as StripePaymentElement,
+        elements,
+        expressCheckout: true,
+      },
+    };
+  };
 
   private static async fetchConfigData(
     paymentMethodType: string, options: EnablerOptions

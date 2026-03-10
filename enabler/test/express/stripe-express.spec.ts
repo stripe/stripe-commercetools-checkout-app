@@ -64,6 +64,7 @@ describe('StripeExpressComponent', () => {
         update: jest.fn(),
         on: jest.fn(),
       }),
+      update: jest.fn(),
       _options: {
         currency: 'usd',
         amount: 10000,
@@ -105,26 +106,27 @@ describe('StripeExpressComponent', () => {
   });
 
   describe('mount', () => {
-    test('should initialize and mount ExpressCheckoutElement', async () => {
+    test('should initialize and mount ExpressCheckoutElement without calling onPayButtonClick', async () => {
       const baseOptions = createMockBaseOptions();
       const expressOptions = createMockExpressOptions();
       const component = new StripeExpressComponent({ baseOptions, expressOptions });
 
       await component.mount('#express-checkout');
-      
-      // Verify onPayButtonClick was called
-      expect(expressOptions.onPayButtonClick).toHaveBeenCalled();
-      
-      // Verify ExpressCheckoutElement was created with initialAmount
+
+      // Mount only renders the button; onPayButtonClick is called when user clicks Pay or when modal opens (ensureSessionId)
+      expect(expressOptions.onPayButtonClick).not.toHaveBeenCalled();
+
+      // Verify ExpressCheckoutElement was created with shipping/billing required
       expect(baseOptions.elements?.create).toHaveBeenCalledWith('expressCheckout', expect.objectContaining({
-        amount: expressOptions.initialAmount.centAmount,
-        currency: expressOptions.initialAmount.currencyCode.toLowerCase(),
+        shippingAddressRequired: true,
+        billingAddressRequired: true,
       }));
     });
 
     test('should throw error if initialization fails', async () => {
       const mockElements = {
         create: jest.fn().mockReturnValue(null),
+        update: jest.fn(),
         _options: {
           currency: 'usd',
           amount: 10000,

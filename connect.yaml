@@ -57,6 +57,9 @@ deployAs:
         - key: MERCHANT_RETURN_URL
           description: Merchant return URL
           required: true
+        - key: ALLOWED_ORIGINS
+          description: Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an Origin header matching one of these values (example - https://example.com,https://checkout.example.com).
+          required: true
         - key: PAYMENT_INTERFACE
           description: The payment interface value used in the commercetools payment/payment methods. Default value is "checkout-stripe".
           required: false

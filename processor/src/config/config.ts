@@ -48,6 +48,13 @@ export const config = {
   merchantReturnUrl: process.env.MERCHANT_RETURN_URL || '',
 
   /**
+   * Comma-separated list of allowed origins for POST /express-config (CORS validation).
+   * Used when rendering Express buttons without session; requests must include an Origin header matching one of these values.
+   * Environment variable: ALLOWED_ORIGINS
+   */
+  allowedOrigins: process.env.ALLOWED_ORIGINS || '',
+
+  /**
    * Enable multicapture and multirefund support for Stripe payments
    * When enabled, allows:
    * - Multiple partial captures on a single payment (multicapture)

@@ -604,11 +604,25 @@ describe('stripe-payment.service', () => {
         .spyOn(DefaultPaymentService.prototype, 'updatePayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
 
+      const retrieveResult = {
+        ...mockStripeRetrievePaymentResult,
+        status: 'succeeded' as const,
+        amount: mockGetPaymentResult.amountPlanned.centAmount,
+        currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
+        metadata: { ct_payment_id: 'paymentReference' },
+      };
+      const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentIntents: {
+          retrieve: jest.fn().mockResolvedValue(retrieveResult),
+        },
+      } as unknown as Stripe);
+
       await stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference');
 
       expect(getCartMock).toHaveBeenCalled();
       expect(getPaymentMock).toHaveBeenCalled();
       expect(updatePaymentMock).toHaveBeenCalled();
+      expect(stripeApiMock).toHaveBeenCalled();
     });
   });
 
@@ -746,7 +760,7 @@ describe('stripe-payment.service', () => {
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
     });
 
-    test('should create PaymentIntent without shipping when expressCheckout is true', async () => {
+    test('should create PaymentIntent without shipping and without customer/setup_future_usage when expressCheckout is true', async () => {
       jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
@@ -762,6 +776,8 @@ describe('stripe-payment.service', () => {
 
       const createArgs = createSpy.mock.calls[0][0];
       expect(createArgs).not.toHaveProperty('shipping');
+      expect(createArgs).not.toHaveProperty('customer');
+      expect(createArgs).not.toHaveProperty('setup_future_usage');
     });
   });
 

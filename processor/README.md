@@ -81,6 +81,7 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
+| `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
 
 Make sure commercetools client credential have at least the following permissions:
 
@@ -213,10 +214,10 @@ The `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable allows you t
 This is useful when you want to save payment methods via Customer Session but don't want to set `setup_future_usage` on the PaymentIntent, or vice versa.
 
 ### Create Payment Intent from Stripe
-This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. When using [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element), the frontend calls this endpoint on pay-button click (via `onPayButtonClick`); sending the `x-express-checkout` header causes the PaymentIntent to be created without shipping, so the Express Checkout Element can set shipping at confirm.
+This endpoint creates a new [payment intent](https://docs.stripe.com/api/payment_intents) in Stripe. It is called after the user fills out all the payment information and submits the payment. When using [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element), the frontend calls this endpoint when the user **confirms** payment in the Express Checkout modal (not on pay-button click). The session ID (obtained earlier when the user clicks Pay or when the modal opens, via `onPayButtonClick`) is sent in the `x-session-id` header; sending the `x-express-checkout` header causes the PaymentIntent to be created without shipping, so the Express Checkout Element can set shipping at confirm.
 
 #### Endpoint
-`POST /payments`
+`GET /payments`
 
 #### Request Headers
 - **x-express-checkout** (optional): When set to `'true'` or `'1'`, the PaymentIntent is created without a `shipping` object so the Stripe Express Checkout Element can collect and set shipping at confirmation time. Omit or set to any other value for standard (Payment Element) flow.
