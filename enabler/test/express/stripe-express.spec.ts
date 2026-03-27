@@ -61,6 +61,7 @@ describe('StripeExpressComponent', () => {
     const mockElements = {
       create: jest.fn().mockReturnValue({
         mount: jest.fn(),
+        unmount: jest.fn(),
         update: jest.fn(),
         on: jest.fn(),
       }),
@@ -113,7 +114,7 @@ describe('StripeExpressComponent', () => {
 
       await component.mount('#express-checkout');
 
-      // Mount only renders the button; onPayButtonClick is called when user clicks Pay or when modal opens (ensureSessionId)
+      // Mount binds listeners; onPayButtonClick runs on Stripe `click` or ensureSessionId fallback, not on mount
       expect(expressOptions.onPayButtonClick).not.toHaveBeenCalled();
 
       // Verify ExpressCheckoutElement was created with shipping/billing required
@@ -121,6 +122,25 @@ describe('StripeExpressComponent', () => {
         shippingAddressRequired: true,
         billingAddressRequired: true,
       }));
+    });
+
+    test('should register click handler for Express wallet', async () => {
+      const baseOptions = createMockBaseOptions();
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      const mockOn = jest.fn();
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+      };
+      (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
+
+      await component.mount('#express-checkout');
+
+      expect(mockOn).toHaveBeenCalledWith('click', expect.any(Function));
     });
 
     test('should throw error if initialization fails', async () => {
@@ -152,6 +172,7 @@ describe('StripeExpressComponent', () => {
       const mockOn = jest.fn();
       const mockElement = {
         mount: jest.fn(),
+        unmount: jest.fn(),
         update: jest.fn(),
         on: mockOn,
       };
@@ -163,12 +184,62 @@ describe('StripeExpressComponent', () => {
       expect(mockOn).toHaveBeenCalledWith('cancel', expect.any(Function));
       expect(mockOn).toHaveBeenCalledWith('confirm', expect.any(Function));
     });
+
+    test('simulated Stripe click calls onPayButtonClick when there is no initial session', async () => {
+      const baseOptions = createMockBaseOptions({ sessionId: '' });
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      let clickHandler: ((e: { resolve: jest.Mock; expressPaymentType: string; elementType: string }) => void) | null =
+        null;
+      const mockOn = jest.fn((event: string, handler: typeof clickHandler) => {
+        if (event === 'click') clickHandler = handler as typeof clickHandler;
+      });
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+      };
+      (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
+
+      await component.mount('#express-checkout');
+
+      expect(clickHandler).not.toBeNull();
+      const mockResolve = jest.fn();
+      clickHandler!({
+        resolve: mockResolve,
+        expressPaymentType: 'google_pay',
+        elementType: 'expressCheckout',
+      });
+
+      expect(mockResolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lineItems: [{ name: 'Total', amount: 2000 }],
+        })
+      );
+
+      await new Promise<void>((r) => setImmediate(r));
+      expect(expressOptions.onPayButtonClick).toHaveBeenCalled();
+    });
+  });
+
+  describe('clearExpressSession', () => {
+    test('resets currentSessionId to initial enabler session', () => {
+      const baseOptions = createMockBaseOptions({ sessionId: 'initial-session' });
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+      (component as unknown as { currentSessionId: string }).currentSessionId = 'other-session';
+      component.clearExpressSession();
+      expect((component as unknown as { currentSessionId: string }).currentSessionId).toBe('initial-session');
+    });
   });
 
   describe('handleShippingRateChange', () => {
-    test('should call onAmountUpdated and update elements when callback is provided', async () => {
+    test('should call getInitialPaymentData and update elements when shipping rate changes', async () => {
       const baseOptions = createMockBaseOptions();
       const expressOptions = createMockExpressOptions();
+      (expressOptions.onPayButtonClick as jest.Mock).mockResolvedValue({ sessionId: 'test-session-id' });
       const component = new StripeExpressComponent({ baseOptions, expressOptions });
 
       const mockUpdate = jest.fn();
@@ -176,14 +247,28 @@ describe('StripeExpressComponent', () => {
 
       const mockElement = {
         mount: jest.fn(),
+        unmount: jest.fn(),
         update: jest.fn(),
         on: jest.fn(),
       };
       (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
 
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            totalPrice: { centAmount: 2500, currencyCode: 'EUR', fractionDigits: 2 },
+            currencyCode: 'EUR',
+            lineItems: [
+              { name: 'Subtotal', amount: { centAmount: 2000, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SUBTOTAL' },
+              { name: 'Standard Shipping', amount: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SHIPPING' },
+            ],
+          }),
+      });
+      global.fetch = mockFetch;
+
       await component.mount('#express-checkout');
 
-      // Simulate shipping rate change event
       const mockResolve = jest.fn();
       const mockReject = jest.fn();
       const event = {
@@ -196,21 +281,22 @@ describe('StripeExpressComponent', () => {
         reject: mockReject,
       };
 
-      // Access the private method via type assertion for testing
       await (component as any).handleShippingRateChange(event);
 
       expect(expressOptions.onShippingMethodSelected).toHaveBeenCalledWith({
         shippingMethod: { id: 'shipping-1' },
       });
-
-      if (expressOptions.onAmountUpdated) {
-        expect(expressOptions.onAmountUpdated).toHaveBeenCalled();
-        expect(mockUpdate).toHaveBeenCalledWith({
-          amount: 2500, // initialAmount (2000) + shipping (500)
-        });
-      }
-
-      expect(mockResolve).toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/express-payment-data',
+        expect.objectContaining({ method: 'GET', headers: expect.objectContaining({ 'x-session-id': 'test-session' }) }),
+      );
+      expect(mockUpdate).toHaveBeenCalledWith({ amount: 2500 });
+      expect(mockResolve).toHaveBeenCalledWith({
+        lineItems: [
+          { name: 'Subtotal', amount: 2000 },
+          { name: 'Standard Shipping', amount: 500 },
+        ],
+      });
     });
   });
 
@@ -244,6 +330,7 @@ describe('StripeExpressComponent', () => {
       });
       const mockElement = {
         mount: jest.fn(),
+        unmount: jest.fn(),
         update: jest.fn(),
         on: mockOn,
       };
@@ -262,6 +349,120 @@ describe('StripeExpressComponent', () => {
       } else {
         throw new Error('Cancel handler not found');
       }
+    });
+  });
+
+  describe('handlePaymentConfirm / onPaymentSubmit payload', () => {
+    const paymentRes = {
+      sClientSecret: 'cs_test',
+      paymentReference: 'pay-ref',
+      merchantReturnUrl: 'https://example.com/return',
+      cartId: 'cart-1',
+    };
+
+    /**
+     * Mounts Express with a confirm handler wired; `elements.submit` and `sdk.confirmPayment` mocked.
+     */
+    async function mountWithConfirmHandler(elementProps?: Record<string, unknown>) {
+      let confirmHandler: (() => Promise<void>) | null = null;
+      const mockOn = jest.fn((event: string, handler: () => Promise<void>) => {
+        if (event === 'confirm') confirmHandler = handler;
+      });
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+        ...elementProps,
+      };
+      const mockSubmit = jest.fn().mockResolvedValue({});
+      const mockElements = {
+        create: jest.fn().mockReturnValue(mockElement),
+        update: jest.fn(),
+        submit: mockSubmit,
+        _options: { currency: 'usd', amount: 10000, country: 'US' },
+      } as unknown as StripeElements;
+
+      const mockConfirmPayment = jest.fn().mockResolvedValue({
+        error: undefined,
+        paymentIntent: { id: 'pi_123', status: 'succeeded' },
+      });
+      const mockSdk = {
+        paymentRequest: jest.fn(),
+        confirmPayment: mockConfirmPayment,
+      } as unknown as Stripe;
+
+      const baseOptions = createMockBaseOptions({
+        sdk: mockSdk,
+        elements: mockElements,
+      });
+      const expressOptions = createMockExpressOptions();
+
+      const mockFetch = jest.fn((url: string | URL) => {
+        const u = String(url);
+        if (u.includes('/payments') && !u.includes('confirmPayments')) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(paymentRes),
+          });
+        }
+        if (u.includes('confirmPayments')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+        }
+        return Promise.reject(new Error(`unexpected fetch ${u}`));
+      });
+      global.fetch = mockFetch as typeof fetch;
+
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+      await component.mount('#express-checkout');
+
+      expect(confirmHandler).not.toBeNull();
+      return {
+        component,
+        expressOptions,
+        confirmHandler: confirmHandler!,
+        mockSubmit,
+        mockConfirmPayment,
+      };
+    }
+
+    test('does not call onPaymentSubmit when wallet exposes no address or email', async () => {
+      const { expressOptions, confirmHandler } = await mountWithConfirmHandler();
+      await confirmHandler();
+      await new Promise<void>((r) => setImmediate(r));
+      expect(expressOptions.onPaymentSubmit).not.toHaveBeenCalled();
+    });
+
+    test('calls onPaymentSubmit with billingAddress only when shipping is absent', async () => {
+      const { expressOptions, confirmHandler } = await mountWithConfirmHandler({
+        _lastBillingAddress: {
+          address: { country: 'DE', line1: '1 Hauptstraße' },
+          email: 'buyer@example.com',
+        },
+      });
+      await confirmHandler();
+      await new Promise<void>((r) => setImmediate(r));
+      expect(expressOptions.onPaymentSubmit).toHaveBeenCalledTimes(1);
+      const payload = (expressOptions.onPaymentSubmit as jest.Mock).mock.calls[0][0];
+      expect(payload.shippingAddress).toBeUndefined();
+      expect(payload.billingAddress).toEqual(
+        expect.objectContaining({ country: 'DE', email: 'buyer@example.com' }),
+      );
+      expect(payload.customerEmail).toBe('buyer@example.com');
+    });
+
+    test('calls onPaymentSubmit with customerEmail only when addresses have no country', async () => {
+      const { expressOptions, confirmHandler } = await mountWithConfirmHandler({
+        _lastBillingAddress: {
+          email: 'only@email.test',
+          address: {},
+        },
+      });
+      await confirmHandler();
+      await new Promise<void>((r) => setImmediate(r));
+      expect(expressOptions.onPaymentSubmit).toHaveBeenCalledTimes(1);
+      const payload = (expressOptions.onPaymentSubmit as jest.Mock).mock.calls[0][0];
+      expect(payload).toEqual({ customerEmail: 'only@email.test' });
     });
   });
 });

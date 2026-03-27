@@ -31,7 +31,7 @@
     "@fastify/type-provider-typebox": "5.2.0",
     "@sinclair/typebox": "0.34.41",
     "dotenv": "17.2.2",
-    "fastify": "^5.8.2",
+    "fastify": "^5.8.4",
     "fastify-plugin": "5.1.0",
     "fastify-raw-body": "^5.0.0",
     "fluent-schema": "^1.1.0",
@@ -64,6 +64,10 @@
   },
   "overrides": {
     "path-to-regexp": "3.3.0",
-    "lodash": "^4.17.23"
+    "lodash": "^4.17.23",
+    "minimatch": "^10.0.3",
+    "babel-plugin-istanbul": {
+      "test-exclude": "^8.0.0"
+    }
   }
 }

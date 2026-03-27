@@ -67,8 +67,47 @@ export const CustomerResponseSchema = Type.Optional(
   }),
 );
 
+/**
+ * Amount in commercetools format (used inside Express line items).
+ */
+export const ExpressPaymentDataAmountSchema = Type.Object({
+  centAmount: Type.Number(),
+  currencyCode: Type.String(),
+  fractionDigits: Type.Number(),
+});
+
+/**
+ * Line item for Express Checkout (amount as commercetools-style object, type for display).
+ */
+export const ExpressPaymentDataLineItemSchema = Type.Object({
+  name: Type.String(),
+  amount: ExpressPaymentDataAmountSchema,
+  type: Type.String(),
+});
+
+/**
+ * Total price in commercetools cart style (`totalPrice`).
+ */
+export const ExpressPaymentDataTotalPriceSchema = Type.Object({
+  centAmount: Type.Number(),
+  currencyCode: Type.String(),
+  fractionDigits: Type.Number(),
+});
+
+/**
+ * Response for GET /express-payment-data (commercetools-oriented shape for Express).
+ * totalPrice, currencyCode at root, lineItems with amount object and type.
+ * Used by the enabler after shipping address/method changes to get the current cart total and line items.
+ */
+export const GetExpressPaymentDataResponseSchema = Type.Object({
+  totalPrice: ExpressPaymentDataTotalPriceSchema,
+  currencyCode: Type.String(),
+  lineItems: Type.Array(ExpressPaymentDataLineItemSchema),
+});
+
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>;
 export type PaymentResponseSchemaDTO = Static<typeof PaymentResponseSchema>;
 export type ConfigElementResponseSchemaDTO = Static<typeof ConfigElementResponseSchema>;
 export type CtPaymentSchemaDTO = Static<typeof CtPaymentSchema>;
 export type CustomerResponseSchemaDTO = Static<typeof CustomerResponseSchema>;
+export type GetExpressPaymentDataResponseSchemaDTO = Static<typeof GetExpressPaymentDataResponseSchema>;

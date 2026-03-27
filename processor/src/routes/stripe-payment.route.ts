@@ -6,6 +6,8 @@ import {
   ConfigElementResponseSchemaDTO,
   CustomerResponseSchema,
   CustomerResponseSchemaDTO,
+  GetExpressPaymentDataResponseSchema,
+  GetExpressPaymentDataResponseSchemaDTO,
   PaymentResponseSchema,
   PaymentResponseSchemaDTO,
 } from '../dtos/stripe-payment.dto';
@@ -118,6 +120,22 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
       } catch (error) {
         return reply.status(400).send({ outcome: PaymentModificationStatus.REJECTED, error: JSON.stringify(error) });
       }
+    },
+  );
+
+  fastify.get<{ Reply: GetExpressPaymentDataResponseSchemaDTO }>(
+    '/express-payment-data',
+    {
+      preHandler: [opts.sessionHeaderAuthHook.authenticate()],
+      schema: {
+        response: {
+          200: GetExpressPaymentDataResponseSchema,
+        },
+      },
+    },
+    async (_request, reply) => {
+      const resp = await opts.paymentService.getExpressPaymentData();
+      return reply.status(200).send(resp);
     },
   );
 };

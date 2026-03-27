@@ -320,6 +320,13 @@ export interface ExpressComponent {
    * @param selector - The selector where the component will be mounted.
    */
   mount(selector: string): void | Promise<void>;
+
+  /**
+   * Clears the Connect session id used for Express processor calls (`x-session-id`).
+   * Call when the active cart / buy-now context changes without destroying the enabler.
+   * Resets to the session id the enabler was constructed with (if any).
+   */
+  clearExpressSession?(): void;
 }
 
 /**
@@ -378,13 +385,54 @@ export type CTAmount = {
 };
 
 /**
+ * Response from GET /express-payment-data (commercetools-oriented totals and line items for Express).
+ * Used by the enabler to update amount and line items after shipping address/method changes.
+ */
+export type InitialPaymentData = {
+  totalPrice: CTAmount;
+  lineItems: {
+    name: string;
+    amount: CTAmount;
+    type: string;
+  }[];
+  currencyCode: string;
+};
+
+/**
+ * Payload for {@link ExpressOptions.onPaymentSubmit} after the wallet authorizes payment.
+ * Only defined properties should be applied to the cart or checkout session: the enabler omits
+ * keys when data is missing so hosts do not send empty `setShippingAddress` updates while a
+ * shipping method remains set.
+ */
+export type ExpressPaymentSubmitPayload = {
+  /**
+   * Present when the Express element exposed a shipping address with a country.
+   */
+  shippingAddress?: ExpressAddressData;
+  /**
+   * Present when the Express element exposed a billing address with a country.
+   */
+  billingAddress?: ExpressAddressData;
+  /**
+   * Present when a non-empty email was derived from billing or shipping data.
+   */
+  customerEmail?: string;
+};
+
+/**
  * Represents the options for an express checkout component.
- * Aligned with commercetools Connect template structure.
+ * Shaped for commercetools Checkout Express integration (callbacks and session flow).
  */
 export type ExpressOptions = {
   /**
-   * A callback function Checkout calls after pay button click.
-   * The response of this callback function will include a sessionId to initialize the payment attempt.
+   * Optional. Restrict express checkout to these country codes (ISO 3166-1 alpha-2), per Express UX expectations.
+   */
+  allowedCountries?: string[];
+
+  /**
+   * Invoked when the buyer clicks an Express wallet button (Stripe `click` on ExpressCheckoutElement)
+   * and as a fallback when shipping or confirm runs before the session is ready (`ensureSessionId` in the enabler).
+   * Should be idempotent where possible so duplicate calls (click + fallback) do not create duplicate carts.
    */
   onPayButtonClick: () => Promise<OnclickResponse>;
 
@@ -414,21 +462,13 @@ export type ExpressOptions = {
   }) => Promise<void>;
 
   /**
-   * A callback called when a payment is authorized.
-   * @param opts - Authorization event from psp, along with formatted shippingAddress and billingAddress.
+   * Called when payment is authorized, before the processor creates the PaymentIntent.
+   * Receives a partial {@link ExpressPaymentSubmitPayload}: update only properties that are defined.
+   * Omitted when Stripe does not expose shipping, billing, or email and the cart was already
+   * updated via `onShippingAddressSelected` / `onShippingMethodSelected`.
+   * @param opts - Optional shipping address, billing address, and customer email from the Express flow.
    */
-  onPaymentSubmit: (opts: {
-    shippingAddress: ExpressAddressData;
-    billingAddress: ExpressAddressData;
-  }) => Promise<void>;
-
-  /**
-   * Callback function called when the amount needs to be updated in Stripe Elements.
-   * This is typically called after shipping method changes and the cart total is recalculated.
-   * @param amount - The updated total amount.
-   * @returns A promise that resolves when the amount update is processed.
-   */
-  onAmountUpdated?: (amount: CTAmount) => Promise<void>;
+  onPaymentSubmit: (opts: ExpressPaymentSubmitPayload) => Promise<void>;
 
   /**
    * Callback function called when the user cancels the Express Checkout modal.
@@ -448,13 +488,6 @@ export type ExpressOptions = {
    * @param error - The error that occurred.
    */
   onError?: (error: any) => void;
-
-  /**
-   * Optional. Returns the current cart subtotal (line items only, no shipping).
-   * When provided, this is used when updating amounts on shipping address/rate change
-   * so the displayed total reflects the actual cart. If omitted, initialAmount is used.
-   */
-  getCurrentCartSubtotal?: () => Promise<CTAmount>;
 
   /**
    * Initial amount for the express checkout.
