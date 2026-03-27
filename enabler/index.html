@@ -131,7 +131,10 @@
               try {
                 const cart = await getCart();
                 cartCurrency = cart?.totalPrice?.currencyCode ?? "USD";
-                expressInitialAmount = await getCurrentCartSubtotal();
+                const cartForAmount = await getCart();
+                expressInitialAmount = cartForAmount?.totalPrice
+                  ? { centAmount: cartForAmount.totalPrice.centAmount, currencyCode: cartForAmount.totalPrice.currencyCode ?? 'USD', fractionDigits: cartForAmount.totalPrice.fractionDigits ?? 2 }
+                  : { centAmount: 0, currencyCode: 'USD', fractionDigits: 2 };
               } catch (e) {
                 console.warn("Could not load cart for currency/amount, using USD", e);
                 expressInitialAmount = { centAmount: 0, currencyCode: "USD", fractionDigits: 2 };
@@ -199,17 +202,18 @@
                   onShippingMethodSelected: async ({ shippingMethod }) => {
                     await setShippingMethod({ shippingMethod });
                   },
-                  onPaymentSubmit: async ({ shippingAddress, billingAddress }) => {
-                    if (shippingAddress?.country) {
-                      await setShippingAddress({ address: shippingAddress });
+                  onPaymentSubmit: async (opts) => {
+                    if (opts.shippingAddress) {
+                      await setShippingAddress({ address: opts.shippingAddress });
                     }
-                    if (billingAddress?.country) {
-                      await setBillingAddress({ address: billingAddress });
+                    if (opts.billingAddress) {
+                      await setBillingAddress({ address: opts.billingAddress });
+                    }
+                    if (opts.customerEmail) {
+                      // Checkout may persist customerEmail to cart if needed
                     }
                   },
-                  onAmountUpdated: async (amount) => {},
                   onCancel: async () => {},
-                  getCurrentCartSubtotal: getCurrentCartSubtotal,
                   initialAmount: (() => {
                     const c = expressInitialAmount;
                     return {

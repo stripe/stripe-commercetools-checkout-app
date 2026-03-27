@@ -3,11 +3,16 @@ import {
   ExpressOptions,
   ExpressComponent,
   ExpressAddressData,
-  CTAmount,
+  ExpressPaymentSubmitPayload,
+  InitialPaymentData,
 } from '../payment-enabler/payment-enabler';
 import { BaseOptions } from '../payment-enabler/payment-enabler-mock';
 import { DefaultExpressComponent } from './base';
-import { StripeExpressCheckoutElement } from '@stripe/stripe-js';
+import {
+  LineItem,
+  StripeExpressCheckoutElement,
+  StripeExpressCheckoutElementClickEvent,
+} from '@stripe/stripe-js';
 import { PaymentResponseSchemaDTO } from '../dtos/mock-payment.dto';
 
 interface BillingAddress {
@@ -57,11 +62,26 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   private baseOptions: BaseOptions;
   private expressCheckoutElement: StripeExpressCheckoutElement | null = null;
   private currentSessionId: string;
+  /** Session id the enabler was constructed with; used by `clearExpressSession`. */
+  private readonly initialSessionId: string;
+  /** In-flight `onPayButtonClick` from Express `click` (dedup + await in `ensureSessionId`). */
+  private sessionInitPromise: Promise<void> | null = null;
+  /** Bumped on `clearExpressSession` so stale async session work is ignored. */
+  private sessionInitGeneration = 0;
+  private expressListenersBound = false;
+  private expressMounted = false;
 
   constructor(opts: { baseOptions: BaseOptions; expressOptions: ExpressOptions }) {
     super({ expressOptions: opts.expressOptions });
     this.baseOptions = opts.baseOptions;
-    this.currentSessionId = opts.baseOptions.sessionId;
+    this.initialSessionId = opts.baseOptions.sessionId ?? '';
+    this.currentSessionId = this.initialSessionId;
+  }
+
+  clearExpressSession(): void {
+    this.sessionInitGeneration += 1;
+    this.sessionInitPromise = null;
+    this.currentSessionId = this.initialSessionId;
   }
 
   async init(): Promise<void> {
@@ -69,7 +89,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       throw new Error('Stripe Elements not initialized');
     }
 
-    // Mount only renders the button; session is obtained when user clicks Pay or when modal opens (ensureSessionId).
+    // Mount renders the button; session comes from Stripe `click` (async) and/or `ensureSessionId` fallback.
     // Amount/currency belong on the Elements instance, not on expressCheckout options (Stripe API).
     const { centAmount, currencyCode } = this.expressOptions.initialAmount;
     const currency = currencyCode.toLowerCase();
@@ -91,61 +111,141 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       await this.init();
     }
 
-    if (this.expressCheckoutElement) {
-      this.expressCheckoutElement.mount(selector);
-      
-      // Register "confirm" event handler - fired when user authorizes payment
-      (this.expressCheckoutElement as any).on('confirm', async () => {
-        await this.handlePaymentConfirm();
-      });
-
-      // Register "cancel" event handler - fired when user cancels Express Checkout modal
-      (this.expressCheckoutElement as any).on('cancel', async () => {
-        await this.handleCancel();
-      });
-
-      // Shipping address change (documented Stripe API)
-      (this.expressCheckoutElement as any).on('shippingaddresschange', async (event: any) => {
-        await this.handleShippingAddressChange(event);
-      });
-
-      // Shipping rate change (documented Stripe API)
-      (this.expressCheckoutElement as any).on('shippingratechange', async (event: any) => {
-        await this.handleShippingRateChange(event);
-      });
-    } else {
+    if (!this.expressCheckoutElement) {
       const error = new Error('Failed to initialize Express Checkout element.');
       this.baseOptions.onError?.(error);
       throw error;
     }
+
+    if (this.expressMounted) {
+      this.expressCheckoutElement.unmount();
+    }
+    this.expressCheckoutElement.mount(selector);
+    this.expressMounted = true;
+
+    if (!this.expressListenersBound) {
+      this.bindExpressEventListeners();
+      this.expressListenersBound = true;
+    }
   }
 
   /**
-   * Returns the subtotal to use when updating amount/lineItems.
-   * Uses getCurrentCartSubtotal if provided, otherwise initialAmount.
+   * Line items for Stripe `click` `resolve` from checkout-known total (must stay synchronous for Stripe time limit).
    */
-  private async getSubtotalForAmountUpdate(): Promise<CTAmount> {
-    if (this.expressOptions.getCurrentCartSubtotal) {
-      return await this.expressOptions.getCurrentCartSubtotal();
+  private getResolveLineItemsFromInitial(): LineItem[] {
+    const { centAmount } = this.expressOptions.initialAmount;
+    return [{ name: 'Total', amount: centAmount }];
+  }
+
+  /**
+   * Starts `onPayButtonClick` without blocking `click` `resolve` (Stripe ~1s constraint).
+   */
+  private kickOffSessionInitFromClick(): void {
+    if (this.currentSessionId) return;
+    if (this.sessionInitPromise) return;
+
+    const gen = this.sessionInitGeneration;
+    this.sessionInitPromise = (async () => {
+      try {
+        const { sessionId } = await this.expressOptions.onPayButtonClick();
+        if (gen !== this.sessionInitGeneration) return;
+        this.currentSessionId = sessionId;
+      } catch {
+        if (gen === this.sessionInitGeneration) {
+          this.baseOptions.onError?.(new Error('Failed to get session ID for Express Checkout.'));
+        }
+      } finally {
+        if (gen === this.sessionInitGeneration) {
+          this.sessionInitPromise = null;
+        }
+      }
+    })();
+  }
+
+  private bindExpressEventListeners(): void {
+    const el = this.expressCheckoutElement;
+    if (!el) return;
+
+    el.on('click', (event: StripeExpressCheckoutElementClickEvent) => {
+      event.resolve({
+        lineItems: this.getResolveLineItemsFromInitial(),
+      });
+      if (!this.currentSessionId) {
+        this.kickOffSessionInitFromClick();
+      }
+    });
+
+    el.on('confirm', async () => {
+      await this.handlePaymentConfirm();
+    });
+
+    el.on('cancel', async () => {
+      await this.handleCancel();
+    });
+
+    el.on('shippingaddresschange', async (event) => {
+      await this.handleShippingAddressChange(event);
+    });
+
+    el.on('shippingratechange', async (event) => {
+      await this.handleShippingRateChange(event);
+    });
+  }
+
+  /**
+   * Fetches the current cart total and line items from the processor for the active session.
+   * Called after shipping address or shipping method changes so Elements and Stripe resolve use the correct amount.
+   *
+   * @returns {Promise<InitialPaymentData>} Total, line items, and currency from the processor.
+   * @throws {Error} When the processor response is not successful.
+   */
+  private async getInitialPaymentData(): Promise<InitialPaymentData> {
+    const apiUrl = new URL(`${this.baseOptions.processorUrl}/express-payment-data`);
+    const response = await fetch(apiUrl.toString(), {
+      method: 'GET',
+      headers: this.getHeadersConfig(),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get express amount from processor');
     }
-    return this.expressOptions.initialAmount;
+
+    const data = await response.json();
+    return data as InitialPaymentData;
   }
 
   /**
    * Ensures we have a session ID for the Processor (x-session-id).
-   * Called when user clicks Pay or when modal opens; supports both sessionId and cart-only flows.
+   * Waits for in-flight session from Express `click` when present; otherwise calls `onPayButtonClick` (fallback).
    */
   private async ensureSessionId(): Promise<void> {
     if (this.currentSessionId) return;
+
+    if (this.sessionInitPromise) {
+      try {
+        await this.sessionInitPromise;
+      } catch {
+        throw new Error('Failed to get sessionId from onPayButtonClick');
+      }
+      if (this.currentSessionId) return;
+    }
+
     try {
       const { sessionId } = await this.expressOptions.onPayButtonClick();
       this.currentSessionId = sessionId;
-    } catch (error) {
+    } catch {
       this.baseOptions.onError?.(new Error('Failed to get session ID for Express Checkout.'));
       throw new Error('Failed to get sessionId from onPayButtonClick');
     }
   }
 
+  /**
+   * Handles the Stripe Express `shippingaddresschange` event: updates the cart shipping address,
+   * loads shipping methods, applies the first rate by default, fetches totals/line items from the processor,
+   * updates Elements, and resolves the event for Stripe.
+   *
+   * @param event - Stripe event with `address`, `resolve`, and `reject`.
+   */
   private async handleShippingAddressChange(event: any): Promise<void> {
     const { address: stripeAddress, resolve, reject } = event;
     try {
@@ -169,16 +269,10 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         // Apply first shipping rate by default so Order Total updates even when shippingratechange does not fire
         const firstRate = shippingRates[0];
         await this.setShippingMethod({ shippingMethod: { id: firstRate.id } });
-        const currentSubtotal = await this.getSubtotalForAmountUpdate();
-        const firstShippingAmount = firstRate.amount ?? 0;
-        const defaultTotalCents = currentSubtotal.centAmount + firstShippingAmount;
-        await this.baseOptions.elements.update({ amount: defaultTotalCents });
-        const lineItems: Array<{ name: string; amount: number }> = [
-          { name: 'Subtotal', amount: currentSubtotal.centAmount },
-          { name: firstRate.displayName ?? 'Shipping', amount: firstShippingAmount },
-        ];
-
-        resolve({ shippingRates, lineItems });
+        const data = await this.getInitialPaymentData();
+        await this.baseOptions.elements.update({ amount: data.totalPrice.centAmount });
+        const lineItemsForStripe = data.lineItems.map((item) => ({ name: item.name, amount: item.amount.centAmount }));
+        resolve({ shippingRates, lineItems: lineItemsForStripe });
       } else {
         resolve({ shippingRates: [] });
       }
@@ -189,6 +283,12 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     }
   }
 
+  /**
+   * Handles the Stripe Express `shippingratechange` event: updates the cart shipping method,
+   * refreshes amount and line items from the processor, updates Elements, and resolves for Stripe.
+   *
+   * @param event - Stripe event with `shippingRate`, `resolve`, and `reject`.
+   */
   private async handleShippingRateChange(event: any): Promise<void> {
     const { shippingRate: stripeShippingRate, resolve, reject } = event;
     try {
@@ -198,35 +298,12 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         },
       });
 
-      const currentSubtotal = await this.getSubtotalForAmountUpdate();
-      const shippingAmount = stripeShippingRate.amount ?? 0;
-      const estimatedNewAmount = {
-        centAmount: currentSubtotal.centAmount + shippingAmount,
-        currencyCode: currentSubtotal.currencyCode,
-        fractionDigits: currentSubtotal.fractionDigits,
-      };
-
+      const data = await this.getInitialPaymentData();
       await this.baseOptions.elements.update({
-        amount: estimatedNewAmount.centAmount,
+        amount: data.totalPrice.centAmount,
       });
-
-      const updatedLineItems: Array<{ name: string; amount: number }> = [
-        { name: 'Subtotal', amount: currentSubtotal.centAmount },
-        {
-          name: stripeShippingRate.displayName ?? 'Shipping',
-          amount: shippingAmount,
-        },
-      ];
-
-      if (this.expressOptions.onAmountUpdated) {
-        try {
-          await this.expressOptions.onAmountUpdated(estimatedNewAmount);
-        } catch {
-          // ignore callback errors
-        }
-      }
-
-      resolve({ lineItems: updatedLineItems });
+      const lineItemsForStripe = data.lineItems.map((item) => ({ name: item.name, amount: item.amount.centAmount }));
+      resolve({ lineItems: lineItemsForStripe });
     } catch (error) {
       this.baseOptions.onError?.(new Error('Error updating shipping method.'));
       reject();
@@ -243,59 +320,93 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       if (this.expressOptions.onCancel) {
         await this.expressOptions.onCancel();
       }
-
-      // If Checkout provides updated amount after cancel (via onAmountUpdated),
-      // we would update it here, but typically cancel means reverting to original amount
-      // which Checkout should handle via onCancel callback
     } catch (error) {
       this.baseOptions.onError?.(new Error('Error handling Express Checkout cancel.'));
     }
   }
 
   /**
-   * Handles the payment confirmation flow when user authorizes payment in Express Checkout.
-   * This is triggered by the "confirm" event from StripeExpressCheckoutElement.
+   * Builds the optional cart-sync payload for {@link ExpressOptions.onPaymentSubmit}.
+   * Omits `shippingAddress` / `billingAddress` unless a trimmed country is present, and omits
+   * `customerEmail` when blank, so integrators never receive empty address objects that map to
+   * invalid cart updates while a shipping method is set.
+   *
+   * @param expressShipping - Shipping address in {@link ExpressAddressData} shape (may be empty).
+   * @param expressBilling - Billing address in {@link ExpressAddressData} shape (may be empty).
+   * @param customerEmail - Email from billing or shipping conversion.
+   * @returns A non-empty {@link ExpressPaymentSubmitPayload}, or `null` when nothing should be synced.
+   */
+  private buildExpressPaymentSubmitPayload(
+    expressShipping: ExpressAddressData,
+    expressBilling: ExpressAddressData,
+    customerEmail: string,
+  ): ExpressPaymentSubmitPayload | null {
+    const email = customerEmail?.trim() ?? '';
+    const hasShipping = Boolean(expressShipping?.country?.trim());
+    const hasBilling = Boolean(expressBilling?.country?.trim());
+    const hasEmail = Boolean(email);
+
+    if (!hasShipping && !hasBilling && !hasEmail) {
+      return null;
+    }
+
+    return {
+      ...(hasShipping ? { shippingAddress: expressShipping } : {}),
+      ...(hasBilling ? { billingAddress: expressBilling } : {}),
+      ...(hasEmail ? { customerEmail: email } : {}),
+    };
+  }
+
+  /**
+   * Handles payment confirmation when the user authorizes payment in Express Checkout.
+   * Triggered by the `confirm` event from `StripeExpressCheckoutElement`.
+   *
+   * @remarks
+   * Flow: submit Elements → optional sync via `onPaymentSubmit` (partial payload only) →
+   * create PaymentIntent on the processor → confirm with Stripe → persist in commercetools → `onComplete`.
    */
   private async handlePaymentConfirm(): Promise<void> {
     try {
       await this.ensureSessionId();
-      // Step 1: Validate elements (paymentMethod already authorized is in elements)
+
+      // Step 1: Submit Elements (payment method is already authorized in Elements).
       const { error: submitError } = await this.baseOptions.elements.submit();
 
       if (submitError) {
         throw submitError;
       }
 
-      // Step 2: Get shipping and billing addresses
-      // Note: Stripe handles addresses internally in elements, but we need them for onPaymentSubmit
-      // We'll try to get them from the element, but if not available, Checkout should have them
-      // from the cart after onShippingAddressSelected was called
+      // Step 2: Read shipping/billing from the Express element when Stripe exposes them.
       let shippingAddress: any = null;
       let billingAddress: any = null;
-
-      // Try to get addresses from Stripe element (may not always be available)
       try {
         shippingAddress = this.getShippingAddressFromStripe();
         billingAddress = this.getBillingAddressFromStripe();
       } catch {
-        // If addresses are not available from element, Checkout should provide them from the cart
+        // Element may not expose addresses; cart may already be updated from prior shipping events.
       }
 
-      // Step 3: Call onPaymentSubmit callback (required by template)
-      await this.expressOptions.onPaymentSubmit({
-        shippingAddress: shippingAddress 
-          ? this.convertToExpressAddress(shippingAddress)
-          : ({} as ExpressAddressData),
-        billingAddress: billingAddress
-          ? this.convertToExpressAddress(billingAddress)
-          : ({} as ExpressAddressData),
-      });
+      // Step 3: Integrator callback — sync checkout/cart only for fields the wallet exposed.
+      const expressShipping = shippingAddress
+        ? this.convertToExpressAddress(shippingAddress)
+        : ({} as ExpressAddressData);
+      const expressBilling = billingAddress
+        ? this.convertToExpressAddress(billingAddress)
+        : ({} as ExpressAddressData);
+      const customerEmail = expressBilling?.email ?? expressShipping?.email ?? '';
+      const paymentSubmitPayload = this.buildExpressPaymentSubmitPayload(
+        expressShipping,
+        expressBilling,
+        customerEmail,
+      );
+      if (paymentSubmitPayload) {
+        await this.expressOptions.onPaymentSubmit(paymentSubmitPayload);
+      }
 
-      // Step 4: Create PaymentIntent in processor (same endpoint as drop-in normal)
-      // Use currentSessionId (from onPayButtonClick) instead of baseOptions.sessionId
+      // Step 4: Create PaymentIntent via processor (same GET /payments path as embedded drop-in).
       const paymentRes = await this.getPayment();
 
-      // Step 5: Confirm PaymentIntent with Stripe using elements (paymentMethod comes from elements)
+      // Step 5: Confirm PaymentIntent with Stripe; `paymentMethod` comes from Elements.
       const { paymentIntent } = await this.confirmStripePayment({
         merchantReturnUrl: paymentRes.merchantReturnUrl,
         cartId: paymentRes.cartId,
@@ -306,13 +417,13 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         }),
       });
 
-      // Step 6: Confirm in commercetools
+      // Step 6: Confirm in commercetools (processor `/confirmPayments`).
       await this.confirmPaymentIntent({
         paymentIntentId: paymentIntent.id,
         paymentReference: paymentRes.paymentReference,
       });
 
-      // Step 7: Notify success
+      // Step 7: Notify host checkout of success.
       this.expressOptions.onComplete?.({
         isSuccess: true,
         paymentReference: paymentRes.paymentReference,
@@ -327,8 +438,11 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
 
 
   /**
-   * Creates PaymentIntent in the processor.
-   * Uses the same endpoint as drop-in normal flow.
+   * Requests PaymentIntent details from the processor.
+   *
+   * @remarks
+   * Uses `GET /payments` — the same endpoint as the embedded drop-in flow.
+   * Sends `x-session-id` from `currentSessionId` (from enabler, `click` + `onPayButtonClick`, or `ensureSessionId` fallback).
    */
   private async getPayment(): Promise<PaymentResponseSchemaDTO> {
     const apiUrl = new URL(`${this.baseOptions.processorUrl}/payments`);
@@ -346,8 +460,10 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Confirms PaymentIntent with Stripe.
-   * Uses elements (which contains the authorized paymentMethod) instead of passing paymentMethod manually.
+   * Confirms the PaymentIntent with Stripe using the shared Elements instance.
+   *
+   * @remarks
+   * The authorized `paymentMethod` is taken from Elements; optional `billingAddress` augments `confirmParams`.
    */
   private async confirmStripePayment({
     merchantReturnUrl,
@@ -396,7 +512,10 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Confirms PaymentIntent in commercetools.
+   * Notifies the processor that the PaymentIntent succeeded so commercetools can be updated.
+   *
+   * @param paymentIntentId - Stripe PaymentIntent id.
+   * @param paymentReference - CT payment reference from the processor payment response.
    */
   private async confirmPaymentIntent({
     paymentIntentId,
@@ -417,8 +536,9 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Gets headers configuration for API requests.
-   * Uses currentSessionId (from onPayButtonClick) instead of baseOptions.sessionId.
+   * Builds headers for enabler → processor requests.
+   *
+   * @returns Headers including `Content-Type`, `x-session-id` (`currentSessionId`), and optional `x-express-checkout`.
    */
   private getHeadersConfig(): HeadersInit {
     const headers: Record<string, string> = {
@@ -477,8 +597,12 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     };
   }
 
+  /**
+   * Converts a Stripe address payload to {@link ExpressAddressData} for CT/checkout callbacks.
+   *
+   * @param stripeAddress - Nested `{ address: { ... } }` or flat `{ country, line1, ... }` from Stripe.
+   */
   private convertToExpressAddress(stripeAddress: any): ExpressAddressData {
-    // Support both nested (address: { country, city, ... }) and flat ({ country, city, ... }) shapes from Stripe
     const address = stripeAddress?.address ?? stripeAddress ?? {};
     const nameParts = stripeAddress?.name ? stripeAddress.name.split(' ') : [];
     const firstName = nameParts[0] || '';

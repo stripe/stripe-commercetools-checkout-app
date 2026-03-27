@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stripe Express Checkout**: Enabler exposes Express Checkout API (`PaymentExpressBuilder`, `ExpressComponent`, `ExpressOptions`), `DefaultExpressComponent` and `StripeExpressComponent` (Stripe ExpressCheckoutElement), shipping address/method callbacks and `onPayButtonClick` session flow (session obtained when user clicks Pay or when modal opens; mount only renders the button). Processor supports `x-express-checkout` header on `GET /payments` (called when user confirms) to create PaymentIntent without shipping for Express Checkout Element; `SupportedExpressPaymentData` and `express` array in payment components schema; `createPaymentIntentStripe(expressCheckout)` omits shipping when true.
 
 ### Changed
+- **Documentation**: Express Checkout docs and related JSDoc now describe alignment with **commercetools Checkout Express integration** (including `GET /express-payment-data` and `POST /express-config` on the processor). Wording that implied copying another PSP template was removed.
 - Updated webhook handling to use dedicated method for `charge.refunded` events
 - Improved refund transaction updates with correct refund IDs and amounts
 - Enhanced error handling and logging for refund processing

@@ -31,6 +31,7 @@ import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
   CustomerResponseSchemaDTO,
+  GetExpressPaymentDataResponseSchemaDTO,
   PaymentOutcome,
   PaymentResponseSchemaDTO,
 } from '../dtos/stripe-payment.dto';
@@ -763,6 +764,79 @@ export class StripePaymentService extends AbstractPaymentService {
         state: this.convertPaymentResultCode(PaymentOutcome.AUTHORIZED as PaymentOutcome),
       },
     });
+  }
+
+  /**
+   * Return the current cart amount and line items for Express Checkout (commercetools cart shape).
+   * Used after shipping address/method changes; cart is already updated by Checkout via callbacks.
+   * Requires session (x-session-id) so cartId comes from context.
+   *
+   * @returns {Promise<GetExpressPaymentDataResponseSchemaDTO>} totalPrice, currencyCode, and lineItems (each with amount object and type).
+   */
+  public async getExpressPaymentData(): Promise<GetExpressPaymentDataResponseSchemaDTO> {
+    const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+    const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+
+    const currencyCode = amountPlanned.currencyCode;
+    const fractionDigits = amountPlanned.fractionDigits;
+    const totalPrice = {
+      centAmount: amountPlanned.centAmount,
+      currencyCode,
+      fractionDigits,
+    };
+
+    type LineItem = {
+      name: string;
+      amount: { centAmount: number; currencyCode: string; fractionDigits: number };
+      type: string;
+    };
+    const lineItems: LineItem[] = [];
+
+    const cartWithShipping = ctCart as Cart & {
+      shippingInfo?: { price?: { centAmount?: number }; shippingMethodName?: string };
+      taxedPrice?: { totalNet?: { centAmount?: number }; totalTax?: { centAmount?: number } };
+    };
+    if (cartWithShipping.taxedPrice) {
+      const totalNet = cartWithShipping.taxedPrice.totalNet?.centAmount ?? amountPlanned.centAmount;
+      const totalTax = cartWithShipping.taxedPrice.totalTax?.centAmount ?? 0;
+      lineItems.push({
+        name: 'Subtotal',
+        amount: { centAmount: totalNet, currencyCode, fractionDigits },
+        type: 'SUBTOTAL',
+      });
+      if (totalTax > 0) {
+        lineItems.push({
+          name: 'Tax',
+          amount: { centAmount: totalTax, currencyCode, fractionDigits },
+          type: 'TAX',
+        });
+      }
+    } else {
+      const shippingCents = cartWithShipping.shippingInfo?.price?.centAmount ?? 0;
+      const subtotalCents = amountPlanned.centAmount - shippingCents;
+      lineItems.push({
+        name: 'Subtotal',
+        amount: { centAmount: subtotalCents, currencyCode, fractionDigits },
+        type: 'SUBTOTAL',
+      });
+      if (shippingCents > 0) {
+        const shippingName = cartWithShipping.shippingInfo?.shippingMethodName ?? 'Shipping';
+        lineItems.push({
+          name: shippingName,
+          amount: { centAmount: shippingCents, currencyCode, fractionDigits },
+          type: 'SHIPPING',
+        });
+      }
+    }
+    if (lineItems.length === 0) {
+      lineItems.push({
+        name: 'Total',
+        amount: { centAmount: amountPlanned.centAmount, currencyCode, fractionDigits },
+        type: 'TOTAL',
+      });
+    }
+
+    return { totalPrice, currencyCode, lineItems };
   }
 
   /**

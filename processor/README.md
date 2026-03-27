@@ -232,6 +232,40 @@ N/A
 - **cartId**: The cartId of the current process.
 - **billingAddress**: The billing address provided by the merchant, which will be sent to Stripe during the `confirmPayment` process.
 
+### Get express payment data
+Returns the current cart **total** and **line items** in a commercetools-oriented shape for [Stripe Express Checkout](https://docs.stripe.com/payments/express-checkout-element). The enabler calls this after shipping address or shipping method changes (with a valid checkout session) so Stripe Elements and the Express modal show the updated amount and line items.
+
+#### Endpoint
+`GET /express-payment-data`
+
+#### Authentication
+Session header (`x-session-id`), same pattern as other payment endpoints backed by the commercetools checkout session.
+
+#### Request Headers
+- **x-session-id** (required): Checkout session that identifies the cart.
+
+#### Response Parameters
+- **totalPrice**: Object with `centAmount`, `currencyCode`, and `fractionDigits` (aligned with commercetools cart money fields).
+- **currencyCode**: Currency code for the cart.
+- **lineItems**: Array of objects with `name`, `amount` (same money object shape as above), and `type` (for example subtotal, shipping) for display in the Express flow.
+
+### Express config (no session)
+Public configuration for rendering Express wallet buttons **before** a checkout session exists. Secured with **CORS only**: the request must include an `Origin` header that matches one of the comma-separated values in `ALLOWED_ORIGINS`. **Do not leave `ALLOWED_ORIGINS` empty or unset in production**, or any origin could call this endpoint.
+
+Returns the same kind of publishable data as [`GET /operations/config`](#get-config) (for example `publishableKey` and `environment`) so the frontend can initialize Stripe.js and Elements without a session.
+
+#### Endpoint
+`POST /express-config`
+
+#### Request Headers
+- **Origin**: Must match an entry in `ALLOWED_ORIGINS`.
+
+#### Request Body
+None.
+
+#### Response Parameters
+Same shape as `GET /operations/config`: `publishableKey`, `environment`, and related keys returned by the processor `config()` service.
+
 ### Confirm the Payment Intent to commercetools
 This endpoint update the initial payment transaction in commercetools. It is called after the Stripe confirm the payment submit was successful.
 

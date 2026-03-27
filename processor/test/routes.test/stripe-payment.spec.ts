@@ -575,6 +575,33 @@ describe('Stripe Payment APIs', () => {
     });
   });
 
+  describe('GET /express-payment-data', () => {
+    test('should call getExpressPaymentData and return totalPrice, currencyCode and lineItems (Express / CT shape)', async () => {
+      const mockExpressPaymentData = {
+        totalPrice: { centAmount: 2500, currencyCode: 'EUR', fractionDigits: 2 },
+        currencyCode: 'EUR',
+        lineItems: [
+          { name: 'Subtotal', amount: { centAmount: 2000, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SUBTOTAL' },
+          { name: 'Shipping', amount: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SHIPPING' },
+        ],
+      };
+      jest.spyOn(spiedPaymentService, 'getExpressPaymentData').mockResolvedValue(mockExpressPaymentData);
+
+      const response = await fastifyApp.inject({
+        method: 'GET',
+        url: '/express-payment-data',
+        headers: {
+          'x-session-id': sessionId,
+          'content-type': 'application/json',
+        },
+      });
+
+      expect(response.statusCode).toEqual(200);
+      expect(response.json()).toEqual(mockExpressPaymentData);
+      expect(spiedPaymentService.getExpressPaymentData).toHaveBeenCalled();
+    });
+  });
+
   describe('GET /config-element', () => {
     test('should call /config-element', async () => {
       //Given
