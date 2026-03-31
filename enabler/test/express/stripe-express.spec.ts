@@ -222,16 +222,69 @@ describe('StripeExpressComponent', () => {
       await new Promise<void>((r) => setImmediate(r));
       expect(expressOptions.onPayButtonClick).toHaveBeenCalled();
     });
-  });
 
-  describe('clearExpressSession', () => {
-    test('resets currentSessionId to initial enabler session', () => {
-      const baseOptions = createMockBaseOptions({ sessionId: 'initial-session' });
+    test('simulated Stripe click calls onPayButtonClick even when enabler already has sessionId', async () => {
+      const baseOptions = createMockBaseOptions({ sessionId: 'prebound-session' });
       const expressOptions = createMockExpressOptions();
       const component = new StripeExpressComponent({ baseOptions, expressOptions });
-      (component as unknown as { currentSessionId: string }).currentSessionId = 'other-session';
-      component.clearExpressSession();
-      expect((component as unknown as { currentSessionId: string }).currentSessionId).toBe('initial-session');
+
+      let clickHandler: ((e: { resolve: jest.Mock; expressPaymentType: string; elementType: string }) => void) | null =
+        null;
+      const mockOn = jest.fn((event: string, handler: typeof clickHandler) => {
+        if (event === 'click') clickHandler = handler as typeof clickHandler;
+      });
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+      };
+      (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
+
+      await component.mount('#express-checkout');
+
+      expect(clickHandler).not.toBeNull();
+      clickHandler!({
+        resolve: jest.fn(),
+        expressPaymentType: 'google_pay',
+        elementType: 'expressCheckout',
+      });
+
+      await new Promise<void>((r) => setImmediate(r));
+      expect(expressOptions.onPayButtonClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('each simulated Stripe click invokes onPayButtonClick again', async () => {
+      const baseOptions = createMockBaseOptions({ sessionId: '' });
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      let clickHandler: ((e: { resolve: jest.Mock; expressPaymentType: string; elementType: string }) => void) | null =
+        null;
+      const mockOn = jest.fn((event: string, handler: typeof clickHandler) => {
+        if (event === 'click') clickHandler = handler as typeof clickHandler;
+      });
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+      };
+      (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
+
+      await component.mount('#express-checkout');
+
+      const payload = {
+        resolve: jest.fn(),
+        expressPaymentType: 'google_pay',
+        elementType: 'expressCheckout',
+      };
+      clickHandler!(payload);
+      await new Promise<void>((r) => setImmediate(r));
+      clickHandler!(payload);
+      await new Promise<void>((r) => setImmediate(r));
+
+      expect(expressOptions.onPayButtonClick).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -312,17 +365,12 @@ describe('StripeExpressComponent', () => {
   });
 
   describe('handleCancel', () => {
-    test('should call onCancel callback when cancel event is triggered', async () => {
+    test('should call baseOptions.onError with name CANCEL when cancel event is triggered', async () => {
       const baseOptions = createMockBaseOptions();
-      const mockOnCancel = jest.fn().mockResolvedValue(undefined);
-      const expressOptions: ExpressOptions = {
-        ...createMockExpressOptions(),
-        onCancel: mockOnCancel,
-      };
-      
+      const expressOptions = createMockExpressOptions();
       const component = new StripeExpressComponent({ baseOptions, expressOptions });
 
-      let cancelHandler: (() => Promise<void>) | null = null;
+      let cancelHandler: (() => void) | null = null;
       const mockOn = jest.fn((event, handler) => {
         if (event === 'cancel') {
           cancelHandler = handler;
@@ -343,12 +391,43 @@ describe('StripeExpressComponent', () => {
 
       // Simulate cancel event by calling the handler
       if (cancelHandler) {
-        await cancelHandler();
-        // Verify onCancel was called
-        expect(mockOnCancel).toHaveBeenCalled();
+        cancelHandler();
+        // Verify onError was called with name CANCEL
+        expect(baseOptions.onError).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'CANCEL' }),
+        );
       } else {
         throw new Error('Cancel handler not found');
       }
+    });
+
+    test('resets session state to initial enabler session after cancel', async () => {
+      const baseOptions = createMockBaseOptions({ sessionId: 'initial-session' });
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      let clickHandler: ((e: { resolve: jest.Mock }) => void) | null = null;
+      let cancelHandler: (() => Promise<void>) | null = null;
+      const mockOn = jest.fn((event: string, handler: unknown) => {
+        if (event === 'click') clickHandler = handler as typeof clickHandler;
+        if (event === 'cancel') cancelHandler = handler as typeof cancelHandler;
+      });
+      const mockElement = {
+        mount: jest.fn(),
+        unmount: jest.fn(),
+        update: jest.fn(),
+        on: mockOn,
+      };
+      (baseOptions.elements?.create as jest.Mock).mockReturnValue(mockElement);
+
+      await component.mount('#express-checkout');
+
+      clickHandler!({ resolve: jest.fn() });
+      await new Promise<void>((r) => setImmediate(r));
+      expect((component as unknown as { currentSessionId: string }).currentSessionId).toBe('test-session-id');
+
+      await cancelHandler!();
+      expect((component as unknown as { currentSessionId: string }).currentSessionId).toBe('initial-session');
     });
   });
 
