@@ -62,11 +62,16 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   private baseOptions: BaseOptions;
   private expressCheckoutElement: StripeExpressCheckoutElement | null = null;
   private currentSessionId: string;
-  /** Session id the enabler was constructed with; used by `clearExpressSession`. */
+  /**
+   * Session id from the enabler constructor; used when resetting before a new `onPayButtonClick` completes
+   * and after the buyer dismisses the Express modal ({@link resetExpressSessionState}).
+   */
   private readonly initialSessionId: string;
-  /** In-flight `onPayButtonClick` from Express `click` (dedup + await in `ensureSessionId`). */
+  /** In-flight `onPayButtonClick` from the latest Express `click`; awaited by {@link ensureSessionId}. */
   private sessionInitPromise: Promise<void> | null = null;
-  /** Bumped on `clearExpressSession` so stale async session work is ignored. */
+  /**
+   * Incremented on each Express `click` and in {@link resetExpressSessionState}; stale async completions are ignored.
+   */
   private sessionInitGeneration = 0;
   private expressListenersBound = false;
   private expressMounted = false;
@@ -78,7 +83,11 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     this.currentSessionId = this.initialSessionId;
   }
 
-  clearExpressSession(): void {
+  /**
+   * Drops in-flight session initialization and restores {@link currentSessionId} to {@link initialSessionId}.
+   * Invoked when the buyer cancels Express Checkout so the next wallet open runs a fresh {@link ExpressOptions.onPayButtonClick}.
+   */
+  private resetExpressSessionState(): void {
     this.sessionInitGeneration += 1;
     this.sessionInitPromise = null;
     this.currentSessionId = this.initialSessionId;
@@ -89,7 +98,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       throw new Error('Stripe Elements not initialized');
     }
 
-    // Mount renders the button; session comes from Stripe `click` (async) and/or `ensureSessionId` fallback.
+    // Mount renders the button; session is refreshed on each Stripe `click` (async) and via `ensureSessionId` fallback.
     // Amount/currency belong on the Elements instance, not on expressCheckout options (Stripe API).
     const { centAmount, currencyCode } = this.expressOptions.initialAmount;
     const currency = currencyCode.toLowerCase();
@@ -138,13 +147,15 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Starts `onPayButtonClick` without blocking `click` `resolve` (Stripe ~1s constraint).
+   * Refreshes the commercetools Connect session from {@link ExpressOptions.onPayButtonClick} without blocking
+   * Stripe's `click` `resolve` (~1s constraint). Each wallet open resets to {@link initialSessionId}
+   * until the callback resolves; overlapping async work is dropped via {@link sessionInitGeneration}.
    */
   private kickOffSessionInitFromClick(): void {
-    if (this.currentSessionId) return;
-    if (this.sessionInitPromise) return;
-
+    this.sessionInitGeneration += 1;
     const gen = this.sessionInitGeneration;
+    this.currentSessionId = this.initialSessionId;
+
     this.sessionInitPromise = (async () => {
       try {
         const { sessionId } = await this.expressOptions.onPayButtonClick();
@@ -170,17 +181,15 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       event.resolve({
         lineItems: this.getResolveLineItemsFromInitial(),
       });
-      if (!this.currentSessionId) {
-        this.kickOffSessionInitFromClick();
-      }
+      this.kickOffSessionInitFromClick();
     });
 
     el.on('confirm', async () => {
       await this.handlePaymentConfirm();
     });
 
-    el.on('cancel', async () => {
-      await this.handleCancel();
+    el.on('cancel', () => {
+      this.handleCancel();
     });
 
     el.on('shippingaddresschange', async (event) => {
@@ -215,20 +224,19 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Ensures we have a session ID for the Processor (x-session-id).
-   * Waits for in-flight session from Express `click` when present; otherwise calls `onPayButtonClick` (fallback).
+   * Ensures we have a session ID for the Processor (`x-session-id`).
+   * Awaits the in-flight promise from the latest Express `click` when present; otherwise calls {@link ExpressOptions.onPayButtonClick}.
    */
   private async ensureSessionId(): Promise<void> {
-    if (this.currentSessionId) return;
-
     if (this.sessionInitPromise) {
       try {
         await this.sessionInitPromise;
       } catch {
         throw new Error('Failed to get sessionId from onPayButtonClick');
       }
-      if (this.currentSessionId) return;
     }
+
+    if (this.currentSessionId) return;
 
     try {
       const { sessionId } = await this.expressOptions.onPayButtonClick();
@@ -274,7 +282,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         const lineItemsForStripe = data.lineItems.map((item) => ({ name: item.name, amount: item.amount.centAmount }));
         resolve({ shippingRates, lineItems: lineItemsForStripe });
       } else {
-        resolve({ shippingRates: [] });
+        reject();
       }
     } catch (error) {
       this.baseOptions.onError?.(new Error('Error updating shipping address.'));
@@ -312,17 +320,15 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   /**
-   * Handles the cancel event when user cancels Express Checkout modal.
-   * This allows Checkout to revert any shipping changes.
+   * Handles the cancel event when the user dismisses the Express Checkout modal.
+   * Resets session state for the next open, then signals cancellation via {@link BaseOptions.onError}
+   * with an error whose {@link Error.name} is `'CANCEL'`, following the commercetools Connect standard.
    */
-  private async handleCancel(): Promise<void> {
-    try {
-      if (this.expressOptions.onCancel) {
-        await this.expressOptions.onCancel();
-      }
-    } catch (error) {
-      this.baseOptions.onError?.(new Error('Error handling Express Checkout cancel.'));
-    }
+  private handleCancel(): void {
+    this.resetExpressSessionState();
+    const cancelError = new Error('Express Checkout cancelled by user.');
+    cancelError.name = 'CANCEL';
+    this.baseOptions.onError?.(cancelError);
   }
 
   /**

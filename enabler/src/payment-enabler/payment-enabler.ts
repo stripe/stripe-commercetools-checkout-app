@@ -320,13 +320,6 @@ export interface ExpressComponent {
    * @param selector - The selector where the component will be mounted.
    */
   mount(selector: string): void | Promise<void>;
-
-  /**
-   * Clears the Connect session id used for Express processor calls (`x-session-id`).
-   * Call when the active cart / buy-now context changes without destroying the enabler.
-   * Resets to the session id the enabler was constructed with (if any).
-   */
-  clearExpressSession?(): void;
 }
 
 /**
@@ -430,9 +423,10 @@ export type ExpressOptions = {
   allowedCountries?: string[];
 
   /**
-   * Invoked when the buyer clicks an Express wallet button (Stripe `click` on ExpressCheckoutElement)
-   * and as a fallback when shipping or confirm runs before the session is ready (`ensureSessionId` in the enabler).
-   * Should be idempotent where possible so duplicate calls (click + fallback) do not create duplicate carts.
+   * Invoked on every Express wallet open (Stripe `click` on ExpressCheckoutElement) so checkout returns
+   * the commercetools Connect checkout session id for the current cart (`sessionId` in {@link OnclickResponse}).
+   * Also used as a fallback when shipping or confirm runs before the async session from `click` has settled (`ensureSessionId`).
+   * Should be safe to call repeatedly (e.g. idempotent session reuse) so overlapping click + fallback does not create duplicate carts.
    */
   onPayButtonClick: () => Promise<OnclickResponse>;
 
@@ -469,13 +463,6 @@ export type ExpressOptions = {
    * @param opts - Optional shipping address, billing address, and customer email from the Express flow.
    */
   onPaymentSubmit: (opts: ExpressPaymentSubmitPayload) => Promise<void>;
-
-  /**
-   * Callback function called when the user cancels the Express Checkout modal.
-   * This allows Checkout to revert any shipping changes made during the Express Checkout flow.
-   * @returns A promise that resolves when the cancel is processed.
-   */
-  onCancel?: () => Promise<void>;
 
   /**
    * Callback function called when the payment is completed.

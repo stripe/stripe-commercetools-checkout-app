@@ -3,6 +3,9 @@
 .env
 .idea/*
 
+# Claude Code
+.claude/
+
 # MCP (Model Context Protocol) configuration and data
 .mcp/
 .DS_Store
