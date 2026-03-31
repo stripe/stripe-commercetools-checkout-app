@@ -237,6 +237,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
       mode: 'payment',
       amount: 1,
       currency,
+      capture_method: configEnvResponse.captureMethod ?? 'automatic',
+      ...(configEnvResponse.appearance && { appearance: parseJSON(configEnvResponse.appearance) }),
     });
     const environment = configEnvResponse.publishableKey.includes('_test_')
       ? 'test'

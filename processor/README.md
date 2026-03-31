@@ -252,19 +252,33 @@ Session header (`x-session-id`), same pattern as other payment endpoints backed 
 ### Express config (no session)
 Public configuration for rendering Express wallet buttons **before** a checkout session exists. Secured with **CORS only**: the request must include an `Origin` header that matches one of the comma-separated values in `ALLOWED_ORIGINS`. **Do not leave `ALLOWED_ORIGINS` empty or unset in production**, or any origin could call this endpoint.
 
-Returns the same kind of publishable data as [`GET /operations/config`](#get-config) (for example `publishableKey` and `environment`) so the frontend can initialize Stripe.js and Elements without a session.
+Returns publishable configuration so the frontend can initialize Stripe.js and Elements without a session. The following environment variables are applied to the Express Checkout Elements via this endpoint:
+
+| Variable | Applied to Express? | Notes |
+| -------- | ------------------- | ----- |
+| `STRIPE_CAPTURE_METHOD` | Yes | Must match the PaymentIntent; passed as `capture_method` when initializing Elements |
+| `STRIPE_APPEARANCE_PAYMENT_ELEMENT` | Yes | Optional. Themes the Express wallet button |
+| `STRIPE_LAYOUT` | No | Layout only applies to the embedded Payment Element |
+| `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` | No | Express is one-shot; no customer/`setup_future_usage` binding |
 
 #### Endpoint
+
 `POST /express-config`
 
 #### Request Headers
+
 - **Origin**: Must match an entry in `ALLOWED_ORIGINS`.
 
 #### Request Body
+
 None.
 
 #### Response Parameters
-Same shape as `GET /operations/config`: `publishableKey`, `environment`, and related keys returned by the processor `config()` service.
+
+- **publishableKey**: Stripe publishable key to initialize Stripe.js.
+- **environment**: Stripe environment (`test` or `live`).
+- **captureMethod**: The capture method configured via `STRIPE_CAPTURE_METHOD`. Used to initialize Express Elements so they match the PaymentIntent.
+- **appearance**: Optional. Stringified JSON appearance object from `STRIPE_APPEARANCE_PAYMENT_ELEMENT`.
 
 ### Confirm the Payment Intent to commercetools
 This endpoint update the initial payment transaction in commercetools. It is called after the Stripe confirm the payment submit was successful.

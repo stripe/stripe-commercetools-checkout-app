@@ -77,6 +77,8 @@ export class StripePaymentService extends AbstractPaymentService {
     return {
       environment: config.mockEnvironment,
       publishableKey: config.stripePublishableKey,
+      captureMethod: config.stripeCaptureMethod as 'automatic' | 'automatic_async' | 'manual',
+      ...(config.stripePaymentElementAppearance && { appearance: config.stripePaymentElementAppearance }),
     };
   }
 
