@@ -39,6 +39,14 @@ export const ConfigElementResponseSchema = Type.Object({
 export const ConfigResponseSchema = Type.Object({
   environment: Type.String(),
   publishableKey: Type.String(),
+  captureMethod: Type.Optional(
+    Type.Union([
+      Type.Literal('automatic'),
+      Type.Literal('automatic_async'),
+      Type.Literal('manual'),
+    ]),
+  ),
+  appearance: Type.Optional(Type.String()),
 });
 
 export const CustomerResponseSchema = Type.Object({
