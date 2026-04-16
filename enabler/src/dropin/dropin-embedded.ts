@@ -82,7 +82,7 @@ export class DropinComponents implements DropinComponent {
 
   async submit(): Promise<void> {
     try {
-      const { error: submitError } = await this.baseOptions.elements.submit();
+      const { error: submitError } = await this.baseOptions.elements!.submit();
 
       if (submitError) {
         throw submitError;
@@ -141,7 +141,7 @@ export class DropinComponents implements DropinComponent {
     returnUrl.searchParams.append("paymentReference", paymentReference);
 
     const { error, paymentIntent } = await this.baseOptions.sdk.confirmPayment({
-      elements: this.baseOptions.elements,
+      elements: this.baseOptions.elements!,
       clientSecret,
       confirmParams: {
         return_url: returnUrl.toString(),

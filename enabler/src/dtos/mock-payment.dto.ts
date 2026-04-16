@@ -47,6 +47,12 @@ export const ConfigResponseSchema = Type.Object({
     ]),
   ),
   appearance: Type.Optional(Type.String()),
+  expressMinimumAmount: Type.Optional(
+    Type.Object({
+      amount: Type.Number(),
+      currency: Type.String(),
+    }),
+  ),
 });
 
 export const CustomerResponseSchema = Type.Object({

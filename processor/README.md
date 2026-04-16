@@ -79,7 +79,7 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 ### Key Environment Variables
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| -------- | ----------- | ------- |
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
 

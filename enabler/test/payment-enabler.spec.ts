@@ -142,5 +142,33 @@ describe('MockPaymentEnabler - Express Checkout', () => {
     const component = builder.build(expressOptions as any);
     expect((component as any).baseOptions?.expressCheckout).toBe(true);
     expect((global.fetch as jest.Mock).mock.calls.some((call: unknown[]) => String(call[0]).includes('/express-config'))).toBe(true);
+    // Elements must NOT be created during setup — deferred to init() with real initialAmount
+    expect((component as any).baseOptions?.elements).toBeNull();
+  });
+
+  test('should create elements with initialAmount when mounting express without session', async () => {
+    const mockStripe = (loadStripe as jest.Mock).mock.results[0]?.value ?? await (loadStripe as jest.Mock).mock.results[0]?.value;
+
+    const enabler = new MockPaymentEnabler({
+      processorUrl: 'http://localhost:3000',
+      sessionId: '',
+    });
+
+    const builder = await enabler.createExpressBuilder('dropin');
+    const expressOptions = {
+      onPayButtonClick: jest.fn().mockResolvedValue({ sessionId: 'test-session-id' }),
+      onShippingAddressSelected: jest.fn().mockResolvedValue(undefined),
+      getShippingMethods: jest.fn().mockResolvedValue([]),
+      onShippingMethodSelected: jest.fn().mockResolvedValue(undefined),
+      onPaymentSubmit: jest.fn().mockResolvedValue(undefined),
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      initialAmount: { centAmount: 3500, currencyCode: 'EUR', fractionDigits: 2 },
+    };
+    const component = builder.build(expressOptions as any);
+    await component.mount('#express-checkout');
+
+    // After mount, elements must have been created via sdk.elements() with initialAmount values
+    expect((component as any).baseOptions?.elements).not.toBeNull();
   });
 });

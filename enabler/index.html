@@ -127,14 +127,15 @@
 
             let cartCurrency = "USD";
             let expressInitialAmount = null;
-            if (cartId && isExpress) {
+            if (isExpress) {
               try {
-                const cart = await getCart();
+                // initialAmount is required for Express: it initialises Stripe Elements with the
+                // real cart currency and amount.
+                const cart = cartId ? await getCart() : null;
                 cartCurrency = cart?.totalPrice?.currencyCode ?? "USD";
-                const cartForAmount = await getCart();
-                expressInitialAmount = cartForAmount?.totalPrice
-                  ? { centAmount: cartForAmount.totalPrice.centAmount, currencyCode: cartForAmount.totalPrice.currencyCode ?? 'USD', fractionDigits: cartForAmount.totalPrice.fractionDigits ?? 2 }
-                  : { centAmount: 0, currencyCode: 'USD', fractionDigits: 2 };
+                expressInitialAmount = cart?.totalPrice
+                  ? { centAmount: cart.totalPrice.centAmount, currencyCode: cart.totalPrice.currencyCode ?? 'USD', fractionDigits: cart.totalPrice.fractionDigits ?? 2 }
+                  : { centAmount: 0, currencyCode: cartCurrency, fractionDigits: 2 };
               } catch (e) {
                 console.warn("Could not load cart for currency/amount, using USD", e);
                 expressInitialAmount = { centAmount: 0, currencyCode: "USD", fractionDigits: 2 };
