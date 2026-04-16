@@ -54,28 +54,47 @@ describe('StripeExpressBuilder', () => {
     expect(component).toBeInstanceOf(StripeExpressComponent);
     expect(component.mount).toBeDefined();
   });
+
+  test('should throw if initialAmount is missing', () => {
+    const builder = new StripeExpressBuilder(createMockBaseOptions());
+    const opts = { ...createMockExpressOptions(), initialAmount: undefined as any };
+    expect(() => builder.build(opts)).toThrow('initialAmount is required');
+  });
+
+  test('should throw if centAmount is missing', () => {
+    const builder = new StripeExpressBuilder(createMockBaseOptions());
+    const opts = { ...createMockExpressOptions(), initialAmount: { currencyCode: 'EUR', fractionDigits: 2 } as any };
+    expect(() => builder.build(opts)).toThrow('initialAmount is required');
+  });
+
+  test('should throw if currencyCode is missing', () => {
+    const builder = new StripeExpressBuilder(createMockBaseOptions());
+    const opts = { ...createMockExpressOptions(), initialAmount: { centAmount: 2000 } as any };
+    expect(() => builder.build(opts)).toThrow('initialAmount is required');
+  });
 });
 
 describe('StripeExpressComponent', () => {
-  const createMockBaseOptions = (overrides?: Partial<BaseOptions>): BaseOptions => {
-    const mockElements = {
-      create: jest.fn().mockReturnValue({
-        mount: jest.fn(),
-        unmount: jest.fn(),
-        update: jest.fn(),
-        on: jest.fn(),
-      }),
+  const createMockElements = () => ({
+    create: jest.fn().mockReturnValue({
+      mount: jest.fn(),
+      unmount: jest.fn(),
       update: jest.fn(),
-      _options: {
-        currency: 'usd',
-        amount: 10000,
-        country: 'US',
-      },
-    } as unknown as StripeElements;
+      on: jest.fn(),
+    }),
+    update: jest.fn(),
+    _options: {
+      currency: 'usd',
+      amount: 10000,
+      country: 'US',
+    },
+  }) as unknown as StripeElements;
 
+  const createMockBaseOptions = (overrides?: Partial<BaseOptions>): BaseOptions => {
     const mockSdk = {
       paymentRequest: jest.fn(),
       confirmPayment: jest.fn(),
+      elements: jest.fn().mockReturnValue(createMockElements()),
     } as unknown as Stripe;
 
     return {
@@ -86,7 +105,7 @@ describe('StripeExpressComponent', () => {
       onComplete: jest.fn(),
       onError: jest.fn(),
       paymentElement: {} as any,
-      elements: mockElements,
+      elements: createMockElements(),
       ...overrides,
     };
   };
@@ -162,6 +181,51 @@ describe('StripeExpressComponent', () => {
         'Failed to initialize Express Checkout element.'
       );
       expect(baseOptions.onError).toHaveBeenCalled();
+    });
+
+    test('creates Elements from sdk when elements is null (Express without session)', async () => {
+      const mockCreatedElements = createMockElements();
+      const mockSdk = {
+        paymentRequest: jest.fn(),
+        confirmPayment: jest.fn(),
+        elements: jest.fn().mockReturnValue(mockCreatedElements),
+      } as unknown as Stripe;
+
+      const baseOptions = createMockBaseOptions({
+        sdk: mockSdk,
+        elements: null,
+        captureMethod: 'automatic',
+      });
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      await component.mount('#express-checkout');
+
+      expect(mockSdk.elements).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'payment',
+          amount: 2000,
+          currency: 'eur',
+          capture_method: 'automatic',
+        }),
+      );
+      expect(mockCreatedElements.create).toHaveBeenCalledWith('expressCheckout', expect.objectContaining({
+        shippingAddressRequired: true,
+        billingAddressRequired: true,
+      }));
+    });
+
+    test('updates existing Elements when elements is not null (Express with session)', async () => {
+      const baseOptions = createMockBaseOptions();
+      const expressOptions = createMockExpressOptions();
+      const component = new StripeExpressComponent({ baseOptions, expressOptions });
+
+      await component.mount('#express-checkout');
+
+      expect(baseOptions.sdk.elements).not.toHaveBeenCalled();
+      expect((baseOptions.elements as StripeElements).update).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 2000, currency: 'eur' }),
+      );
     });
 
     test('should register cancel event handler', async () => {

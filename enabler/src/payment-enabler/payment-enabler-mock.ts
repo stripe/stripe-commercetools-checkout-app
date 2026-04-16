@@ -39,9 +39,11 @@ export type BaseOptions = {
   onComplete: (result: PaymentResult) => void;
   onError: (error?: any) => void;
   paymentElement: StripePaymentElement; // MVP https://docs.stripe.com/payments/payment-element
-  elements: StripeElements; // MVP https://docs.stripe.com/js/elements_object
+  elements: StripeElements | null; // MVP https://docs.stripe.com/js/elements_object — null when Express without session (deferred to init)
   stripeCustomerId?: string;
   expressCheckout?: boolean; // When true, processor omits shipping on PaymentIntent (Express only).
+  captureMethod?: string; // Stored by _SetupExpress for deferred elements creation in init()
+  appearance?: any; // Stored by _SetupExpress for deferred elements creation in init()
 };
 
 interface ElementsOptions {
@@ -213,6 +215,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
 
   /**
    * Fetches Express config from POST /express-config (no session). Used when rendering Express buttons without session.
+   * Does NOT create a Stripe Elements instance — that is deferred to StripeExpressComponent.init() where
+   * the real initialAmount (currency + centAmount) from ExpressOptions is available.
    */
   private static _SetupExpress = async (
     options: EnablerOptions
@@ -231,15 +235,6 @@ export class MockPaymentEnabler implements PaymentEnabler {
     const configEnvResponse: ConfigResponseSchemaDTO = await res.json();
     const stripeSDK = await MockPaymentEnabler.getStripeSDK(configEnvResponse);
     if (!stripeSDK) throw new Error('Failed to load Stripe SDK for Express.');
-    const opts = options as EnablerOptions & { currencyCode?: string; currency?: string };
-    const currency = (opts.currencyCode || opts.currency || 'usd').toLowerCase();
-    const elements = stripeSDK.elements({
-      mode: 'payment',
-      amount: 1,
-      currency,
-      capture_method: configEnvResponse.captureMethod ?? 'automatic',
-      ...(configEnvResponse.appearance && { appearance: parseJSON(configEnvResponse.appearance) }),
-    });
     const environment = configEnvResponse.publishableKey.includes('_test_')
       ? 'test'
       : configEnvResponse.environment;
@@ -252,8 +247,10 @@ export class MockPaymentEnabler implements PaymentEnabler {
         onComplete: options.onComplete || (() => {}),
         onError: options.onError || (() => {}),
         paymentElement: null as unknown as StripePaymentElement,
-        elements,
+        elements: null,
         expressCheckout: true,
+        captureMethod: configEnvResponse.captureMethod ?? 'automatic',
+        ...(configEnvResponse.appearance && { appearance: parseJSON(configEnvResponse.appearance) }),
       },
     };
   };

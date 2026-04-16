@@ -50,6 +50,13 @@ export class StripeExpressBuilder implements PaymentExpressBuilder {
   }
 
   build(config: ExpressOptions): StripeExpressComponent {
+    const { centAmount, currencyCode } = config.initialAmount ?? {};
+    if (typeof centAmount !== 'number' || !currencyCode) {
+      throw new Error(
+        'initialAmount is required for Express Checkout and must include centAmount (number) and currencyCode (string).',
+      );
+    }
+
     const component = new StripeExpressComponent({
       baseOptions: this.baseOptions,
       expressOptions: config,
@@ -94,18 +101,26 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   }
 
   async init(): Promise<void> {
-    if (!this.baseOptions.elements) {
-      throw new Error('Stripe Elements not initialized');
-    }
-
-    // Mount renders the button; session is refreshed on each Stripe `click` (async) and via `ensureSessionId` fallback.
     // Amount/currency belong on the Elements instance, not on expressCheckout options (Stripe API).
     const { centAmount, currencyCode } = this.expressOptions.initialAmount;
     const currency = currencyCode.toLowerCase();
-    this.baseOptions.elements.update({
-      amount: centAmount,
-      ...(currency && { currency }),
-    });
+
+    if (this.baseOptions.elements) {
+      // With session: Elements already created by _Setup with cart data — update to initialAmount.
+      this.baseOptions.elements.update({
+        amount: centAmount,
+        ...(currency && { currency }),
+      });
+    } else {
+      // Without session: Elements deferred from _SetupExpress — create now with real initialAmount.
+      this.baseOptions.elements = this.baseOptions.sdk.elements({
+        mode: 'payment',
+        amount: centAmount,
+        currency,
+        capture_method: (this.baseOptions.captureMethod ?? 'automatic') as any,
+        ...(this.baseOptions.appearance && { appearance: this.baseOptions.appearance }),
+      });
+    }
 
     // expressCheckout element only accepts layout, buttonTheme, and shipping/billing collection options (not amount/currency).
     const createElement = this.baseOptions.elements.create as any;
