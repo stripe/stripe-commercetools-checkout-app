@@ -12,6 +12,7 @@ import {
   LineItem,
   StripeExpressCheckoutElement,
   StripeExpressCheckoutElementClickEvent,
+  StripeExpressCheckoutElementConfirmEvent,
 } from '@stripe/stripe-js';
 import { PaymentResponseSchemaDTO } from '../dtos/mock-payment.dto';
 
@@ -199,8 +200,8 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       this.kickOffSessionInitFromClick();
     });
 
-    el.on('confirm', async () => {
-      await this.handlePaymentConfirm();
+    el.on('confirm', async (event: StripeExpressCheckoutElementConfirmEvent) => {
+      await this.handlePaymentConfirm(event);
     });
 
     el.on('cancel', () => {
@@ -382,11 +383,15 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
    * Handles payment confirmation when the user authorizes payment in Express Checkout.
    * Triggered by the `confirm` event from `StripeExpressCheckoutElement`.
    *
+   * @param event - The confirm event from `StripeExpressCheckoutElement`, which carries
+   *   `billingDetails` and `shippingAddress` from the wallet (available when
+   *   `billingAddressRequired` / `shippingAddressRequired` are set on the element).
+   *
    * @remarks
    * Flow: submit Elements → optional sync via `onPaymentSubmit` (partial payload only) →
    * create PaymentIntent on the processor → confirm with Stripe → persist in commercetools → `onComplete`.
    */
-  private async handlePaymentConfirm(): Promise<void> {
+  private async handlePaymentConfirm(event: StripeExpressCheckoutElementConfirmEvent): Promise<void> {
     try {
       await this.ensureSessionId();
 
@@ -397,24 +402,15 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         throw submitError;
       }
 
-      // Step 2: Read shipping/billing from the Express element when Stripe exposes them.
-      let shippingAddress: any = null;
-      let billingAddress: any = null;
-      try {
-        shippingAddress = this.getShippingAddressFromStripe();
-        billingAddress = this.getBillingAddressFromStripe();
-      } catch {
-        // Element may not expose addresses; cart may already be updated from prior shipping events.
-      }
-
-      // Step 3: Integrator callback — sync checkout/cart only for fields the wallet exposed.
-      const expressShipping = shippingAddress
-        ? this.convertToExpressAddress(shippingAddress)
+      // Step 2: Read shipping/billing directly from the confirm event (official Stripe API).
+      // Both fields are present when shippingAddressRequired / billingAddressRequired are set.
+      const expressShipping = event.shippingAddress
+        ? this.convertToExpressAddress(event.shippingAddress)
         : ({} as ExpressAddressData);
-      const expressBilling = billingAddress
-        ? this.convertToExpressAddress(billingAddress)
+      const expressBilling = event.billingDetails
+        ? this.convertToExpressAddress(event.billingDetails)
         : ({} as ExpressAddressData);
-      const customerEmail = expressBilling?.email ?? expressShipping?.email ?? '';
+      const customerEmail = event.billingDetails?.email ?? expressShipping?.email ?? '';
       const paymentSubmitPayload = this.buildExpressPaymentSubmitPayload(
         expressShipping,
         expressBilling,
@@ -433,8 +429,8 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         cartId: paymentRes.cartId,
         clientSecret: paymentRes.sClientSecret,
         paymentReference: paymentRes.paymentReference,
-        ...(billingAddress && {
-          billingAddress: this.convertStripeAddressToBillingAddress(billingAddress),
+        ...(event.billingDetails && {
+          billingAddress: this.convertStripeAddressToBillingAddress(event.billingDetails),
         }),
       });
 
@@ -570,32 +566,6 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       headers['x-express-checkout'] = 'true';
     }
     return headers;
-  }
-
-  /**
-   * Gets shipping address from Stripe ExpressCheckoutElement.
-   * This is available after the user selects an address in the Express Checkout modal.
-   */
-  private getShippingAddressFromStripe(): any {
-    // Access the last shipping address from the element
-    // Note: This is an internal property that may not be in type definitions
-    const value = (this.expressCheckoutElement as any)?._lastShippingAddress ||
-      (this.expressCheckoutElement as any)?.lastShippingAddress ||
-      null;
-    return value;
-  }
-
-  /**
-   * Gets billing address from Stripe ExpressCheckoutElement.
-   * This is available after the user authorizes payment.
-   */
-  private getBillingAddressFromStripe(): any {
-    // Access the last billing address from the element
-    // Note: This is an internal property that may not be in type definitions
-    const value = (this.expressCheckoutElement as any)?._lastBillingAddress ||
-      (this.expressCheckoutElement as any)?.lastBillingAddress ||
-      null;
-    return value;
   }
 
   /**

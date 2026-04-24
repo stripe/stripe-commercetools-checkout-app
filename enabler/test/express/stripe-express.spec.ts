@@ -505,10 +505,12 @@ describe('StripeExpressComponent', () => {
 
     /**
      * Mounts Express with a confirm handler wired; `elements.submit` and `sdk.confirmPayment` mocked.
+     * The returned `confirmHandler` accepts a `StripeExpressCheckoutElementConfirmEvent`-shaped object
+     * so each test can supply exactly the address data the wallet would expose.
      */
-    async function mountWithConfirmHandler(elementProps?: Record<string, unknown>) {
-      let confirmHandler: (() => Promise<void>) | null = null;
-      const mockOn = jest.fn((event: string, handler: () => Promise<void>) => {
+    async function mountWithConfirmHandler() {
+      let confirmHandler: ((event: any) => Promise<void>) | null = null;
+      const mockOn = jest.fn((event: string, handler: (e: any) => Promise<void>) => {
         if (event === 'confirm') confirmHandler = handler;
       });
       const mockElement = {
@@ -516,7 +518,6 @@ describe('StripeExpressComponent', () => {
         unmount: jest.fn(),
         update: jest.fn(),
         on: mockOn,
-        ...elementProps,
       };
       const mockSubmit = jest.fn().mockResolvedValue({});
       const mockElements = {
@@ -571,19 +572,19 @@ describe('StripeExpressComponent', () => {
 
     test('does not call onPaymentSubmit when wallet exposes no address or email', async () => {
       const { expressOptions, confirmHandler } = await mountWithConfirmHandler();
-      await confirmHandler();
+      await confirmHandler({});
       await new Promise<void>((r) => setImmediate(r));
       expect(expressOptions.onPaymentSubmit).not.toHaveBeenCalled();
     });
 
     test('calls onPaymentSubmit with billingAddress only when shipping is absent', async () => {
-      const { expressOptions, confirmHandler } = await mountWithConfirmHandler({
-        _lastBillingAddress: {
-          address: { country: 'DE', line1: '1 Hauptstraße' },
+      const { expressOptions, confirmHandler } = await mountWithConfirmHandler();
+      await confirmHandler({
+        billingDetails: {
           email: 'buyer@example.com',
+          address: { country: 'DE', line1: '1 Hauptstraße' },
         },
       });
-      await confirmHandler();
       await new Promise<void>((r) => setImmediate(r));
       expect(expressOptions.onPaymentSubmit).toHaveBeenCalledTimes(1);
       const payload = (expressOptions.onPaymentSubmit as jest.Mock).mock.calls[0][0];
@@ -595,13 +596,13 @@ describe('StripeExpressComponent', () => {
     });
 
     test('calls onPaymentSubmit with customerEmail only when addresses have no country', async () => {
-      const { expressOptions, confirmHandler } = await mountWithConfirmHandler({
-        _lastBillingAddress: {
+      const { expressOptions, confirmHandler } = await mountWithConfirmHandler();
+      await confirmHandler({
+        billingDetails: {
           email: 'only@email.test',
           address: {},
         },
       });
-      await confirmHandler();
       await new Promise<void>((r) => setImmediate(r));
       expect(expressOptions.onPaymentSubmit).toHaveBeenCalledTimes(1);
       const payload = (expressOptions.onPaymentSubmit as jest.Mock).mock.calls[0][0];
