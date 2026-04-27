@@ -79,6 +79,7 @@ export class StripePaymentService extends AbstractPaymentService {
       publishableKey: config.stripePublishableKey,
       captureMethod: config.stripeCaptureMethod as 'automatic' | 'automatic_async' | 'manual',
       ...(config.stripePaymentElementAppearance && { appearance: config.stripePaymentElementAppearance }),
+      ...(config.stripeExpressElementOptions && { expressElementOptions: config.stripeExpressElementOptions }),
     };
   }
 

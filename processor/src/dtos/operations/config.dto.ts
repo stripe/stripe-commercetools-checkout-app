@@ -14,6 +14,7 @@ export const ConfigResponseSchema = Type.Object({
     ]),
   ),
   appearance: Type.Optional(Type.String()),
+  expressElementOptions: Type.Optional(Type.String()),
 });
 
 export type ConfigResponseSchemaDTO = Static<typeof ConfigResponseSchema>;

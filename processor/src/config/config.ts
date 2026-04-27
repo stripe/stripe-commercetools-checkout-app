@@ -42,6 +42,7 @@ export const config = {
   stripeSavedPaymentMethodConfig: getSavedPaymentConfig(),
   stripeLayout: process.env.STRIPE_LAYOUT || '{"type":"tabs","defaultCollapsed":false}',
   stripeCollectBillingAddress: process.env.STRIPE_COLLECT_BILLING_ADDRESS || 'auto',
+  stripeExpressElementOptions: process.env.STRIPE_EXPRESS_ELEMENT_OPTIONS,
 
   // Payment Providers config
   paymentInterface: process.env.PAYMENT_INTERFACE || 'checkout-stripe',
