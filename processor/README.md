@@ -82,6 +82,7 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 | -------- | ----------- | ------- |
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
+| `STRIPE_EXPRESS_ELEMENT_OPTIONS` | Optional JSON configuration for the Express Checkout Element. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. Example: `{"buttonHeight":48,"emailRequired":true}` | — |
 
 Make sure commercetools client credential have at least the following permissions:
 

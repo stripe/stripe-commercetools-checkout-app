@@ -128,6 +128,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     this.expressCheckoutElement = createElement('expressCheckout', {
       shippingAddressRequired: true,
       billingAddressRequired: true,
+      ...(this.baseOptions.expressElementOptions ?? {}),
     }) as StripeExpressCheckoutElement;
   }
 

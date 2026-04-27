@@ -15,6 +15,16 @@ import {
   StripeElements,
   StripePaymentElementOptions
 } from "@stripe/stripe-js";
+import type { StripeExpressCheckoutElementOptions } from "@stripe/stripe-js";
+
+export type ExpressElementOptions = Pick<
+  StripeExpressCheckoutElementOptions,
+  'buttonHeight' | 'buttonTheme' | 'buttonType' | 'emailRequired' | 'layout' | 'paymentMethodOrder' | 'phoneNumberRequired'
+>;
+
+const ALLOWED_EXPRESS_OPTION_KEYS: ReadonlyArray<keyof ExpressElementOptions> = [
+  'buttonHeight', 'buttonTheme', 'buttonType', 'emailRequired', 'layout', 'paymentMethodOrder', 'phoneNumberRequired',
+];
 import { StripePaymentElement } from "@stripe/stripe-js";
 import {
   ConfigElementResponseSchemaDTO,
@@ -44,6 +54,7 @@ export type BaseOptions = {
   expressCheckout?: boolean; // When true, processor omits shipping on PaymentIntent (Express only).
   captureMethod?: string; // Stored by _SetupExpress for deferred elements creation in init()
   appearance?: any; // Stored by _SetupExpress for deferred elements creation in init()
+  expressElementOptions?: ExpressElementOptions; // Stored by _SetupExpress for ExpressCheckoutElement creation in init()
 };
 
 interface ElementsOptions {
@@ -251,6 +262,13 @@ export class MockPaymentEnabler implements PaymentEnabler {
         expressCheckout: true,
         captureMethod: configEnvResponse.captureMethod ?? 'automatic',
         ...(configEnvResponse.appearance && { appearance: parseJSON(configEnvResponse.appearance) }),
+        ...(configEnvResponse.expressElementOptions && (() => {
+          const raw = parseJSON<Record<string, unknown>>(configEnvResponse.expressElementOptions!);
+          const expressElementOptions = Object.fromEntries(
+            ALLOWED_EXPRESS_OPTION_KEYS.filter((k) => raw[k] !== undefined).map((k) => [k, raw[k]]),
+          ) as ExpressElementOptions;
+          return { expressElementOptions };
+        })()),
       },
     };
   };

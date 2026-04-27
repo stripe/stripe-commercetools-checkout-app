@@ -43,6 +43,8 @@ deployAs:
           required: true
         - key: STRIPE_APPEARANCE_PAYMENT_ELEMENT
           description: Stripe Appearance for Payment Element (example - {"theme":"night","labels":"floating"} ).
+        - key: STRIPE_EXPRESS_ELEMENT_OPTIONS
+          description: JSON configuration for the ExpressCheckoutElement options. Supported fields - buttonHeight, buttonTheme, buttonType, emailRequired, layout, paymentMethodOrder, phoneNumberRequired (example - {"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}).
         - key: STRIPE_LAYOUT
           description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
           default: '{"type":"tabs","defaultCollapsed":false}'
