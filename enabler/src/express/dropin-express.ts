@@ -108,6 +108,8 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
 
     if (this.baseOptions.elements) {
       // With session: Elements already created by _Setup with cart data — update to initialAmount.
+      // `locale` is intentionally NOT passed: Stripe Elements ignores `locale` in `update()`,
+      // so it must be set at creation. `_Setup` already applied the converted locale.
       this.baseOptions.elements.update({
         amount: centAmount,
         ...(currency && { currency }),
@@ -120,6 +122,7 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
         currency,
         capture_method: (this.baseOptions.captureMethod ?? 'automatic') as any,
         ...(this.baseOptions.appearance && { appearance: this.baseOptions.appearance }),
+        ...(this.baseOptions.locale && { locale: this.baseOptions.locale }),
       });
     }
 

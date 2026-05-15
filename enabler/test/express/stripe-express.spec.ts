@@ -195,6 +195,7 @@ describe('StripeExpressComponent', () => {
         sdk: mockSdk,
         elements: null,
         captureMethod: 'automatic',
+        locale: 'fr-CA',
       });
       const expressOptions = createMockExpressOptions();
       const component = new StripeExpressComponent({ baseOptions, expressOptions });
@@ -207,6 +208,7 @@ describe('StripeExpressComponent', () => {
           amount: 2000,
           currency: 'eur',
           capture_method: 'automatic',
+          locale: 'fr-CA',
         }),
       );
       expect(mockCreatedElements.create).toHaveBeenCalledWith('expressCheckout', expect.objectContaining({

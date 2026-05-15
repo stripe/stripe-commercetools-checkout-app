@@ -171,4 +171,46 @@ describe('MockPaymentEnabler - Express Checkout', () => {
     // After mount, elements must have been created via sdk.elements() with initialAmount values
     expect((component as any).baseOptions?.elements).not.toBeNull();
   });
+
+  test('should forward converted locale to stripe.elements() in standard flow', async () => {
+    const enabler = new MockPaymentEnabler({
+      processorUrl: 'http://localhost:3000',
+      sessionId: 'test-session',
+      locale: 'es-MX',
+    } as any);
+
+    await enabler.createDropinBuilder('embedded' as any);
+
+    const mockStripe = await (loadStripe as jest.Mock).mock.results[0]?.value;
+    expect(mockStripe.elements).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: 'es' }),
+    );
+  });
+
+  test('should forward converted locale to sdk.elements() in Express without session', async () => {
+    const enabler = new MockPaymentEnabler({
+      processorUrl: 'http://localhost:3000',
+      sessionId: '',
+      locale: 'pt-BR',
+    } as any);
+
+    const builder = await enabler.createExpressBuilder('dropin');
+    const expressOptions = {
+      onPayButtonClick: jest.fn().mockResolvedValue({ sessionId: 'test-session-id' }),
+      onShippingAddressSelected: jest.fn().mockResolvedValue(undefined),
+      getShippingMethods: jest.fn().mockResolvedValue([]),
+      onShippingMethodSelected: jest.fn().mockResolvedValue(undefined),
+      onPaymentSubmit: jest.fn().mockResolvedValue(undefined),
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      initialAmount: { centAmount: 3500, currencyCode: 'EUR', fractionDigits: 2 },
+    };
+    const component = builder.build(expressOptions as any);
+    await component.mount('#express-checkout');
+
+    const mockStripe = await (loadStripe as jest.Mock).mock.results[0]?.value;
+    expect(mockStripe.elements).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: 'pt-BR' }),
+    );
+  });
 });
