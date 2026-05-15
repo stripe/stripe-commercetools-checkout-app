@@ -15,7 +15,8 @@ import {
   StripeElements,
   StripePaymentElementOptions
 } from "@stripe/stripe-js";
-import type { StripeExpressCheckoutElementOptions } from "@stripe/stripe-js";
+import type { StripeElementLocale, StripeExpressCheckoutElementOptions } from "@stripe/stripe-js";
+import { convertToStripeLocale } from "../converters/locale.converter";
 
 export type ExpressElementOptions = Pick<
   StripeExpressCheckoutElementOptions,
@@ -45,7 +46,7 @@ export type BaseOptions = {
   environment: string;
   processorUrl: string;
   sessionId: string;
-  locale?: string;
+  locale?: StripeElementLocale;
   onComplete: (result: PaymentResult) => void;
   onError: (error?: any) => void;
   paymentElement: StripePaymentElement; // MVP https://docs.stripe.com/payments/payment-element
@@ -107,7 +108,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
     const [cartInfoResponse, configEnvResponse] = await MockPaymentEnabler.fetchConfigData(paymentMethodType, options);
     const stripeSDK = await MockPaymentEnabler.getStripeSDK(configEnvResponse);
     const customer = await MockPaymentEnabler.getCustomerOptions(options);
-    const elements = MockPaymentEnabler.getElements(stripeSDK, cartInfoResponse, customer);
+    const locale = convertToStripeLocale(options.locale);
+    const elements = MockPaymentEnabler.getElements(stripeSDK, cartInfoResponse, customer, locale);
     const elementsOptions = MockPaymentEnabler.getElementsOptions(options, cartInfoResponse);
 
     return Promise.resolve({
@@ -116,6 +118,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
         environment: configEnvResponse.publishableKey.includes("_test_") ? "test" : configEnvResponse.environment, // MVP do we get this from the env of processor? or we leave the responsability to the publishableKey from Stripe?
         processorUrl: options.processorUrl,
         sessionId: options.sessionId,
+        locale,
         onComplete: options.onComplete || (() => {}),
         onError: options.onError || (() => {}),
         paymentElement: elements.create('payment', elementsOptions as StripePaymentElementOptions ),// MVP this could be expressCheckout or payment for subscritpion.
@@ -199,7 +202,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
   private static getElements(
     stripeSDK: Stripe | null,
     cartInfoResponse: ConfigElementResponseSchemaDTO,
-    customer: CustomerResponseSchemaDTO
+    customer: CustomerResponseSchemaDTO,
+    locale?: StripeElementLocale
   ): StripeElements | null {
     if (!stripeSDK) return null;
     try {
@@ -217,6 +221,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
         }),
         appearance: parseJSON(cartInfoResponse.appearance),
         capture_method: cartInfoResponse.captureMethod,
+        ...(locale && { locale }),
       });
     } catch (error) {
       console.error("Error initializing elements:", error);
@@ -249,12 +254,14 @@ export class MockPaymentEnabler implements PaymentEnabler {
     const environment = configEnvResponse.publishableKey.includes('_test_')
       ? 'test'
       : configEnvResponse.environment;
+    const locale = convertToStripeLocale(options.locale);
     return {
       baseOptions: {
         sdk: stripeSDK,
         environment,
         processorUrl: options.processorUrl,
         sessionId: options.sessionId,
+        locale,
         onComplete: options.onComplete || (() => {}),
         onError: options.onError || (() => {}),
         paymentElement: null as unknown as StripePaymentElement,
