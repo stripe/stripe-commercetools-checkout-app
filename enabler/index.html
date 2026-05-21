@@ -142,7 +142,7 @@
               }
             }
 
-            const sessionId = isExpress ? '' : (await getSessionId(cartId));
+            const sessionId = await getSessionId(cartId);
 
             const enabler = new Enabler({
               processorUrl: __VITE_PROCESSOR_URL__,

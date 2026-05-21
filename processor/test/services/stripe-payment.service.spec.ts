@@ -45,6 +45,7 @@ import { ClientResponse } from '@commercetools/platform-sdk/dist/declarations/sr
 import {
   mockCreateSessionResult,
   mockCtCustomerData,
+  mockCtCustomerWithoutCustomFieldsData,
   mockCtCustomerId,
   mockCustomerData,
   mockEphemeralKeyResult,
@@ -760,7 +761,7 @@ describe('stripe-payment.service', () => {
       expect(updatePaymentMock).toHaveBeenCalledTimes(0);
     });
 
-    test('should create PaymentIntent without shipping and without customer/setup_future_usage when expressCheckout is true', async () => {
+    test('should create PaymentIntent without shipping but with customer when expressCheckout is true and expressCustomerSession is true', async () => {
       jest
         .spyOn(DefaultCartService.prototype, 'getCart')
         .mockReturnValue(Promise.resolve(mockGetCartResult()));
@@ -772,7 +773,46 @@ describe('stripe-payment.service', () => {
       jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
       jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
 
-      await stripePaymentService.createPaymentIntentStripe(true);
+      await stripePaymentService.createPaymentIntentStripe(true, true);
+
+      const createArgs = createSpy.mock.calls[0][0];
+      expect(createArgs).not.toHaveProperty('shipping');
+      expect(createArgs).toHaveProperty('customer', mockStripeCustomerId);
+    });
+
+    test('should create PaymentIntent without shipping and without customer when expressCheckout is true but expressCustomerSession is false (_SetupExpress path)', async () => {
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      const createArgs = createSpy.mock.calls[0][0];
+      expect(createArgs).not.toHaveProperty('shipping');
+      expect(createArgs).not.toHaveProperty('customer');
+      expect(createArgs).not.toHaveProperty('setup_future_usage');
+    });
+
+    test('should create PaymentIntent without shipping and without customer when expressCheckout is true and no customer fields exist', async () => {
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerWithoutCustomFieldsData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(true, true);
 
       const createArgs = createSpy.mock.calls[0][0];
       expect(createArgs).not.toHaveProperty('shipping');
