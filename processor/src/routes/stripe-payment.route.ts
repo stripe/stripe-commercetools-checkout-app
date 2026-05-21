@@ -84,7 +84,9 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
       const isExpressCheckout =
         request.headers['x-express-checkout'] === 'true' ||
         request.headers['x-express-checkout'] === '1';
-      const resp = await opts.paymentService.createPaymentIntentStripe(isExpressCheckout);
+      const isExpressCustomerSession =
+        request.headers['x-express-customer-session'] === 'true';
+      const resp = await opts.paymentService.createPaymentIntentStripe(isExpressCheckout, isExpressCustomerSession);
       return reply.status(200).send(resp);
     },
   );

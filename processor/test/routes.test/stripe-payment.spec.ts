@@ -525,7 +525,7 @@ describe('Stripe Payment APIs', () => {
         },
       });
 
-      expect(spiedPaymentService.createPaymentIntentStripe).toHaveBeenCalledWith(true);
+      expect(spiedPaymentService.createPaymentIntentStripe).toHaveBeenCalledWith(true, false);
     });
   });
 

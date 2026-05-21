@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+- **Express Checkout `_Setup` path — customer binding**: When Express Checkout is initialized with a CT session at render time (`_Setup` path), the enabler now sends `x-express-customer-session: true` on `GET /payments`. The processor uses this header to bind `customer` and `setup_future_usage` on the PaymentIntent, matching the Stripe Elements instance created with `customerOptions` and `setupFutureUsage`. The `_SetupExpress` (deferred) path is unaffected — PaymentIntents on that path remain one-shot with no customer binding.
 - Enhanced refund processing with support for multiple refunded events
 - New `processStripeEventRefunded` method in StripePaymentService for dedicated refund event handling
 - Improved refund data accuracy by retrieving latest refund information from Stripe API

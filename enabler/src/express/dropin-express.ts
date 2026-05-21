@@ -559,7 +559,8 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   /**
    * Builds headers for enabler → processor requests.
    *
-   * @returns Headers including `Content-Type`, `x-session-id` (`currentSessionId`), and optional `x-express-checkout`.
+   * @returns Headers including `Content-Type`, `x-session-id` (`currentSessionId`), `x-express-checkout`,
+   * and `x-express-customer-session` when the _Setup path resolved a Stripe customer (Elements has setupFutureUsage).
    */
   private getHeadersConfig(): HeadersInit {
     const headers: Record<string, string> = {
@@ -568,6 +569,9 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
     };
     if (this.baseOptions.expressCheckout) {
       headers['x-express-checkout'] = 'true';
+    }
+    if (this.baseOptions.stripeCustomerId) {
+      headers['x-express-customer-session'] = 'true';
     }
     return headers;
   }

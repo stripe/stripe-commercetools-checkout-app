@@ -475,7 +475,7 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param expressCheckout When true, shipping is omitted on the PaymentIntent so the Express Checkout Element can set it at confirm (default false).
    * @return Promise<PaymentResponseSchemaDTO> A Promise that resolves to a PaymentResponseSchemaDTO object containing the client secret and payment reference.
    */
-  public async createPaymentIntentStripe(expressCheckout = false): Promise<PaymentResponseSchemaDTO> {
+  public async createPaymentIntentStripe(expressCheckout = false, expressCustomerSession = false): Promise<PaymentResponseSchemaDTO> {
     const config = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const customer = await this.getCtCustomer(ctCart.customerId!);
@@ -485,6 +485,11 @@ export class StripePaymentService extends AbstractPaymentService {
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
     const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart);
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
+    // expressWithCustomer: true only when the enabler used _Setup (session at render time) AND resolved
+    // a Stripe customer — meaning Elements was created with setupFutureUsage and customerOptions.
+    // expressCustomerSession signals this from the enabler via x-express-customer-session header.
+    // _SetupExpress (deferred) never sets this header, so setup_future_usage stays off for that path.
+    const expressWithCustomer = expressCheckout && Boolean(stripeCustomerId) && expressCustomerSession;
 
     // Tax calculation integration
     const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
@@ -500,6 +505,7 @@ export class StripePaymentService extends AbstractPaymentService {
         ctCart,
         amountPlanned,
         expressCheckout,
+        expressWithCustomer,
         shippingAddress,
         stripeCustomerId,
         setupFutureUsage,
@@ -616,6 +622,7 @@ export class StripePaymentService extends AbstractPaymentService {
     ctCart: Cart;
     amountPlanned: { centAmount: number; currencyCode: string };
     expressCheckout: boolean;
+    expressWithCustomer: boolean;
     shippingAddress: Stripe.PaymentIntentCreateParams.Shipping | null | undefined;
     stripeCustomerId: string | undefined;
     setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
@@ -629,6 +636,7 @@ export class StripePaymentService extends AbstractPaymentService {
       ctCart,
       amountPlanned,
       expressCheckout,
+      expressWithCustomer,
       shippingAddress,
       stripeCustomerId,
       setupFutureUsage,
@@ -640,8 +648,9 @@ export class StripePaymentService extends AbstractPaymentService {
     } = params;
 
     return {
-      // Express Checkout uses one-shot payment: no customer/setup_future_usage so the PI matches frontend Elements (created without them).
-      ...(!expressCheckout && stripeCustomerId && {
+      // Standard and express-with-known-customer paths both bind customer and setup_future_usage.
+      // Express-without-customer (deferred session path) is one-shot: no customer binding.
+      ...((!expressCheckout || expressWithCustomer) && stripeCustomerId && {
         customer: stripeCustomerId,
         ...(setupFutureUsage && { setup_future_usage: setupFutureUsage }),
       }),
