@@ -123,7 +123,14 @@ export class MockPaymentEnabler implements PaymentEnabler {
         onError: options.onError || (() => {}),
         paymentElement: elements.create('payment', elementsOptions as StripePaymentElementOptions ),// MVP this could be expressCheckout or payment for subscritpion.
         elements: elements,
-        ...(customer && {stripeCustomerId: customer?.stripeCustomerId,})
+        ...(customer && {stripeCustomerId: customer?.stripeCustomerId,}),
+        ...(configEnvResponse.expressElementOptions && (() => {
+          const raw = parseJSON<Record<string, unknown>>(configEnvResponse.expressElementOptions!);
+          const expressElementOptions = Object.fromEntries(
+            ALLOWED_EXPRESS_OPTION_KEYS.filter((k) => raw[k] !== undefined).map((k) => [k, raw[k]]),
+          ) as ExpressElementOptions;
+          return { expressElementOptions };
+        })()),
       },
     });
   };
