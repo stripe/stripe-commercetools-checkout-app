@@ -33,7 +33,7 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 ## KI-004: `handleRequest()` in `actions.ts` does not await async post-deploy functions
 
-**Problem:** `handleRequest()` at `processor/src/connectors/actions.ts:32` is async but the functions it invokes (`createCustomerIdCustomType()`, `createLaunchpadPurchaseOrderNumberCustomType()`, etc.) are awaited only partially — the top-level caller of `handleRequest` does not await its result. Post-deploy functions may fail silently and the deploy succeeds regardless.
+**Problem:** `handleRequest()` at `processor/src/connectors/actions.ts:32` is async but the functions it invokes (`createOrUpdateCustomerCustomType()`, `createLaunchpadPurchaseOrderNumberCustomType()`, etc.) are awaited only partially — the top-level caller of `handleRequest` does not await its result. Post-deploy functions may fail silently and the deploy succeeds regardless.
 **Root cause:** `processor/src/connectors/actions.ts:32` — missing await on async function call.
 **Rule:** All async post-deploy lifecycle functions must be awaited with their errors propagated to the CT Connect SDK to fail the deploy.
 **Implementation note:** If a custom type creation fails silently, the connector starts without the required custom type and runtime calls that depend on it produce confusing errors.
