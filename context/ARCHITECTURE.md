@@ -98,8 +98,8 @@ loadStripe(publishableKey)
 
 | Method | Endpoint | Header | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/config-element/payment` | `x-session-id` | Appearance, layout, captureMethod, setupFutureUsage, cartInfo |
-| `GET` | `/operations/config` | `x-session-id` | publishableKey, environment |
+| `GET` | `/config-element/:paymentComponent` | `x-session-id` | Appearance, layout, captureMethod, setupFutureUsage, cartInfo (enabler substitutes `payment` for `:paymentComponent`) |
+| `GET` | `/operations/config` | `x-session-id` | publishableKey, environment (bare route `/config` in `operation.route.ts`; full path includes the `/operations` prefix from `operation.plugin.ts:8`) |
 | `GET` | `/customer/session` | `x-session-id` | stripeCustomerId, ephemeralKey, sessionId (204 = guest) |
 | `POST` | `/express-config` | none (CORS) | publishableKey, captureMethod, appearance, expressElementOptions |
 | `GET` | `/payments` | `x-session-id`, `x-express-checkout: true` (express only) | Creates PI + CT Payment; returns clientSecret |
@@ -122,6 +122,8 @@ loadStripe(publishableKey)
 | `POST /stripe/webhooks` | Stripe Signature | Receives and processes Stripe events. Pre-handler hook checks `stripe-signature` header presence; full signature verification (`stripe.webhooks.constructEvent`) happens inside the handler. Event processing runs synchronously and the handler returns 200 after processing completes. |
 
 ### CT Connect SDK (`operation.route.ts`)
+
+> All routes below are defined bare in `operation.route.ts` and registered under the `/operations` prefix in `operation.plugin.ts:8`. The full paths are therefore `/operations/config`, `/operations/status`, `/operations/payment-components`, and `/operations/payment-intents/:id`.
 
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
