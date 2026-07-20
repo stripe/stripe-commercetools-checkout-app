@@ -20,7 +20,6 @@ dist/
 .env
 
 # Claude Code
-CLAUDE.md
 .claude/
 
 # MCP (Model Context Protocol) configuration and data
