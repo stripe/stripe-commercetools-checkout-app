@@ -22,6 +22,14 @@ What this connector supports, what it does not support, and what is partially su
 
 ---
 
+## Configuration-Driven Behavior
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Per-cart capture method / flow type override | ✅ Supported | `STRIPE_PAYMENT_BEHAVIOR_RULES` (JSON map keyed by ISO country code or CT store key) lets `captureMethod` and `flowType` be overridden per store/country; resolved in `createPaymentIntentStripe()` via `resolvePaymentBehavior()` and falls back to the flat `STRIPE_CAPTURE_METHOD`/flow env vars when no rule matches. |
+
+---
+
 ## Payment Element and Express Checkout
 
 | Feature | Status | Notes |

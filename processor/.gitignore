@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Environment
+.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,5 +25,5 @@ dist-ssr
 *.sln
 *.sw?
 
-#test coverage
+# Test coverage
 coverage/*

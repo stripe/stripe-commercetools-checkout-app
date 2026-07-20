@@ -83,6 +83,9 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
 | `STRIPE_EXPRESS_ELEMENT_OPTIONS` | Optional JSON configuration for the Express Checkout Element. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. Example: `{"buttonHeight":48,"emailRequired":true}` | — |
+| `STRIPE_PAYMENT_FLOW` | Stripe Elements initialization strategy: `deferred` or `pi_first`. See [Payment Behavior Rules & PI-First Flow](#payment-behavior-rules--pi-first-flow) and [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md). | `deferred` |
+| `STRIPE_PAYMENT_BEHAVIOR_RULES` | Optional JSON map keyed by ISO country code or commercetools store key, overriding `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per matched cart. Malformed JSON aborts startup. | — |
+| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Takes priority over `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS` per attribute. | — |
 
 Make sure commercetools client credential have at least the following permissions:
 
@@ -200,6 +203,17 @@ The response will provide the necessary information to populate the payment elem
 - **setupFutureUsage**: The current setup future usage configured in the payment connector. This value can be overridden using the `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable, which decouples it from the Customer Session's `payment_method_save_usage` configuration. [More information](https://docs.stripe.com/api/customer_sessions/object#customer_session_object-components-payment_element-features).
 - **layout**: This configuration enables the Layout for the payment component. The value needs to be a valid stringified JSON. [More information](https://docs.stripe.com/payments/payment-element#layout).
 - **collectBillingAddress**: This configuration enables the collection of billing address for the Stripe Payment Element component. The default value is 'auto'. [More information](https://docs.stripe.com/payments/payment-element#collecting-billing-address).
+- **paymentElementOptions**: Stringified JSON built from the `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` environment variable, merged with the legacy `layout`/`collectBillingAddress` values by the enabler's `getElementsOptions()`. Invalid or unknown keys are dropped individually.
+- **flowType**: `deferred` or `pi_first` — the effective Stripe Elements initialization strategy for this cart, after applying any `STRIPE_PAYMENT_BEHAVIOR_RULES` override. See [Payment Behavior Rules & PI-First Flow](#payment-behavior-rules--pi-first-flow).
+
+### Payment Behavior Rules & PI-First Flow
+
+Two related environment variables let the connector's payment behavior vary per cart instead of being fixed globally:
+
+- **`STRIPE_PAYMENT_BEHAVIOR_RULES`**: a JSON map keyed by ISO country code (`cart.country`, falling back to billing/shipping address country) or commercetools store key. Each matched rule can override `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` for that cart only. Carts that match no key use the flat env vars (`STRIPE_CAPTURE_METHOD`, `STRIPE_PAYMENT_FLOW`, `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`, `STRIPE_COLLECT_BILLING_ADDRESS`) unchanged. Resolution happens in `resolvePaymentBehavior()` (`src/services/payment-behavior-resolver.ts`), called from both `initializeCartPayment()` and `createPaymentIntentStripe()`.
+- **`STRIPE_PAYMENT_FLOW`** (flat default) / **`flowType`** (per-cart override): selects between `deferred` (PaymentIntent created at submit time, compatible with all payment methods) and `pi_first` (PaymentIntent created eagerly so Stripe Elements can be initialized with `clientSecret` instead of `{ mode, amount, currency }`). `pi_first` is required for payment methods — e.g. **Blik** — that must bind to a PaymentIntent before the payment element renders, and suppresses `setupFutureUsage` on both the config-element response and the PaymentIntent.
+
+See [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md) for the full rationale, the TOCTOU window `pi_first` closes, the orphan-PaymentIntent tradeoff, and the storefront contract for handling `requires_action`/Blik authorization.
 
 ### Setup Future Usage Override
 

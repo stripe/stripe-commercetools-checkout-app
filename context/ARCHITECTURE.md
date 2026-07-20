@@ -35,6 +35,7 @@ Stripe (async)
 | Routes | `src/routes/operation.route.ts` | CT Connect SDK endpoints (capture, cancel, refund, reverse) |
 | Service | `src/services/abstract-payment.service.ts` | Abstract base + `modifyPayment()` action dispatch |
 | Service | `src/services/stripe-payment.service.ts` | All Stripe business logic (PI, customer session, refunds, webhooks, multi-capture) |
+| Service | `src/services/payment-behavior-resolver.ts` | Resolves per-cart `STRIPE_PAYMENT_BEHAVIOR_RULES` overrides — `resolvePaymentBehavior()`, `extractDiscriminator()` |
 | Converter | `src/services/converters/stripeEventConverter.ts` | Maps Stripe events → CT transaction updates |
 | CT helpers | `src/services/commerce-tools/customerClient.ts`, `customTypeClient.ts`, `customTypeHelper.ts`, `productTypeClient.ts` | CT API helpers used by service and connectors |
 | Client | `src/clients/stripe.client.ts` | Stripe SDK factory + error wrapping |
@@ -98,8 +99,8 @@ loadStripe(publishableKey)
 
 | Method | Endpoint | Header | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/config-element/:paymentComponent` | `x-session-id` | Appearance, layout, captureMethod, setupFutureUsage, cartInfo (enabler substitutes `payment` for `:paymentComponent`) |
-| `GET` | `/operations/config` | `x-session-id` | publishableKey, environment (bare route `/config` in `operation.route.ts`; full path includes the `/operations` prefix from `operation.plugin.ts:8`) |
+| `GET` | `/config-element/payment` | `x-session-id` | Appearance, layout, captureMethod, setupFutureUsage, cartInfo |
+| `GET` | `/operations/config` | `x-session-id` | publishableKey, environment |
 | `GET` | `/customer/session` | `x-session-id` | stripeCustomerId, ephemeralKey, sessionId (204 = guest) |
 | `POST` | `/express-config` | none (CORS) | publishableKey, captureMethod, appearance, expressElementOptions |
 | `GET` | `/payments` | `x-session-id`, `x-express-checkout: true` (express only) | Creates PI + CT Payment; returns clientSecret |
@@ -123,11 +124,9 @@ loadStripe(publishableKey)
 
 ### CT Connect SDK (`operation.route.ts`)
 
-> All routes below are defined bare in `operation.route.ts` and registered under the `/operations` prefix in `operation.plugin.ts:8`. The full paths are therefore `/operations/config`, `/operations/status`, `/operations/payment-components`, and `/operations/payment-intents/:id`.
-
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
-| `GET /config` | SessionHeader | Returns publishable key, capture method, appearance. |
+| `GET /operations/config` | SessionHeader | Returns publishable key, capture method, appearance. |
 | `GET /status` | JWT | Health check — validates CT permissions + Stripe connectivity. |
 | `GET /payment-components` | JWT | Returns supported components under the `dropins` key: `dropin` (embedded), `express` (dropin). |
 | `POST /payment-intents/:id` | OAuth2 | Modifies a payment: capture, cancel, refund, or reverse. |
@@ -223,6 +222,9 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` | No | JSON config for Payment Element saved methods feature. |
 | `STRIPE_COLLECT_BILLING_ADDRESS` | No | `auto`, `never`, or `if_required`. Default: `auto`. |
 | `STRIPE_APPLE_PAY_WELL_KNOWN` | No | Raw string returned by `/applePayConfig` for Apple Pay domain association. |
+| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | `processor/src/config/config.ts` (parsed by `getPaymentBehaviorConfig()`) + `processor/src/services/payment-behavior-resolver.ts` (`resolvePaymentBehavior()`) + `processor/src/services/stripe-payment.service.ts` (`createPaymentIntentStripe()` calls the resolver). JSON map keyed by ISO country code or CT store key; overrides `captureMethod` and `flowType` (and `setupFutureUsage`/`collectBillingAddress`) per cart based on cart country or store. Malformed JSON aborts startup. |
+| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | No | JSON config merged with the legacy `layout`/`STRIPE_COLLECT_BILLING_ADDRESS` values in the enabler's `getElementsOptions()`. Supports `terms`, `wallets`, `defaultValues`, `business`, `paymentMethodOrder`, `readOnly`, `fields`, `layout`. An explicit value here wins over the legacy env var per attribute. |
+| `STRIPE_EXPRESS_ELEMENT_OPTIONS` | No | Options forwarded to the Express Checkout Element (Apple Pay / Google Pay) configuration. |
 | `ALLOWED_ORIGINS` | Yes | Comma-separated CORS whitelist for `/express-config`. Must include the storefront origin. |
 | `MERCHANT_RETURN_URL` | Yes | Return URL after 3DS or redirect-based payment methods. |
 | `PAYMENT_INTERFACE` | No | Value written to `paymentMethodInfo.paymentInterface`. Default: `checkout-stripe`. |

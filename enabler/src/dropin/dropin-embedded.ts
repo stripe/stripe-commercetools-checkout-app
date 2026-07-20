@@ -88,13 +88,25 @@ export class DropinComponents implements DropinComponent {
         throw submitError;
       }
 
-      const {
-        sClientSecret,
-        paymentReference,
-        merchantReturnUrl,
-        cartId,
-        billingAddress
-      } = await this.getPayment();
+      let sClientSecret: string;
+      let paymentReference: string;
+      let merchantReturnUrl: string;
+      let cartId: string;
+      let billingAddress: string | undefined;
+
+      if (this.baseOptions.flowType === 'pi_first') {
+        // pi_first: use the full response cached by _Setup(). getPayment() is NEVER called
+        // here — doing so would create a second PaymentIntent (orphan PI risk).
+        if (!this.baseOptions.piFirstResponse) {
+          throw new Error('pi_first: missing cached PaymentIntent response in baseOptions. _Setup() must populate piFirstResponse before submit() is called.');
+        }
+        ({ sClientSecret, paymentReference, merchantReturnUrl, cartId, billingAddress } =
+          this.baseOptions.piFirstResponse);
+      } else {
+        // deferred: existing flow unchanged
+        ({ sClientSecret, paymentReference, merchantReturnUrl, cartId, billingAddress } =
+          await this.getPayment());
+      }
 
       const { paymentIntent } = await this.confirmStripePayment({
         merchantReturnUrl,

@@ -43,6 +43,8 @@ deployAs:
           required: true
         - key: STRIPE_APPEARANCE_PAYMENT_ELEMENT
           description: Stripe Appearance for Payment Element (example - {"theme":"night","labels":"floating"} ).
+        - key: STRIPE_BEHAVIOR_PAYMENT_ELEMENT
+          description: JSON configuration for elements.create('payment', options) behavior (Elements Behavior). Supported fields - terms, wallets, defaultValues, fields, business, paymentMethodOrder, readOnly, layout (example - {"terms":{"card":"never"},"wallets":{"applePay":"auto"}}).
         - key: STRIPE_EXPRESS_ELEMENT_OPTIONS
           description: JSON configuration for the ExpressCheckoutElement options. Supported fields - buttonHeight, buttonTheme, buttonType, emailRequired, layout, paymentMethodOrder, phoneNumberRequired (example - {"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}).
         - key: STRIPE_LAYOUT
@@ -74,6 +76,26 @@ deployAs:
           default: 'false'
         - key: STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE
           description: Setup future usage for Payment Intent.
+        - key: STRIPE_PAYMENT_FLOW
+          description: Controls the Stripe Elements initialization flow. Use 'pi_first' for payment methods that require a PaymentIntent before element mount (e.g. Blik). Use 'deferred' for standard checkout flow.
+          default: 'deferred'
+        - key: STRIPE_PAYMENT_BEHAVIOR_RULES
+          description: >
+            JSON map of per-cart payment behavior rules keyed by store key or ISO country code.
+            Env vars are always the default — this map contains exceptions only. No wildcard key.
+            Discriminator priority per cart: cart.country (most reliable, set at creation, not
+            customer-editable) > billingAddress.country > shippingAddress.country > store.key.
+            Each rule may override any combination of:
+            flowType ("deferred"|"pi_first"),
+            captureMethod ("automatic"|"automatic_async"|"manual"),
+            setupFutureUsage ("off_session"|"on_session"|""|"none"|"null"|"undefined"),
+            collectBillingAddress ("auto"|"never"|"if_required").
+            Only explicitly supplied fields override the corresponding flat env var; omitted fields
+            fall back to their individual env var.
+            Security note: captureMethod:manual overrides are merchant-controlled but billingAddress.country
+            and shippingAddress.country are customer-supplied. For high-security deployments, use
+            store.key as the discriminator — it is not customer-editable.
+            Example: {"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"}}
         - key: STRIPE_API_VERSION
           description: Stripe API version to use (example - 2025-12-15.clover).
           default: '2025-12-15.clover'

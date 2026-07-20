@@ -34,6 +34,8 @@ export const ConfigElementResponseSchema = Type.Object({
   setupFutureUsage: Type.Optional(Type.Union([Type.Literal('off_session'), Type.Literal('on_session')])),
   layout: Type.String(),
   collectBillingAddress: Type.Union([Type.Literal('auto'), Type.Literal('never'), Type.Literal('if_required')]),
+  paymentElementOptions: Type.Optional(Type.String()),
+  flowType: Type.Optional(Type.Union([Type.Literal('deferred'), Type.Literal('pi_first')])),
 });
 
 export const ConfigResponseSchema = Type.Object({
