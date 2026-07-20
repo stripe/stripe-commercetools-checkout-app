@@ -25,7 +25,11 @@ import {
   mockEvent__charge_updated_already_captured,
   mockEvent__charge_updated_no_amount_change,
 } from '../utils/mock-routes-data';
-import { mockGetCartResult, mockGetCartWithoutCustomerIdResult } from '../utils/mock-cart-data';
+import {
+  mockGetCartResult,
+  mockGetCartWithoutCustomerIdResult,
+  mockGetCartWithCountry,
+} from '../utils/mock-cart-data';
 import * as Config from '../../src/config/config';
 import * as ConfigModule from '../../src/config/config';
 import { PaymentStatus, StripePaymentServiceOptions } from '../../src/services/types/stripe-payment.type';
@@ -2455,6 +2459,197 @@ describe('stripe-payment.service', () => {
           eventId: 'evt_test_123',
         }),
       );
+    });
+  });
+
+  describe('initializeCartPayment — STRIPE_PAYMENT_BEHAVIOR_RULES', () => {
+    test('no behavior config — uses flat env vars as-is', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: undefined,
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('MX')));
+      jest
+        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
+        .mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.captureMethod).toBe('automatic');
+      expect(result.collectBillingAddress).toBe('auto');
+      expect(result.flowType).toBe('deferred');
+    });
+
+    test('cart.country match — captureMethod overridden by behavior rule', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: { MX: { captureMethod: 'manual' } },
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('MX')));
+      jest
+        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
+        .mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.captureMethod).toBe('manual');
+      // flat env vars still apply for unspecified fields
+      expect(result.collectBillingAddress).toBe('auto');
+      expect(result.flowType).toBe('deferred');
+    });
+
+    test('cart.country match — flowType overridden to pi_first suppresses setupFutureUsage', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: { MX: { flowType: 'pi_first' } },
+        stripePaymentIntentSetupFutureUsage: 'off_session',
+        stripeSavedPaymentMethodConfig: {},
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('MX')));
+      jest
+        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
+        .mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      expect(result.flowType).toBe('pi_first');
+      // pi_first suppresses setupFutureUsage regardless of behavior rule
+      expect(result.setupFutureUsage).toBeUndefined();
+    });
+
+    test('no country match — flat env vars apply', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: { MX: { captureMethod: 'manual' } },
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('DE')));
+      jest
+        .spyOn(DefaultCartService.prototype, 'getPaymentAmount')
+        .mockResolvedValue(mockGetPaymentAmount);
+
+      const result = await stripePaymentService.initializeCartPayment('payment');
+
+      // DE is not in the config — flat env vars apply
+      expect(result.captureMethod).toBe('automatic');
+    });
+  });
+
+  describe('createPaymentIntentStripe — STRIPE_PAYMENT_BEHAVIOR_RULES', () => {
+    test('no behavior config — flat env vars used for captureMethod and collectBillingAddress', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: undefined,
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+        projectKey: 'test-project',
+        stripeEnableMultiOperations: false,
+        merchantReturnUrl: '',
+        paymentInterface: 'checkout-stripe',
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('MX')));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(undefined);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(Stripe.prototype.paymentIntents, 'update').mockReturnValue(Promise.resolve(mockStripeUpdatePaymentResult));
+
+      await stripePaymentService.createPaymentIntentStripe();
+
+      const createArgs = createSpy.mock.calls[0][0];
+      expect(createArgs.capture_method).toBe('automatic');
+      // collectBillingAddress = 'auto' means no billingAddress in response
+    });
+
+    test('cart.country match — captureMethod overridden by behavior rule', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: { MX: { captureMethod: 'manual' } },
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+        projectKey: 'test-project',
+        stripeEnableMultiOperations: false,
+        merchantReturnUrl: '',
+        paymentInterface: 'checkout-stripe',
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('MX')));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(undefined);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(Stripe.prototype.paymentIntents, 'update').mockReturnValue(Promise.resolve(mockStripeUpdatePaymentResult));
+
+      await stripePaymentService.createPaymentIntentStripe();
+
+      const createArgs = createSpy.mock.calls[0][0];
+      expect(createArgs.capture_method).toBe('manual');
+    });
+
+    test('no country match — flat captureMethod applies', async () => {
+      jest.spyOn(ConfigModule, 'getConfig').mockReturnValue({
+        stripeCaptureMethod: 'automatic',
+        stripeCollectBillingAddress: 'auto',
+        stripePaymentFlow: 'deferred',
+        stripePaymentBehaviorRules: { MX: { captureMethod: 'manual' } },
+        stripePaymentIntentSetupFutureUsage: undefined,
+        stripeSavedPaymentMethodConfig: {},
+        projectKey: 'test-project',
+        stripeEnableMultiOperations: false,
+        merchantReturnUrl: '',
+        paymentInterface: 'checkout-stripe',
+      } as never);
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockReturnValue(Promise.resolve(mockGetCartWithCountry('DE')));
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(undefined);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createSpy = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockReturnValue(Promise.resolve(mockStripeCreatePaymentResult));
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(Stripe.prototype.paymentIntents, 'update').mockReturnValue(Promise.resolve(mockStripeUpdatePaymentResult));
+
+      await stripePaymentService.createPaymentIntentStripe();
+
+      const createArgs = createSpy.mock.calls[0][0];
+      // DE not in config — flat env var 'automatic' applies
+      expect(createArgs.capture_method).toBe('automatic');
     });
   });
 });

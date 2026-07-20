@@ -13,7 +13,7 @@ global.fetch = jest.fn();
 describe('MockPaymentEnabler - Express Checkout', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     // Mock Stripe SDK
     const mockStripe = {
       elements: jest.fn().mockReturnValue({
@@ -32,9 +32,9 @@ describe('MockPaymentEnabler - Express Checkout', () => {
       paymentRequest: jest.fn(),
       confirmPayment: jest.fn(),
     };
-    
+
     (loadStripe as jest.Mock).mockResolvedValue(mockStripe);
-    
+
     // Mock fetch for multiple calls
     (global.fetch as jest.Mock).mockImplementation((url: string) => {
       // Mock /express-config (used by createExpressBuilder when sessionId is empty)
@@ -212,5 +212,111 @@ describe('MockPaymentEnabler - Express Checkout', () => {
     expect(mockStripe.elements).toHaveBeenCalledWith(
       expect.objectContaining({ locale: 'pt-BR' }),
     );
+  });
+});
+
+describe('MockPaymentEnabler - Elements Behavior (STRIPE_BEHAVIOR_PAYMENT_ELEMENT) merge', () => {
+  const buildStripeMock = () => {
+    const create = jest.fn().mockReturnValue({ mount: jest.fn(), update: jest.fn(), on: jest.fn() });
+    const mockStripe = {
+      elements: jest.fn().mockReturnValue({ create, update: jest.fn() }),
+      paymentRequest: jest.fn(),
+      confirmPayment: jest.fn(),
+    };
+    return { mockStripe, create };
+  };
+
+  const mockConfigElementResponse = (overrides: Record<string, unknown> = {}) => {
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      if (url.includes('/config-element/')) {
+        return Promise.resolve({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            cartInfo: { currency: 'usd', amount: 10000 },
+            appearance: '{}',
+            captureMethod: 'automatic',
+            layout: '{"type":"tabs"}',
+            collectBillingAddress: 'auto',
+            ...overrides,
+          }),
+        });
+      }
+      if (url.includes('/operations/config')) {
+        return Promise.resolve({
+          ok: true,
+          json: jest.fn().mockResolvedValue({ publishableKey: 'pk_test_1234567890', environment: 'test' }),
+        });
+      }
+      if (url.includes('/customer/session')) {
+        return Promise.resolve({ status: 204, json: jest.fn().mockResolvedValue(undefined) });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('falls back to legacy collectBillingAddress when Field 2 is absent', async () => {
+    const { mockStripe, create } = buildStripeMock();
+    (loadStripe as jest.Mock).mockResolvedValue(mockStripe);
+    mockConfigElementResponse({ collectBillingAddress: 'never' });
+
+    const enabler = new MockPaymentEnabler({ processorUrl: 'http://localhost:3000', sessionId: 'test-session' });
+    await enabler.createDropinBuilder('embedded');
+
+    const elementsOptions = create.mock.calls[0][1];
+    expect(elementsOptions.fields).toEqual({ billingDetails: { address: 'never' } });
+    expect(elementsOptions.terms).toBeUndefined();
+    expect(elementsOptions.wallets).toBeUndefined();
+  });
+
+  test('Field 2 layout takes priority over legacy STRIPE_LAYOUT', async () => {
+    const { mockStripe, create } = buildStripeMock();
+    (loadStripe as jest.Mock).mockResolvedValue(mockStripe);
+    mockConfigElementResponse({
+      layout: '{"type":"tabs"}',
+      paymentElementOptions: JSON.stringify({ layout: { type: 'accordion', defaultCollapsed: true } }),
+    });
+
+    const enabler = new MockPaymentEnabler({ processorUrl: 'http://localhost:3000', sessionId: 'test-session' });
+    await enabler.createDropinBuilder('embedded');
+
+    const elementsOptions = create.mock.calls[0][1];
+    expect(elementsOptions.layout).toEqual({ type: 'accordion', defaultCollapsed: true });
+  });
+
+  test('passes terms and wallets through directly when present in Field 2', async () => {
+    const { mockStripe, create } = buildStripeMock();
+    (loadStripe as jest.Mock).mockResolvedValue(mockStripe);
+    mockConfigElementResponse({
+      paymentElementOptions: JSON.stringify({
+        terms: { card: 'never' },
+        wallets: { applePay: 'auto', googlePay: 'never' },
+      }),
+    });
+
+    const enabler = new MockPaymentEnabler({ processorUrl: 'http://localhost:3000', sessionId: 'test-session' });
+    await enabler.createDropinBuilder('embedded');
+
+    const elementsOptions = create.mock.calls[0][1];
+    expect(elementsOptions.terms).toEqual({ card: 'never' });
+    expect(elementsOptions.wallets).toEqual({ applePay: 'auto', googlePay: 'never' });
+  });
+
+  test('Field 2 fields.billingDetails wins entirely over legacy collectBillingAddress', async () => {
+    const { mockStripe, create } = buildStripeMock();
+    (loadStripe as jest.Mock).mockResolvedValue(mockStripe);
+    mockConfigElementResponse({
+      collectBillingAddress: 'never',
+      paymentElementOptions: JSON.stringify({ fields: { billingDetails: 'auto' } }),
+    });
+
+    const enabler = new MockPaymentEnabler({ processorUrl: 'http://localhost:3000', sessionId: 'test-session' });
+    await enabler.createDropinBuilder('embedded');
+
+    const elementsOptions = create.mock.calls[0][1];
+    expect(elementsOptions.fields).toEqual({ billingDetails: 'auto' });
   });
 });

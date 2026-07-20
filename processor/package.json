@@ -67,7 +67,10 @@
     "lodash": "^4.17.23",
     "minimatch": "^10.0.3",
     "babel-plugin-istanbul": {
-      "test-exclude": "^8.0.0"
+      "test-exclude": "^8.0.0",
+      "@istanbuljs/load-nyc-config": {
+        "js-yaml": "^3.15.0"
+      }
     }
   }
 }

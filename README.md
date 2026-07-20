@@ -124,6 +124,9 @@ Before installing the connector, you must create a Stripe account and obtain the
 19. **CT_PRODUCT_TYPE_SUBSCRIPTION_KEY**: Product type key for subscription information. Default: `payment-connector-subscription-information`
 20. **STRIPE_API_VERSION**: Stripe API version to use for API requests. Default: `2025-12-15.clover`
 21. **STRIPE_EXPRESS_ELEMENT_OPTIONS**: Optional JSON configuration for the Express Checkout Element options. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. The value needs to be a valid stringified JSON. Example: `{"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}`. More information about the properties can be found in the [Stripe Express Checkout Element docs](https://docs.stripe.com/js/elements/express_checkout_element).
+22. **STRIPE_PAYMENT_FLOW**: Controls the Stripe Elements initialization strategy. Possible values: `deferred` (default, PaymentIntent created at submit time via `GET /payments`) or `pi_first` (PaymentIntent created eagerly so Elements can be initialized with `clientSecret`; required for payment methods such as Blik that must bind to a PaymentIntent before rendering). See [ADR-006](./context/decisions/adr-006-pi-first-blik-toctou.md) for the full design and tradeoffs.
+23. **STRIPE_PAYMENT_BEHAVIOR_RULES**: Optional JSON map, keyed by ISO country code or commercetools store key, that overrides `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per cart (e.g. `{"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"}}`). Flat env vars remain the default for carts that match no key. Malformed JSON aborts startup.
+24. **STRIPE_BEHAVIOR_PAYMENT_ELEMENT**: Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Coexists with `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS`: values set here take priority per attribute; unset attributes fall back to those.
 
 
 #### 2. commercetools
@@ -278,6 +281,9 @@ Here, you can see the details about various variables in the configuration
 - `CT_CUSTOM_TYPE_SUBSCRIPTION_LINE_ITEM_KEY`: Custom type key for subscription line items. Default: `payment-connector-subscription-line-item-type`
 - `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY`: Product type key for subscription information. Default: `payment-connector-subscription-information`
 - `STRIPE_API_VERSION`: Stripe API version to use for API requests. Default value is `2025-12-15.clover`. This version is used when creating ephemeral keys for customer sessions.
+- `STRIPE_PAYMENT_FLOW`: Controls the Stripe Elements initialization strategy. Values: `deferred` (default) or `pi_first`. See [ADR-006](./context/decisions/adr-006-pi-first-blik-toctou.md) for details on the `pi_first` flow (required for Blik) and its TOCTOU/orphan-PI tradeoffs.
+- `STRIPE_PAYMENT_BEHAVIOR_RULES`: Optional JSON map keyed by ISO country code or commercetools store key that overrides `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per cart. Flat env vars remain the default for unmatched carts. Malformed JSON aborts startup.
+- `STRIPE_BEHAVIOR_PAYMENT_ELEMENT`: Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Values set here take priority over the legacy `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS` variables per attribute.
 
 ## Development
 

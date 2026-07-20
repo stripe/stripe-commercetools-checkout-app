@@ -26,11 +26,22 @@ export type ExpressElementOptions = Pick<
 const ALLOWED_EXPRESS_OPTION_KEYS: ReadonlyArray<keyof ExpressElementOptions> = [
   'buttonHeight', 'buttonTheme', 'buttonType', 'emailRequired', 'layout', 'paymentMethodOrder', 'phoneNumberRequired',
 ];
+
+/**
+ * Shape of STRIPE_BEHAVIOR_PAYMENT_ELEMENT ("Elements Behavior" in Merchant Center), already
+ * parsed and schema-validated by the processor — the enabler only merges it with the legacy
+ * layout/collectBillingAddress env vars, it does not re-validate.
+ */
+export type PaymentElementBehaviorOptions = Pick<
+  StripePaymentElementOptions,
+  'terms' | 'wallets' | 'defaultValues' | 'business' | 'paymentMethodOrder' | 'readOnly' | 'layout' | 'fields'
+>;
 import { StripePaymentElement } from "@stripe/stripe-js";
 import {
   ConfigElementResponseSchemaDTO,
   ConfigResponseSchemaDTO,
-  CustomerResponseSchemaDTO
+  CustomerResponseSchemaDTO,
+  PaymentResponseSchemaDTO,
 } from "../dtos/mock-payment.dto";
 import { parseJSON } from "../utils";
 
@@ -56,6 +67,13 @@ export type BaseOptions = {
   captureMethod?: string; // Stored by _SetupExpress for deferred elements creation in init()
   appearance?: any; // Stored by _SetupExpress for deferred elements creation in init()
   expressElementOptions?: ExpressElementOptions; // Stored by _SetupExpress for ExpressCheckoutElement creation in init()
+  flowType?: 'deferred' | 'pi_first';
+  /**
+   * Full PI response cached by _Setup() when flowType === 'pi_first'.
+   * Contains: sClientSecret, paymentReference, merchantReturnUrl, cartId, billingAddress.
+   * submit() reads from this cache. getPayment() is NEVER called in pi_first mode.
+   */
+  piFirstResponse?: PaymentResponseSchemaDTO;
 };
 
 interface ElementsOptions {
@@ -63,18 +81,21 @@ interface ElementsOptions {
   options: Record<string, any>;
   onComplete: (result: PaymentResult) => void;
   onError: (error?: any) => void;
-  layout: LayoutObject;
+  layout: LayoutObject | StripePaymentElementOptions['layout'];
   appearance: Appearance;
-  fields: {
-    billingDetails: {
-      address: string;
-    };
-  };
+  fields?: StripePaymentElementOptions['fields'];
+  terms?: StripePaymentElementOptions['terms'];
+  wallets?: StripePaymentElementOptions['wallets'];
+  defaultValues?: StripePaymentElementOptions['defaultValues'];
+  business?: StripePaymentElementOptions['business'];
+  paymentMethodOrder?: StripePaymentElementOptions['paymentMethodOrder'];
+  readOnly?: StripePaymentElementOptions['readOnly'];
 }
 
 export class MockPaymentEnabler implements PaymentEnabler {
   private sessionFlowSetupData: Promise<{ baseOptions: BaseOptions }> | null = null;
   private expressSetupData: Promise<{ baseOptions: BaseOptions }> | null = null;
+  private expressSessionFlowSetupData: Promise<{ baseOptions: BaseOptions }> | null = null;
   private options: EnablerOptions;
 
   constructor(options: EnablerOptions) {
@@ -101,15 +122,48 @@ export class MockPaymentEnabler implements PaymentEnabler {
     return this.expressSetupData;
   }
 
+  /**
+   * Express init with session: always runs _Setup with skipPiFirst=true.
+   * Express Checkout elements require { mode, amount, currency } initialization — clientSecret-based
+   * elements (pi_first) are incompatible with elements.update({ amount, currency }) called in init().
+   */
+  private getExpressSessionFlowBaseOptions(): Promise<{ baseOptions: BaseOptions }> {
+    if (!this.expressSessionFlowSetupData) {
+      this.expressSessionFlowSetupData = MockPaymentEnabler._Setup(this.options, { skipPiFirst: true });
+    }
+    return this.expressSessionFlowSetupData;
+  }
+
   private static _Setup = async (
-    options: EnablerOptions
+    options: EnablerOptions,
+    { skipPiFirst = false } = {},
   ): Promise<{ baseOptions: BaseOptions }> => {
     const paymentMethodType : string = 'payment'
     const [cartInfoResponse, configEnvResponse] = await MockPaymentEnabler.fetchConfigData(paymentMethodType, options);
     const stripeSDK = await MockPaymentEnabler.getStripeSDK(configEnvResponse);
     const customer = await MockPaymentEnabler.getCustomerOptions(options);
     const locale = convertToStripeLocale(options.locale);
-    const elements = MockPaymentEnabler.getElements(stripeSDK, cartInfoResponse, customer, locale);
+
+    // pi_first: fetch the PaymentIntent eagerly so we have a clientSecret to pass to
+    // stripe.elements({ clientSecret }). This pre-binds the PI before rendering, which
+    // is required for payment methods like Blik that cannot use the deferred intent flow.
+    //
+    // IMPORTANT: GET /payments uses crypto.randomUUID() as idempotency key — it always
+    // creates a new PI. This call must happen exactly once per component mount. The full
+    // response is cached in baseOptions.piFirstResponse; submit() reads from the cache
+    // and never calls getPayment().
+    let piFirstResponse: PaymentResponseSchemaDTO | undefined;
+    if (cartInfoResponse.flowType === 'pi_first' && !skipPiFirst) {
+      piFirstResponse = await MockPaymentEnabler.fetchPayment(options);
+    }
+
+    const elements = MockPaymentEnabler.getElements(
+      stripeSDK,
+      cartInfoResponse,
+      customer,
+      locale,
+      piFirstResponse?.sClientSecret,
+    );
     const elementsOptions = MockPaymentEnabler.getElementsOptions(options, cartInfoResponse);
 
     return Promise.resolve({
@@ -131,6 +185,8 @@ export class MockPaymentEnabler implements PaymentEnabler {
           ) as ExpressElementOptions;
           return { expressElementOptions };
         })()),
+        ...(cartInfoResponse.flowType && { flowType: cartInfoResponse.flowType }),
+        ...(piFirstResponse && { piFirstResponse }),
       },
     });
   };
@@ -178,7 +234,7 @@ export class MockPaymentEnabler implements PaymentEnabler {
     type: string
   ): Promise<PaymentExpressBuilder | never> {
     const { baseOptions } = this.options.sessionId
-      ? await this.getSessionFlowBaseOptions()
+      ? await this.getExpressSessionFlowBaseOptions()
       : await this.getExpressBaseOptions();
     const supportedMethods: Record<string, typeof StripeExpressBuilder> = {
       dropin: StripeExpressBuilder,
@@ -210,10 +266,21 @@ export class MockPaymentEnabler implements PaymentEnabler {
     stripeSDK: Stripe | null,
     cartInfoResponse: ConfigElementResponseSchemaDTO,
     customer: CustomerResponseSchemaDTO,
-    locale?: StripeElementLocale
+    locale?: StripeElementLocale,
+    piClientSecret?: string,
   ): StripeElements | null {
     if (!stripeSDK) return null;
     try {
+      if (piClientSecret) {
+        // pi_first mode: bind elements to the existing PaymentIntent.
+        // customerOptions and setupFutureUsage are intentionally omitted — they are
+        // incompatible with clientSecret-based initialization and are set on the PI directly.
+        return stripeSDK.elements?.({
+          clientSecret: piClientSecret,
+          appearance: parseJSON(cartInfoResponse.appearance),
+          ...(locale && { locale }),
+        });
+      }
       return stripeSDK.elements?.({
         mode: 'payment',
         amount: cartInfoResponse.cartInfo.amount,
@@ -300,6 +367,23 @@ export class MockPaymentEnabler implements PaymentEnabler {
     return Promise.all([configElementResponse.json(), configEnvResponse.json()]);
   }
 
+  private static async fetchPayment(options: EnablerOptions): Promise<PaymentResponseSchemaDTO> {
+    const headers = MockPaymentEnabler.getFetchHeader(options);
+    const response = await fetch(`${options.processorUrl}/payments`, headers);
+
+    if (!response.ok) {
+      throw new Error(`Failed to initialize pi_first payment: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (!data.sClientSecret || !data.paymentReference) {
+      throw new Error('Invalid payment response from processor: missing required fields');
+    }
+
+    return data as PaymentResponseSchemaDTO;
+  }
+
   private static getFetchHeader(options: EnablerOptions): { method: string, headers: { [key: string]: string }} {
     return {
       method: "GET",
@@ -310,25 +394,39 @@ export class MockPaymentEnabler implements PaymentEnabler {
     }
   }
 
+  /**
+   * Merges STRIPE_BEHAVIOR_PAYMENT_ELEMENT ("Elements Behavior") with the legacy layout/
+   * collectBillingAddress env vars, per-attribute: a Field 2 value wins if explicitly present,
+   * otherwise the legacy env var (or connector default) applies. `terms`, `wallets`,
+   * `defaultValues`, `business`, `paymentMethodOrder`, `readOnly` have no legacy equivalent and
+   * pass straight through when present.
+   */
   private static getElementsOptions(
     options: EnablerOptions,
     config: ConfigElementResponseSchemaDTO
   ): ElementsOptions {
-    const { appearance, layout, collectBillingAddress } = config;
+    const { appearance, layout, collectBillingAddress, paymentElementOptions } = config;
+    const behaviorOptions = parseJSON<PaymentElementBehaviorOptions>(paymentElementOptions);
+
+    const resolvedLayout = behaviorOptions.layout ?? this.getLayoutObject(layout);
+    const resolvedFields =
+      behaviorOptions.fields ??
+      (collectBillingAddress !== 'auto' ? { billingDetails: { address: collectBillingAddress } } : undefined);
+
     return {
       type: 'payment',
       options: {},
       onComplete: options.onComplete,
       onError: options.onError,
-      layout: this.getLayoutObject(layout),
+      layout: resolvedLayout,
       appearance: parseJSON(appearance),
-      ...(collectBillingAddress !== 'auto' && {
-        fields: {
-          billingDetails: {
-            address: collectBillingAddress,
-          }
-        }
-      }),
+      ...(resolvedFields && { fields: resolvedFields }),
+      ...(behaviorOptions.terms && { terms: behaviorOptions.terms }),
+      ...(behaviorOptions.wallets && { wallets: behaviorOptions.wallets }),
+      ...(behaviorOptions.defaultValues && { defaultValues: behaviorOptions.defaultValues }),
+      ...(behaviorOptions.business && { business: behaviorOptions.business }),
+      ...(behaviorOptions.paymentMethodOrder && { paymentMethodOrder: behaviorOptions.paymentMethodOrder }),
+      ...(behaviorOptions.readOnly !== undefined && { readOnly: behaviorOptions.readOnly }),
     }
   }
 

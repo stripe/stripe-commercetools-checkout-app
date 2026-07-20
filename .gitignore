@@ -1,24 +1,41 @@
-# Code Editor directories and files
-.idea
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+
+# Editor directories and files
+.idea/
+
+# OS files
+.DS_Store
+
+# Environment / Secrets
 .env
-.idea/*
 
 # Claude Code
 .claude/
 
 # MCP (Model Context Protocol) configuration and data
 .mcp/
-.DS_Store
+.mcp.json
 
-#Context documentation
+# Playwright MCP
+.playwright-profile/
+.playwright-mcp/
+
+# Context documentation
 docs/context7-libraries
 context7-config.json
 
-# Connect CLI generated files
-.connect
-
-# Test coverage output
+# Test coverage
 coverage/
 
-# Build output
-dist/
+# Connect CLI generated files
+.connect

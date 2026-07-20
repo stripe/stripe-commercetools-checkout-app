@@ -53,6 +53,8 @@ export const ConfigElementResponseSchema = Type.Object({
   setupFutureUsage: Type.Optional(Type.String()),
   layout: Type.String(),
   collectBillingAddress: Type.Enum(CollectBillingAddressOptions),
+  paymentElementOptions: Type.Optional(Type.String()),
+  flowType: Type.Optional(Type.Union([Type.Literal('deferred'), Type.Literal('pi_first')])),
 });
 
 export const CtPaymentSchema = Type.Object({

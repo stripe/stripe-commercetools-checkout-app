@@ -8,7 +8,7 @@ import {
   PaymentMethod,
   statusHandler,
 } from '@commercetools/connect-payments-sdk';
-import { Customer } from '@commercetools/platform-sdk';
+import { Customer, Payment, PaymentDraft } from '@commercetools/platform-sdk';
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -46,7 +46,8 @@ import crypto from 'crypto';
 import { StripeEventConverter } from './converters/stripeEventConverter';
 import { stripeCustomerIdCustomType, stripeCustomerIdFieldName } from '../custom-types/custom-types';
 import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTypeHelper';
-import { isValidUUID } from '../utils';
+import { isValidUUID, parsePaymentElementOptions } from '../utils';
+import { PaymentBehaviorRule, resolvePaymentBehavior } from './payment-behavior-resolver';
 import { updateCustomerById } from '../services/commerce-tools/customerClient';
 import { CT_CUSTOM_FIELD_TAX_CALCULATIONS } from '../constants';
 
@@ -429,9 +430,12 @@ export class StripePaymentService extends AbstractPaymentService {
    * @param cart Optional cart to check for recurring status
    * @returns The setup_future_usage value to use in PaymentIntent, or undefined to not include it
    */
-  private getPaymentIntentSetupFutureUsage(cart?: Cart): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
+  private getPaymentIntentSetupFutureUsage(
+    cart?: Cart,
+    behaviorSetupFutureUsage?: string,
+  ): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
     const config = getConfig();
-    
+
     // Priority 1: Recurring carts always require 'off_session' for future charges
     // This ensures consistency with Customer Session configuration and recurring order requirements
     if (cart && (this.ctCartService as any).isRecurringCart?.(cart)) {
@@ -439,9 +443,25 @@ export class StripePaymentService extends AbstractPaymentService {
       return 'off_session';
     }
 
-    const overrideValue = config.stripePaymentIntentSetupFutureUsage;
+    // Priority 2: Per-cart behavior rule overrides the flat env var when provided.
+    // Log a warning when the behavior rule downgrades an off_session global config.
+    const flatEnvValue = config.stripePaymentIntentSetupFutureUsage;
+    const overrideValue = behaviorSetupFutureUsage !== undefined ? behaviorSetupFutureUsage : flatEnvValue;
 
-    // Priority 2: If override is configured, process it
+    if (
+      behaviorSetupFutureUsage !== undefined &&
+      (flatEnvValue?.trim().toLowerCase() === 'off_session') &&
+      (behaviorSetupFutureUsage.trim() === '' ||
+        ['none', 'null', 'undefined'].includes(behaviorSetupFutureUsage.trim().toLowerCase()))
+    ) {
+      log.warn('STRIPE_PAYMENT_BEHAVIOR_RULES overrides setupFutureUsage to empty while global config is off_session. ' +
+        'Subscription eligibility may be broken for matched carts.', {
+        globalSetupFutureUsage: flatEnvValue,
+        behaviorSetupFutureUsage,
+      });
+    }
+
+    // Priority 3: If override is configured, process it
     if (overrideValue !== undefined) {
       // Normalize the value (trim and lowercase for comparison)
       const normalizedValue = overrideValue.trim().toLowerCase();
@@ -464,7 +484,7 @@ export class StripePaymentService extends AbstractPaymentService {
       });
     }
 
-    // Priority 3: Fall back to default config value
+    // Priority 4: Fall back to default config value
     return config.stripeSavedPaymentMethodConfig?.payment_method_save_usage as
       Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
   }
@@ -478,12 +498,28 @@ export class StripePaymentService extends AbstractPaymentService {
   public async createPaymentIntentStripe(expressCheckout = false, expressCustomerSession = false): Promise<PaymentResponseSchemaDTO> {
     const config = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+
+    // Resolve per-cart behavior rule (if STRIPE_PAYMENT_BEHAVIOR_RULES is configured)
+    const behaviorRule = resolvePaymentBehavior(config.stripePaymentBehaviorRules, ctCart);
+    if (behaviorRule) {
+      log.info('Resolved per-cart payment behavior rule.', {
+        cartId: ctCart.id,
+        rule: behaviorRule,
+      });
+    }
+
     const customer = await this.getCtCustomer(ctCart.customerId!);
     const shippingAddress = this.getStripeCustomerAddress(ctCart.shippingAddress, customer?.addresses[0]);
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
-    const captureMethodConfig = config.stripeCaptureMethod;
+    const captureMethodConfig = behaviorRule?.captureMethod ?? config.stripeCaptureMethod;
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
-    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart);
+    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart, behaviorRule?.setupFutureUsage);
+    // pi_first: suppress setup_future_usage from the PaymentIntent. The PI is created without it
+    // so that Stripe accepts the Blik payment method binding. If the merchant also needs saved-card
+    // support, they should use the deferred flow.
+    const effectiveFlowType = behaviorRule?.flowType ?? config.stripePaymentFlow;
+    const effectiveSetupFutureUsage =
+      effectiveFlowType === 'pi_first' ? undefined : setupFutureUsage;
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
     // expressWithCustomer: true only when the enabler used _Setup (session at render time) AND resolved
     // a Stripe customer — meaning Elements was created with setupFutureUsage and customerOptions.
@@ -492,10 +528,8 @@ export class StripePaymentService extends AbstractPaymentService {
     const expressWithCustomer = expressCheckout && Boolean(stripeCustomerId) && expressCustomerSession;
 
     // Tax calculation integration
-    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
-    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
-    const hasSingleTaxCalculation = taxCalculationCount === 1;
-    const hasTaxCalculations = taxCalculationCount > 0;
+    const { taxCalculationCount, hasSingleTaxCalculation, hasTaxCalculations, taxCalculationReference } =
+      this.resolveTaxCalculationContext(ctCart);
 
     let paymentIntent!: Stripe.PaymentIntent;
 
@@ -508,12 +542,12 @@ export class StripePaymentService extends AbstractPaymentService {
         expressWithCustomer,
         shippingAddress,
         stripeCustomerId,
-        setupFutureUsage,
+        setupFutureUsage: effectiveSetupFutureUsage,
         captureMethod: captureMethodConfig as CaptureMethod,
         projectKey: config.projectKey,
         stripeEnableMultiOperations: config.stripeEnableMultiOperations,
         hasSingleTaxCalculation,
-        taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
+        taxCalculationReference,
       });
       paymentIntent = await stripeApi().paymentIntents.create(createParams, {
         idempotencyKey,
@@ -532,40 +566,9 @@ export class StripePaymentService extends AbstractPaymentService {
       })
     });
 
-    const ctPayment = await this.ctPaymentService.createPayment({
-      amountPlanned,
-      ...(getCheckoutTransactionItemIdFromContext() && { checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext() }),
-      ...({
-        paymentMethodInfo: {
-          paymentInterface: config.paymentInterface,
-          /*name: { // Currently unused fields
-            en: 'Stripe Payment Connector',
-          },*/
-        },
-      } as any),
-      /*paymentStatus: { // Currently unused fields
-        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
-        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
-      },*/
-      ...(ctCart.customerId && {
-        customer: {
-          typeId: 'customer',
-          id: ctCart.customerId,
-        },
-      }),
-      ...(!ctCart.customerId &&
-        ctCart.anonymousId && {
-          anonymousId: ctCart.anonymousId,
-        }),
-      transactions: [
-        {
-          type: PaymentTransactions.AUTHORIZATION,
-          amount: amountPlanned,
-          state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
-          interactionId: paymentIntent.id,
-        },
-      ],
-    });
+    const ctPayment = await this.ctPaymentService.createPayment(
+      this.buildCreatePaymentParams({ ctCart, amountPlanned, paymentIntent, config }),
+    );
 
     await this.ctCartService.addPayment({
       resource: {
@@ -599,12 +602,111 @@ export class StripePaymentService extends AbstractPaymentService {
 
     log.info(`Stripe update Payment id metadata.`);
 
+    return this.buildPaymentIntentResponse({ paymentIntent, ctPayment, ctCart, merchantReturnUrl, behaviorRule, config });
+  }
+
+  /**
+   * Resolves tax calculation flags and reference from the cart's tax calculation custom field.
+   * Centralizes this derivation so that createPaymentIntentStripe keeps a lower cognitive complexity.
+   *
+   * @param ctCart - The commercetools cart to read tax calculation references from.
+   * @returns Tax calculation count, single/any flags, and the single reference (if exactly one exists).
+   */
+  private resolveTaxCalculationContext(ctCart: Cart): {
+    taxCalculationCount: number;
+    hasSingleTaxCalculation: boolean;
+    hasTaxCalculations: boolean;
+    taxCalculationReference: string | undefined;
+  } {
+    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
+    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
+    const hasSingleTaxCalculation = taxCalculationCount === 1;
+    const hasTaxCalculations = taxCalculationCount > 0;
+
+    return {
+      taxCalculationCount,
+      hasSingleTaxCalculation,
+      hasTaxCalculations,
+      taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
+    };
+  }
+
+  /**
+   * Builds the params object for commercetools Payment creation with the Initial Authorization transaction.
+   * Centralizes conditional fields (checkoutTransactionItemId, customer, anonymousId) so that
+   * createPaymentIntentStripe keeps a lower cognitive complexity.
+   *
+   * @param params - Cart, amount planned, the created Stripe PaymentIntent, and resolved config.
+   * @returns PaymentDraft to pass to ctPaymentService.createPayment().
+   */
+  private buildCreatePaymentParams(params: {
+    ctCart: Cart;
+    amountPlanned: { centAmount: number; currencyCode: string };
+    paymentIntent: Stripe.PaymentIntent;
+    config: ReturnType<typeof getConfig>;
+  }): PaymentDraft {
+    const { ctCart, amountPlanned, paymentIntent, config } = params;
+
+    return {
+      amountPlanned,
+      ...(getCheckoutTransactionItemIdFromContext() && { checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext() }),
+      ...({
+        paymentMethodInfo: {
+          paymentInterface: config.paymentInterface,
+          /*name: { // Currently unused fields
+            en: 'Stripe Payment Connector',
+          },*/
+        },
+      } as any),
+      /*paymentStatus: { // Currently unused fields
+        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
+        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
+      },*/
+      ...(ctCart.customerId && {
+        customer: {
+          typeId: 'customer',
+          id: ctCart.customerId,
+        },
+      }),
+      ...(!ctCart.customerId &&
+        ctCart.anonymousId && {
+          anonymousId: ctCart.anonymousId,
+        }),
+      transactions: [
+        {
+          type: PaymentTransactions.AUTHORIZATION,
+          amount: amountPlanned,
+          state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
+          interactionId: paymentIntent.id,
+        },
+      ],
+    };
+  }
+
+  /**
+   * Builds the PaymentResponseSchemaDTO returned by createPaymentIntentStripe.
+   * Centralizes the billing address inclusion rule so that createPaymentIntentStripe
+   * keeps a lower cognitive complexity.
+   *
+   * @param params - PaymentIntent, commercetools Payment, cart, merchant return URL, resolved behavior rule and config.
+   * @returns PaymentResponseSchemaDTO with the client secret, payment reference and optional billing address.
+   */
+  private buildPaymentIntentResponse(params: {
+    paymentIntent: Stripe.PaymentIntent;
+    ctPayment: Payment;
+    ctCart: Cart;
+    merchantReturnUrl: string;
+    behaviorRule: PaymentBehaviorRule | undefined;
+    config: ReturnType<typeof getConfig>;
+  }): PaymentResponseSchemaDTO {
+    const { paymentIntent, ctPayment, ctCart, merchantReturnUrl, behaviorRule, config } = params;
+
     return {
       sClientSecret: paymentIntent.client_secret ?? '',
       paymentReference: ctPayment.id,
       merchantReturnUrl: merchantReturnUrl,
       cartId: ctCart.id,
-      ...(config.stripeCollectBillingAddress !== 'auto' && {
+      ...((behaviorRule?.collectBillingAddress ?? config.stripeCollectBillingAddress) !== 'auto' && {
         billingAddress: this.getBillingAddress(ctCart),
       }),
     };
@@ -858,12 +960,31 @@ export class StripePaymentService extends AbstractPaymentService {
    * @return {Promise<ConfigElementResponseSchemaDTO>} Returns a promise that resolves with the cart information, appearance, and capture method.
    */
   public async initializeCartPayment(opts: string): Promise<ConfigElementResponseSchemaDTO> {
-    const { stripeCaptureMethod, stripePaymentElementAppearance, stripeLayout, stripeCollectBillingAddress } =
-      getConfig();
+    const {
+      stripeCaptureMethod,
+      stripePaymentElementAppearance,
+      stripeLayout,
+      stripeCollectBillingAddress,
+      stripeBehaviorPaymentElement,
+      stripePaymentFlow,
+      stripePaymentBehaviorRules,
+    } = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+
+    // Resolve per-cart behavior rule
+    const behaviorRule = resolvePaymentBehavior(stripePaymentBehaviorRules, ctCart);
+    const effectiveFlowType = behaviorRule?.flowType ?? stripePaymentFlow;
+    const effectiveCaptureMethod = behaviorRule?.captureMethod ?? stripeCaptureMethod;
+    const effectiveCollectBillingAddress = behaviorRule?.collectBillingAddress ?? stripeCollectBillingAddress;
+
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
     const appearance = stripePaymentElementAppearance;
-    const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart);
+    // pi_first: PaymentIntent is created eagerly by the enabler before elements.create().
+    // setup_future_usage is set on the PI directly in that path; do not include it in the
+    // deferred elements config or Stripe will reject { clientSecret } + setupFutureUsage together.
+    const setupFutureUsage =
+      effectiveFlowType === 'pi_first' ? undefined : this.getPaymentIntentSetupFutureUsage(ctCart, behaviorRule?.setupFutureUsage);
+    const paymentElementOptions = parsePaymentElementOptions(stripeBehaviorPaymentElement);
 
     log.info(`Cart and Stripe.Element ${opts} config retrieved.`, {
       cartId: ctCart.id,
@@ -872,10 +993,13 @@ export class StripePaymentService extends AbstractPaymentService {
         currency: amountPlanned.currencyCode,
       },
       stripeElementAppearance: appearance,
-      stripeCaptureMethod: stripeCaptureMethod,
+      stripeCaptureMethod: effectiveCaptureMethod,
       stripeSetupFutureUsage: setupFutureUsage,
       layout: stripeLayout,
-      collectBillingAddress: stripeCollectBillingAddress,
+      collectBillingAddress: effectiveCollectBillingAddress,
+      paymentElementOptions,
+      stripePaymentFlow: effectiveFlowType,
+      ...(behaviorRule && { behaviorRuleApplied: true }),
     });
 
     return {
@@ -884,10 +1008,12 @@ export class StripePaymentService extends AbstractPaymentService {
         currency: amountPlanned.currencyCode,
       },
       appearance: appearance,
-      captureMethod: stripeCaptureMethod,
+      captureMethod: effectiveCaptureMethod,
       setupFutureUsage: setupFutureUsage,
+      paymentElementOptions: JSON.stringify(paymentElementOptions),
       layout: stripeLayout,
-      collectBillingAddress: stripeCollectBillingAddress as CollectBillingAddressOptions,
+      collectBillingAddress: effectiveCollectBillingAddress as CollectBillingAddressOptions,
+      flowType: effectiveFlowType,
     };
   }
 

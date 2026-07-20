@@ -184,6 +184,35 @@ const customLineItem: CustomLineItem = {
   priceMode: 'Platform',
 };
 
+export const mockGetCartWithCountry = (country: string): Cart => ({
+  ...mockGetCartResult(),
+  country,
+  billingAddress: { country: 'US' }, // billingAddress.country must NOT be reached
+  shippingAddress: { country: 'US' }, // shippingAddress.country must NOT be reached
+});
+
+export const mockGetCartWithBillingCountryOnly = (country: string): Cart => ({
+  ...mockGetCartResult(),
+  country: undefined,
+  billingAddress: { country },
+  shippingAddress: { country: 'US' }, // should NOT be reached
+});
+
+export const mockGetCartWithShippingCountryOnly = (country: string): Cart => ({
+  ...mockGetCartResult(),
+  country: undefined,
+  billingAddress: undefined,
+  shippingAddress: { country },
+});
+
+export const mockGetCartWithStoreKey = (storeKey: string): Cart => ({
+  ...mockGetCartResult(),
+  country: undefined,
+  billingAddress: undefined,
+  shippingAddress: undefined,
+  store: { typeId: 'store', key: storeKey } as any,
+});
+
 const shippingInfo: ShippingInfo = {
   shippingMethodName: 'shippingMethodName1',
   price: {
