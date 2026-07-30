@@ -29,6 +29,7 @@ import {
   stripeWebhooksRoutes,
 } from '../../src/routes/stripe-payment.route';
 import { StripePaymentService } from '../../src/services/stripe-payment.service';
+import { PaymentModificationStatus } from '../../src/dtos/operations/payment-intents.dto';
 import {
   mockEvent__paymentIntent_processing,
   mockEvent__paymentIntent_paymentFailed,
@@ -198,6 +199,29 @@ describe('Stripe Payment APIs', () => {
       //Then
       expect(response.statusCode).toEqual(200);
       expect(spiedPaymentService.processStripeEvent).toHaveBeenCalled();
+      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    test('it should route a payment_intent.processing event to processStripeEvent.', async () => {
+      setupMockConfig({
+        stripeSecretKey: 'stripeSecretKey',
+        stripeWebhookSigningSecret: 'stripeWebhookSigningSecret',
+        authUrl: 'https://auth.europe-west1.gcp.commercetools.com',
+      });
+
+      Stripe.prototype.webhooks = { constructEvent: jest.fn() } as unknown as Stripe.Webhooks;
+      jest.spyOn(Stripe.prototype.webhooks, 'constructEvent').mockReturnValue(mockEvent__paymentIntent_processing);
+      jest.spyOn(StripePaymentService.prototype, 'processStripeEvent').mockReturnValue(Promise.resolve());
+
+      const response = await fastifyApp.inject({
+        method: 'POST',
+        url: `/stripe/webhooks`,
+        headers: {
+          'stripe-signature': 't=123123123,v1=gk2j34gk2j34g2k3j4',
+        },
+      });
+
+      expect(response.statusCode).toEqual(200);
       expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
     });
 
@@ -532,7 +556,9 @@ describe('Stripe Payment APIs', () => {
   describe('POST /confirmPayments/:id', () => {
     test('should call /confirmPayments/:id and return valid information', async () => {
       //Given
-      jest.spyOn(spiedPaymentService, 'updatePaymentIntentStripeSuccessful').mockResolvedValue();
+      jest
+        .spyOn(spiedPaymentService, 'updatePaymentIntentStripeSuccessful')
+        .mockResolvedValue(PaymentModificationStatus.APPROVED);
 
       //When
       const responseGetConfig = await fastifyApp.inject({
@@ -551,10 +577,32 @@ describe('Stripe Payment APIs', () => {
       expect(spiedPaymentService.updatePaymentIntentStripeSuccessful).toHaveBeenCalled();
     });
 
-    test('should call /confirmPayments/:id and return error information', async () => {
+    test('should return 202 with outcome "pending" when the PaymentIntent is still processing', async () => {
+      //Given
+      jest
+        .spyOn(spiedPaymentService, 'updatePaymentIntentStripeSuccessful')
+        .mockResolvedValue(PaymentModificationStatus.PENDING);
+
+      //When
+      const responseGetConfig = await fastifyApp.inject({
+        method: 'POST',
+        url: `/confirmPayments/id`,
+        headers: {
+          'x-session-id': sessionId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ paymentIntent: 'paymentId' }),
+      });
+
+      //Then
+      expect(responseGetConfig.statusCode).toEqual(202);
+      expect(responseGetConfig.body).toEqual(JSON.stringify({ outcome: 'pending' }));
+    });
+
+    test('should call /confirmPayments/:id and NOT leak internal error detail to the client', async () => {
       //Given
       jest.spyOn(spiedPaymentService, 'updatePaymentIntentStripeSuccessful').mockImplementation(() => {
-        throw new Error('error');
+        throw new Error('Invalid PaymentIntent: metadata.ct_payment_id does not match this payment');
       });
 
       //When
@@ -570,7 +618,11 @@ describe('Stripe Payment APIs', () => {
 
       //Then
       expect(responseGetConfig.statusCode).toEqual(400);
-      expect(responseGetConfig.body).toEqual(JSON.stringify({ outcome: 'rejected', error: JSON.stringify({}) }));
+      expect(responseGetConfig.body).toEqual(
+        JSON.stringify({ outcome: 'rejected', error: 'Payment confirmation failed' }),
+      );
+      // The internal error message must not appear in the response body.
+      expect(responseGetConfig.body).not.toContain('metadata.ct_payment_id');
       expect(spiedPaymentService.updatePaymentIntentStripeSuccessful).toHaveBeenCalled();
     });
   });

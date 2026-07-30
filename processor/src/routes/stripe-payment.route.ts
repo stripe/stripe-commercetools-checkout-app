@@ -110,17 +110,24 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
         body: PaymentIntentConfirmRequestSchema,
         response: {
           200: PaymentIntentResponseSchema,
+          202: PaymentIntentResponseSchema,
         },
       },
     },
     async (request, reply) => {
       const { id } = request.params; // paymentReference
       try {
-        await opts.paymentService.updatePaymentIntentStripeSuccessful(request.body.paymentIntent, id);
+        const outcome = await opts.paymentService.updatePaymentIntentStripeSuccessful(request.body.paymentIntent, id);
 
-        return reply.status(200).send({ outcome: PaymentModificationStatus.APPROVED });
+        // Async settlement still processing -> 202 (not a success). Synchronous success -> 200.
+        const statusCode = outcome === PaymentModificationStatus.PENDING ? 202 : 200;
+        return reply.status(statusCode).send({ outcome });
       } catch (error) {
-        return reply.status(400).send({ outcome: PaymentModificationStatus.REJECTED, error: JSON.stringify(error) });
+        // Do not leak internal error detail to the browser (the service already logs the cause).
+        log.warn('confirmPayments rejected', { paymentReference: id, error });
+        return reply
+          .status(400)
+          .send({ outcome: PaymentModificationStatus.REJECTED, error: 'Payment confirmation failed' });
       }
     },
   );
@@ -174,6 +181,7 @@ export const stripeWebhooksRoutes = async (fastify: FastifyInstance, opts: Strip
           // Stores payment method in commercetools if customer opted-in during checkout
           await opts.paymentService.storePaymentMethod(event);
           break;
+        case StripeEvent.PAYMENT_INTENT__PROCESSING:
         case StripeEvent.PAYMENT_INTENT__CANCELED:
         case StripeEvent.PAYMENT_INTENT__REQUIRED_ACTION:
         case StripeEvent.PAYMENT_INTENT__PAYMENT_FAILED:

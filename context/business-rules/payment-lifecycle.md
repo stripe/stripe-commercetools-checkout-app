@@ -24,7 +24,7 @@ A payment in this connector always involves two parallel objects: a **Stripe Pay
 
 **What:** After Stripe confirms a payment, the backend re-retrieves the PI from Stripe and validates:
 1. PI exists and was retrieved successfully
-2. PI status is `succeeded` or `requires_capture`
+2. PI status is `succeeded`, `requires_capture`, or `processing` (async settlement → resolves to a PENDING outcome, not AUTHORIZED — see Rule 8)
 3. `PI.metadata.ct_payment_id` matches the CT payment ID in the request
 4. `PI.amount` and `PI.currency` match the CT payment values
 
@@ -116,3 +116,23 @@ When Express Checkout uses the `_SetupExpress` path (deferred, no session at ren
 **Implementation:** `ctCartService.getPaymentAmount()` returns centAmount; passed directly to Stripe.
 
 **What breaks if violated:** Stripe rejects the request with a validation error, or — worse — accepts a rounded value that differs from the cart total, causing a mismatch between what was charged and what CT records.
+
+---
+
+## Rule 8: Async settlement (`processing`) is modeled as `Authorization/Pending`; the order is created only on `succeeded`
+
+> Draft — added for crypto/stablecoin async settlement (ADR-007). `[HUMAN REVIEW]` on the reconciliation stance below.
+
+**What:** Asynchronous / redirect payment methods (crypto/stablecoin today; ACH / bank transfers next) confirm into a Stripe `processing` status before settling. The connector models this in-flight state as a CT `Authorization` transaction in the `Pending` state (amount from `data.amount`), and transitions it to `Success` on `payment_intent.succeeded`. The CT **order is created only on `succeeded`**, never during `processing`.
+
+**Why:** Settlement lands out of band (minutes on mainnet). The buyer must not be fulfilled before funds settle, but the in-flight payment must still be visible in CT. `Authorization/Pending` is the natural pre-settlement state and transitions cleanly to `Success` (avoids duplicating the `Charge` written on `succeeded`).
+
+**Invariant:** While the PI is `processing`, the CT Payment carries at most an `Authorization/Pending` (never `Charge/Success`, never an order). The order and `Charge/Success` appear only after `payment_intent.succeeded`.
+
+**Extends Rule 2:** the confirm gate now accepts `processing` in addition to `succeeded`/`requires_capture` — but a `processing` PI resolves to a `PENDING` outcome (HTTP 202, writes `Authorization/Pending` only), NOT `AUTHORIZED`. The other three validation points (PI retrieved, `metadata.ct_payment_id` match, amount/currency match) are unchanged. (Rule 2 point 2 has been updated to list `processing` as an accepted status resolving to `PENDING`.)
+
+**Implementation:** `stripe-payment.service.ts` → `updatePaymentIntentStripeSuccessful()` (returns `PaymentModificationStatus.PENDING` for `processing`) and `processStripeEvent()` (webhook path: `Authorization/Pending`, then Pending→Success on `succeeded`); `stripeEventConverter.ts` → `case PAYMENT_INTENT__PROCESSING`.
+
+**Closure criterion:** `grep -n 'PaymentModificationStatus.PENDING' processor/src/services/stripe-payment.service.ts` — appears in the gate. `grep -n 'PAYMENT_INTENT__PROCESSING' processor/src/services/converters/stripeEventConverter.ts` — the converter case exists.
+
+**What breaks if violated:** If the order is created on `processing`, a payment that later fails/cancels leaves a fulfilled, unpaid order. If `processing` is not modeled at all, the confirm gate rejects it and the shopper sees a false checkout error on a payment that is settling normally.

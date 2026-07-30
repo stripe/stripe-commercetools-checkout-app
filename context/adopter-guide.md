@@ -58,6 +58,8 @@ Deploy `ct-connect-stripe-checkout` through the CT Connect marketplace. The post
 | `STRIPE_CAPTURE_METHOD` | No | `automatic` (default), `automatic_async`, or `manual` |
 | `STRIPE_ENABLE_MULTI_OPERATIONS` | No | `true` to enable partial captures and multi-refund (Stripe account feature required) |
 | `STRIPE_COLLECT_BILLING_ADDRESS` | No | `auto` (default), `never`, or `if_required` |
+| `STRIPE_PAYMENT_FLOW` | No | `deferred` (default) or `pi_first` — set to `pi_first` if you need to support Blik. See Section 4 "Blik" for what changes when you enable this. |
+| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | No | JSON object merged into the Payment Element's creation options on the enabler side. Invalid JSON is silently ignored (falls back to no overrides) — validate your JSON before deploying. |
 
 > **After first deploy:** go to Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret. Copy it into `STRIPE_WEBHOOK_SIGNING_SECRET` and redeploy. Payments will succeed but CT will not update until this is set.
 
@@ -99,6 +101,12 @@ const dropin = await enabler.createDropin({ paymentElementType: 'expressCheckout
 await dropin.mount('#express-checkout-element');
 ```
 
+### Blik
+
+Blik (a Polish payment method) requires the PaymentIntent to exist **before** the Payment Element mounts — unlike other methods, which create the PaymentIntent only at confirm time. To support Blik, set `STRIPE_PAYMENT_FLOW=pi_first`. With this enabled, the enabler creates the PaymentIntent during setup instead of waiting for the shopper to submit the form — no change is needed on your side beyond the env var and mounting the Payment Element as usual; Blik then appears alongside other Stripe-supported methods based on your account settings and the cart's currency/country.
+
+> If you don't need Blik, leave `STRIPE_PAYMENT_FLOW` unset (default `deferred`) — the early PaymentIntent creation has no benefit for other payment methods.
+
 ### B2B Launchpad purchase orders
 
 The `payment-launchpad-purchase-order` CT custom type must be created by your team **before deploying**. The connector checks for its existence at startup but does not create it.
@@ -127,6 +135,7 @@ Before go-live:
 - [ ] Trigger a refund via `POST /payment-intents/{id}` with `action: refund` — CT payment should gain a `REFUND` transaction
 - [ ] Stripe Dashboard → Webhooks → Recent deliveries — all events should show HTTP 200
 - [ ] Express Checkout buttons appear on the page (if using `expressCheckout` drop-in)
+- [ ] If `STRIPE_PAYMENT_FLOW=pi_first` is set: Blik appears as a payment option for eligible currency/country combinations, and the PaymentIntent is visible in Stripe Dashboard before the shopper submits the form
 
 ---
 

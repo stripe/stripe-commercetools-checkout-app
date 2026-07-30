@@ -78,6 +78,9 @@ export enum PaymentModificationStatus {
   APPROVED = 'approved',
   REJECTED = 'rejected',
   RECEIVED = 'received',
+  // Async settlement (e.g. crypto/stablecoin): PaymentIntent is `processing`, not yet
+  // succeeded. A Pending authorization is written; the order is created later by the webhook.
+  PENDING = 'pending',
 }
 const PaymentModificationSchema = Type.Enum(PaymentModificationStatus);
 
