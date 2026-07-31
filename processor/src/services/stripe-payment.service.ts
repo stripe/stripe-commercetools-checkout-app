@@ -8,7 +8,7 @@ import {
   PaymentMethod,
   statusHandler,
 } from '@commercetools/connect-payments-sdk';
-import { Customer, Payment, PaymentDraft } from '@commercetools/platform-sdk';
+import { Customer, PaymentDraft } from '@commercetools/platform-sdk';
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -26,7 +26,13 @@ import packageJSON from '../../package.json';
 import { AbstractPaymentService } from './abstract-payment.service';
 import { config, getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
-import { CaptureMethod, StripeEvent, StripePaymentServiceOptions } from './types/stripe-payment.type';
+import {
+  CaptureMethod,
+  PaymentStatus,
+  StripeEvent,
+  StripeEventUpdatePayment,
+  StripePaymentServiceOptions,
+} from './types/stripe-payment.type';
 import {
   CollectBillingAddressOptions,
   ConfigElementResponseSchemaDTO,
@@ -514,22 +520,16 @@ export class StripePaymentService extends AbstractPaymentService {
     const captureMethodConfig = behaviorRule?.captureMethod ?? config.stripeCaptureMethod;
     const merchantReturnUrl = getMerchantReturnUrlFromContext() || config.merchantReturnUrl;
     const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart, behaviorRule?.setupFutureUsage);
-    // pi_first: suppress setup_future_usage from the PaymentIntent. The PI is created without it
-    // so that Stripe accepts the Blik payment method binding. If the merchant also needs saved-card
-    // support, they should use the deferred flow.
     const effectiveFlowType = behaviorRule?.flowType ?? config.stripePaymentFlow;
-    const effectiveSetupFutureUsage =
-      effectiveFlowType === 'pi_first' ? undefined : setupFutureUsage;
+    const effectiveSetupFutureUsage = this.applyPiFirstOverride(effectiveFlowType, setupFutureUsage);
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
-    // expressWithCustomer: true only when the enabler used _Setup (session at render time) AND resolved
-    // a Stripe customer — meaning Elements was created with setupFutureUsage and customerOptions.
-    // expressCustomerSession signals this from the enabler via x-express-customer-session header.
-    // _SetupExpress (deferred) never sets this header, so setup_future_usage stays off for that path.
-    const expressWithCustomer = expressCheckout && Boolean(stripeCustomerId) && expressCustomerSession;
+    const expressWithCustomer = this.resolveExpressWithCustomer(expressCheckout, stripeCustomerId, expressCustomerSession);
 
     // Tax calculation integration
-    const { taxCalculationCount, hasSingleTaxCalculation, hasTaxCalculations, taxCalculationReference } =
-      this.resolveTaxCalculationContext(ctCart);
+    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
+    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
+    const hasSingleTaxCalculation = taxCalculationCount === 1;
+    const hasTaxCalculations = taxCalculationCount > 0;
 
     let paymentIntent!: Stripe.PaymentIntent;
 
@@ -547,7 +547,7 @@ export class StripePaymentService extends AbstractPaymentService {
         projectKey: config.projectKey,
         stripeEnableMultiOperations: config.stripeEnableMultiOperations,
         hasSingleTaxCalculation,
-        taxCalculationReference,
+        taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
       });
       paymentIntent = await stripeApi().paymentIntents.create(createParams, {
         idempotencyKey,
@@ -566,9 +566,31 @@ export class StripePaymentService extends AbstractPaymentService {
       })
     });
 
-    const ctPayment = await this.ctPaymentService.createPayment(
-      this.buildCreatePaymentParams({ ctCart, amountPlanned, paymentIntent, config }),
-    );
+    const ctPayment = await this.ctPaymentService.createPayment({
+      amountPlanned,
+      ...(getCheckoutTransactionItemIdFromContext() && { checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext() }),
+      ...({
+        paymentMethodInfo: {
+          paymentInterface: config.paymentInterface,
+          /*name: { // Currently unused fields
+            en: 'Stripe Payment Connector',
+          },*/
+        },
+      } as any),
+      /*paymentStatus: { // Currently unused fields
+        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
+        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
+      },*/
+      ...this.resolveInitialPaymentCustomerFields(ctCart),
+      transactions: [
+        {
+          type: PaymentTransactions.AUTHORIZATION,
+          amount: amountPlanned,
+          state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
+          interactionId: paymentIntent.id,
+        },
+      ],
+    });
 
     await this.ctCartService.addPayment({
       resource: {
@@ -585,13 +607,63 @@ export class StripePaymentService extends AbstractPaymentService {
       merchantReturnUrl: merchantReturnUrl,
     });
 
+    await this.updatePaymentIntentMetadata(paymentIntent.id, ctPayment.id);
+
+    log.info(`Stripe update Payment id metadata.`);
+
+    return {
+      sClientSecret: paymentIntent.client_secret ?? '',
+      paymentReference: ctPayment.id,
+      merchantReturnUrl: merchantReturnUrl,
+      cartId: ctCart.id,
+      ...this.resolveBillingAddressFields(behaviorRule, ctCart),
+    };
+  }
+
+  /**
+   * pi_first: suppress setup_future_usage from the PaymentIntent. The PI is created without it
+   * so that Stripe accepts the Blik payment method binding. If the merchant also needs saved-card
+   * support, they should use the deferred flow.
+   */
+  private applyPiFirstOverride(
+    flowType: 'deferred' | 'pi_first',
+    setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined,
+  ): Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined {
+    return flowType === 'pi_first' ? undefined : setupFutureUsage;
+  }
+
+  /**
+   * expressWithCustomer: true only when the enabler used _Setup (session at render time) AND resolved
+   * a Stripe customer — meaning Elements was created with setupFutureUsage and customerOptions.
+   * expressCustomerSession signals this from the enabler via x-express-customer-session header.
+   * _SetupExpress (deferred) never sets this header, so setup_future_usage stays off for that path.
+   */
+  private resolveExpressWithCustomer(
+    expressCheckout: boolean,
+    stripeCustomerId: string | undefined,
+    expressCustomerSession: boolean,
+  ): boolean {
+    return expressCheckout && Boolean(stripeCustomerId) && expressCustomerSession;
+  }
+
+  private resolveInitialPaymentCustomerFields(ctCart: Cart): Pick<PaymentDraft, 'customer' | 'anonymousId'> {
+    if (ctCart.customerId) {
+      return { customer: { typeId: 'customer', id: ctCart.customerId } };
+    }
+    if (ctCart.anonymousId) {
+      return { anonymousId: ctCart.anonymousId };
+    }
+    return {};
+  }
+
+  private async updatePaymentIntentMetadata(paymentIntentId: string, ctPaymentId: string): Promise<void> {
     try {
       const idempotencyKey = crypto.randomUUID();
       await stripeApi().paymentIntents.update(
-        paymentIntent.id,
+        paymentIntentId,
         {
           metadata: {
-            ct_payment_id: ctPayment.id,
+            ct_payment_id: ctPaymentId,
           },
         },
         { idempotencyKey },
@@ -599,117 +671,14 @@ export class StripePaymentService extends AbstractPaymentService {
     } catch (e) {
       throw wrapStripeError(e);
     }
-
-    log.info(`Stripe update Payment id metadata.`);
-
-    return this.buildPaymentIntentResponse({ paymentIntent, ctPayment, ctCart, merchantReturnUrl, behaviorRule, config });
   }
 
-  /**
-   * Resolves tax calculation flags and reference from the cart's tax calculation custom field.
-   * Centralizes this derivation so that createPaymentIntentStripe keeps a lower cognitive complexity.
-   *
-   * @param ctCart - The commercetools cart to read tax calculation references from.
-   * @returns Tax calculation count, single/any flags, and the single reference (if exactly one exists).
-   */
-  private resolveTaxCalculationContext(ctCart: Cart): {
-    taxCalculationCount: number;
-    hasSingleTaxCalculation: boolean;
-    hasTaxCalculations: boolean;
-    taxCalculationReference: string | undefined;
-  } {
-    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
-    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
-    const hasSingleTaxCalculation = taxCalculationCount === 1;
-    const hasTaxCalculations = taxCalculationCount > 0;
-
-    return {
-      taxCalculationCount,
-      hasSingleTaxCalculation,
-      hasTaxCalculations,
-      taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
-    };
-  }
-
-  /**
-   * Builds the params object for commercetools Payment creation with the Initial Authorization transaction.
-   * Centralizes conditional fields (checkoutTransactionItemId, customer, anonymousId) so that
-   * createPaymentIntentStripe keeps a lower cognitive complexity.
-   *
-   * @param params - Cart, amount planned, the created Stripe PaymentIntent, and resolved config.
-   * @returns PaymentDraft to pass to ctPaymentService.createPayment().
-   */
-  private buildCreatePaymentParams(params: {
-    ctCart: Cart;
-    amountPlanned: { centAmount: number; currencyCode: string };
-    paymentIntent: Stripe.PaymentIntent;
-    config: ReturnType<typeof getConfig>;
-  }): PaymentDraft {
-    const { ctCart, amountPlanned, paymentIntent, config } = params;
-
-    return {
-      amountPlanned,
-      ...(getCheckoutTransactionItemIdFromContext() && { checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext() }),
-      ...({
-        paymentMethodInfo: {
-          paymentInterface: config.paymentInterface,
-          /*name: { // Currently unused fields
-            en: 'Stripe Payment Connector',
-          },*/
-        },
-      } as any),
-      /*paymentStatus: { // Currently unused fields
-        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
-        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
-      },*/
-      ...(ctCart.customerId && {
-        customer: {
-          typeId: 'customer',
-          id: ctCart.customerId,
-        },
-      }),
-      ...(!ctCart.customerId &&
-        ctCart.anonymousId && {
-          anonymousId: ctCart.anonymousId,
-        }),
-      transactions: [
-        {
-          type: PaymentTransactions.AUTHORIZATION,
-          amount: amountPlanned,
-          state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
-          interactionId: paymentIntent.id,
-        },
-      ],
-    };
-  }
-
-  /**
-   * Builds the PaymentResponseSchemaDTO returned by createPaymentIntentStripe.
-   * Centralizes the billing address inclusion rule so that createPaymentIntentStripe
-   * keeps a lower cognitive complexity.
-   *
-   * @param params - PaymentIntent, commercetools Payment, cart, merchant return URL, resolved behavior rule and config.
-   * @returns PaymentResponseSchemaDTO with the client secret, payment reference and optional billing address.
-   */
-  private buildPaymentIntentResponse(params: {
-    paymentIntent: Stripe.PaymentIntent;
-    ctPayment: Payment;
-    ctCart: Cart;
-    merchantReturnUrl: string;
-    behaviorRule: PaymentBehaviorRule | undefined;
-    config: ReturnType<typeof getConfig>;
-  }): PaymentResponseSchemaDTO {
-    const { paymentIntent, ctPayment, ctCart, merchantReturnUrl, behaviorRule, config } = params;
-
-    return {
-      sClientSecret: paymentIntent.client_secret ?? '',
-      paymentReference: ctPayment.id,
-      merchantReturnUrl: merchantReturnUrl,
-      cartId: ctCart.id,
-      ...((behaviorRule?.collectBillingAddress ?? config.stripeCollectBillingAddress) !== 'auto' && {
-        billingAddress: this.getBillingAddress(ctCart),
-      }),
-    };
+  private resolveBillingAddressFields(
+    behaviorRule: PaymentBehaviorRule | undefined,
+    ctCart: Cart,
+  ): { billingAddress: string | undefined } | Record<string, never> {
+    const collectBillingAddress = behaviorRule?.collectBillingAddress ?? getConfig().stripeCollectBillingAddress;
+    return collectBillingAddress !== 'auto' ? { billingAddress: this.getBillingAddress(ctCart) } : {};
   }
 
   /**
@@ -794,10 +763,14 @@ export class StripePaymentService extends AbstractPaymentService {
    *
    * @param {string} paymentIntentId - The Intent id created in Stripe.
    * @param {string} paymentReference - The identifier of the payment associated with the PaymentIntent in Stripe.
-   * @return {Promise<void>} - A Promise that resolves when the PaymentIntent is successfully updated.
+   * @return {Promise<PaymentModificationStatus>} APPROVED when succeeded/requires_capture,
+   * PENDING when the PaymentIntent is still `processing` (async settlement, e.g. crypto).
    * @throws Error when validation fails (status, metadata, or amount/currency mismatch).
    */
-  public async updatePaymentIntentStripeSuccessful(paymentIntentId: string, paymentReference: string): Promise<void> {
+  public async updatePaymentIntentStripeSuccessful(
+    paymentIntentId: string,
+    paymentReference: string,
+  ): Promise<PaymentModificationStatus> {
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
     });
@@ -820,8 +793,8 @@ export class StripePaymentService extends AbstractPaymentService {
       throw new Error(`Invalid PaymentIntent: could not retrieve from Stripe`);
     }
 
-    // (2) Check status — only proceed if succeeded or requires_capture
-    const allowedStatuses = ['succeeded', 'requires_capture'];
+    // (2) Check status — succeeded/requires_capture (synchronous) or processing (async settlement)
+    const allowedStatuses = ['succeeded', 'requires_capture', 'processing'];
     if (!allowedStatuses.includes(stripePaymentIntent.status)) {
       log.warn('updatePaymentIntentStripeSuccessful: PaymentIntent status not allowed', {
         paymentIntentId,
@@ -868,6 +841,36 @@ export class StripePaymentService extends AbstractPaymentService {
       amountPlanned: JSON.stringify(amountPlanned),
     });
 
+    // Async settlement (e.g. crypto/stablecoin): the PaymentIntent is still `processing`.
+    // Write a Pending authorization ONLY — never Charge/Success. The order is created later
+    // by the webhook on payment_intent.succeeded. Dedup against a Pending/Success the webhook
+    // may already have written. Return PENDING so the route responds 202 (not a success).
+    if (stripePaymentIntent.status === 'processing') {
+      const hasAuthPending = this.ctPaymentService.hasTransactionInState({
+        payment: ctPayment,
+        transactionType: 'Authorization',
+        states: ['Pending'],
+      });
+      const hasChargeSuccess = this.ctPaymentService.hasTransactionInState({
+        payment: ctPayment,
+        transactionType: 'Charge',
+        states: ['Success'],
+      });
+      if (!hasAuthPending && !hasChargeSuccess) {
+        await this.ctPaymentService.updatePayment({
+          id: ctPayment.id,
+          pspReference: paymentIntentId,
+          transaction: {
+            interactionId: paymentIntentId,
+            type: PaymentTransactions.AUTHORIZATION,
+            amount: amountPlanned,
+            state: PaymentStatus.PENDING,
+          },
+        });
+      }
+      return PaymentModificationStatus.PENDING;
+    }
+
     await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
       pspReference: paymentIntentId,
@@ -878,6 +881,8 @@ export class StripePaymentService extends AbstractPaymentService {
         state: this.convertPaymentResultCode(PaymentOutcome.AUTHORIZED as PaymentOutcome),
       },
     });
+
+    return PaymentModificationStatus.APPROVED;
   }
 
   /**
@@ -1052,31 +1057,21 @@ export class StripePaymentService extends AbstractPaymentService {
     try {
       const updateData = this.stripeEventConverter.convert(event);
 
-      //does payment intent event have multicapture?
-      if (event.type.startsWith('payment')) {
-        const pi = event.data.object as Stripe.PaymentIntent;
-        if (
-          pi.capture_method === 'manual' &&
-          pi.payment_method_options?.card?.request_multicapture === 'if_available' &&
-          typeof pi.latest_charge === 'string'
-        ) {
-          const balanceTransactions = await stripeApi().balanceTransactions.list({
-            source: pi.latest_charge,
-            limit: 10,
-          });
-
-          if (balanceTransactions.data.length > 1) {
-            //it is multicapture, so we need to update the transactions
-            updateData.transactions.forEach((tx) => {
-              tx.interactionId = balanceTransactions.data[0].id;
-              tx.amount = {
-                centAmount: balanceTransactions.data[0].amount,
-                currencyCode: balanceTransactions.data[0].currency.toUpperCase(),
-              };
-            });
-          }
-        }
+      // Ordering + dedup guard for async crypto settlement (payment_intent.processing).
+      // Stripe does not guarantee event order and may redeliver, and the synchronous gate
+      // (confirmPayments) may have already written a Pending authorization. Skip writing a
+      // duplicate Pending if the payment is already resolved (Charge/Success) or a Pending
+      // authorization already exists. Scoped to processing — other events are unaffected.
+      if (
+        event.type === StripeEvent.PAYMENT_INTENT__PROCESSING &&
+        (await this.shouldSkipDuplicatePaymentIntentProcessing(updateData))
+      ) {
+        return;
       }
+
+      //does payment intent event have multicapture?
+      await this.applyMulticaptureAdjustment(event, updateData);
+
       for (const tx of updateData.transactions) {
         const updatedPayment = await this.ctPaymentService.updatePayment({
           ...updateData,
@@ -1091,9 +1086,118 @@ export class StripePaymentService extends AbstractPaymentService {
           transaction: JSON.stringify(tx),
         });
       }
+      if (event.type === StripeEvent.PAYMENT_INTENT__SUCCEEDED) {
+        await this.transitionPendingAuthorizationToSuccess(updateData);
+      }
     } catch (e) {
       log.error('Error processing notification', { error: e });
+      // For async crypto settlement, do NOT swallow write failures: re-throw so the webhook
+      // responds non-2xx and Stripe retries (the dedup guard above prevents a duplicate
+      // Pending on redelivery, and a swallowed ConcurrentModification/409 would otherwise
+      // leave the payment stuck without the Pending authorization). Other event types keep
+      // the existing behavior (log and return) so the card regression is untouched.
+      if (event.type === StripeEvent.PAYMENT_INTENT__PROCESSING) {
+        throw e;
+      }
       return;
+    }
+  }
+
+  /**
+   * Returns true when a duplicate Pending authorization would result from processing this
+   * payment_intent.processing event — i.e. the payment is already resolved (Charge/Success) or
+   * a Pending authorization already exists. See processStripeEvent's dedup guard comment.
+   */
+  private async shouldSkipDuplicatePaymentIntentProcessing(updateData: StripeEventUpdatePayment): Promise<boolean> {
+    const payment = await this.ctPaymentService.getPayment({ id: updateData.id });
+    const hasChargeSuccess = this.ctPaymentService.hasTransactionInState({
+      payment,
+      transactionType: 'Charge',
+      states: ['Success'],
+    });
+    const hasAuthPending = this.ctPaymentService.hasTransactionInState({
+      payment,
+      transactionType: 'Authorization',
+      states: ['Pending'],
+    });
+    if (hasChargeSuccess || hasAuthPending) {
+      log.info('Skipping payment_intent.processing — payment already resolved or pending transaction exists', {
+        paymentId: updateData.id,
+        pspReference: updateData.pspReference,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Detects multicapture on a manual-capture PaymentIntent event and, when more than one balance
+   * transaction exists on the latest charge, overwrites updateData's transactions with the
+   * correct balance transaction amount/reference.
+   */
+  private async applyMulticaptureAdjustment(event: Stripe.Event, updateData: StripeEventUpdatePayment): Promise<void> {
+    if (!event.type.startsWith('payment')) {
+      return;
+    }
+    const pi = event.data.object as Stripe.PaymentIntent;
+    if (
+      pi.capture_method === 'manual' &&
+      pi.payment_method_options?.card?.request_multicapture === 'if_available' &&
+      typeof pi.latest_charge === 'string'
+    ) {
+      const balanceTransactions = await stripeApi().balanceTransactions.list({
+        source: pi.latest_charge,
+        limit: 10,
+      });
+
+      if (balanceTransactions.data.length > 1) {
+        //it is multicapture, so we need to update the transactions
+        updateData.transactions.forEach((tx) => {
+          tx.interactionId = balanceTransactions.data[0].id;
+          tx.amount = {
+            centAmount: balanceTransactions.data[0].amount,
+            currencyCode: balanceTransactions.data[0].currency.toUpperCase(),
+          };
+        });
+      }
+    }
+  }
+
+  /**
+   * Best-effort: transitions a lingering Pending authorization (written during
+   * payment_intent.processing for async crypto settlement) to Success, so it does not stay stuck
+   * in Pending after the payment completes. No-op for card payments that never went through
+   * processing. Isolated try/catch so a failure here never blocks the successful-payment flow.
+   */
+  private async transitionPendingAuthorizationToSuccess(updateData: StripeEventUpdatePayment): Promise<void> {
+    try {
+      const payment = await this.ctPaymentService.getPayment({ id: updateData.id });
+      const hasAuthPending = this.ctPaymentService.hasTransactionInState({
+        payment,
+        transactionType: 'Authorization',
+        states: ['Pending'],
+      });
+      if (hasAuthPending) {
+        await this.ctPaymentService.updatePayment({
+          id: payment.id,
+          pspReference: updateData.pspReference,
+          transaction: {
+            type: PaymentTransactions.AUTHORIZATION,
+            state: this.convertPaymentResultCode(PaymentOutcome.AUTHORIZED as PaymentOutcome),
+            amount: updateData.transactions[0]?.amount ?? payment.amountPlanned,
+            interactionId: updateData.pspReference,
+          },
+        });
+        log.info('Transitioned pending authorization to Success after payment_intent.succeeded', {
+          paymentId: payment.id,
+          pspReference: updateData.pspReference,
+        });
+      }
+    } catch (authTransitionError) {
+      log.warn('Could not transition pending authorization to Success (non-blocking)', {
+        error: authTransitionError,
+        paymentId: updateData.id,
+      });
     }
   }
 

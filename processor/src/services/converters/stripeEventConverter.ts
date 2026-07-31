@@ -56,6 +56,24 @@ export class StripeEventConverter {
             interactionId: paymentIntentId, //Deprecated but kept for backward compatibility
           },
         ];
+      case StripeEvent.PAYMENT_INTENT__PROCESSING: {
+        // Async methods (e.g. crypto/stablecoin) settle after the intent is confirmed.
+        // Model the in-flight state as a pending authorization. amount_received is still 0
+        // here, so read the pending amount from `amount`.
+        const pi = event.data.object as Stripe.PaymentIntent;
+        return [
+          {
+            type: PaymentTransactions.AUTHORIZATION,
+            state: PaymentStatus.PENDING,
+            amount: { centAmount: pi.amount, currencyCode: pi.currency.toUpperCase() },
+            interactionId: paymentIntentId,
+          },
+        ];
+      }
+      case StripeEvent.PAYMENT_INTENT__REQUIRED_ACTION:
+        // Transient state while the buyer completes an off-site action (e.g. wallet redirect).
+        // No CT transaction is written; the terminal event resolves the payment.
+        return [];
       case StripeEvent.PAYMENT_INTENT__PAYMENT_FAILED:
         return [
           {

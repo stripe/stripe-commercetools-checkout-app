@@ -201,6 +201,17 @@ export class DropinComponents implements DropinComponent {
       throw "Error on /confirmPayments";
     }
 
+    const { outcome } = (await response.json()) as { outcome?: string };
+
+    // Async settlement (e.g. crypto/stablecoin): the processor returns 202 with outcome
+    // "pending" — the PaymentIntent is still processing. Do NOT signal success here, or the
+    // merchant would fulfill the order prematurely. The order is created by the webhook on
+    // payment_intent.succeeded. Surface a non-success (processing) result instead.
+    if (outcome === "pending") {
+      this.baseOptions.onComplete?.({ isSuccess: false });
+      return;
+    }
+
     this.baseOptions.onComplete?.({ isSuccess: true, paymentReference });
   }
 

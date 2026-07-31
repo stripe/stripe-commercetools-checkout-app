@@ -83,9 +83,6 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
 | `STRIPE_EXPRESS_ELEMENT_OPTIONS` | Optional JSON configuration for the Express Checkout Element. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. Example: `{"buttonHeight":48,"emailRequired":true}` | — |
-| `STRIPE_PAYMENT_FLOW` | Stripe Elements initialization strategy: `deferred` or `pi_first`. See [Payment Behavior Rules & PI-First Flow](#payment-behavior-rules--pi-first-flow) and [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md). | `deferred` |
-| `STRIPE_PAYMENT_BEHAVIOR_RULES` | Optional JSON map keyed by ISO country code or commercetools store key, overriding `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per matched cart. Malformed JSON aborts startup. | — |
-| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Takes priority over `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS` per attribute. | — |
 
 Make sure commercetools client credential have at least the following permissions:
 
@@ -214,6 +211,19 @@ Two related environment variables let the connector's payment behavior vary per 
 - **`STRIPE_PAYMENT_FLOW`** (flat default) / **`flowType`** (per-cart override): selects between `deferred` (PaymentIntent created at submit time, compatible with all payment methods) and `pi_first` (PaymentIntent created eagerly so Stripe Elements can be initialized with `clientSecret` instead of `{ mode, amount, currency }`). `pi_first` is required for payment methods — e.g. **Blik** — that must bind to a PaymentIntent before the payment element renders, and suppresses `setupFutureUsage` on both the config-element response and the PaymentIntent.
 
 See [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md) for the full rationale, the TOCTOU window `pi_first` closes, the orphan-PaymentIntent tradeoff, and the storefront contract for handling `requires_action`/Blik authorization.
+
+### Setup Future Usage Override
+
+The `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` environment variable allows you to override the `setup_future_usage` value for PaymentIntent creation independently from the Customer Session configuration.
+
+#### Possible Values
+- `off_session`: Payment method will be used for future off-session payments
+- `on_session`: Payment method will be used for future on-session payments
+- Empty string (`""`), `none`, `null`, or `undefined`: Do NOT include `setup_future_usage` in PaymentIntent
+
+**Important**: When using commercetools Recurring Orders, recurring carts will always use `off_session` for `setup_future_usage` regardless of this override configuration. This ensures consistency with Customer Session configuration and recurring order requirements. The override only applies to non-recurring carts.
+
+This is useful when you want to save payment methods via Customer Session but don't want to set `setup_future_usage` on the PaymentIntent, or vice versa.
 
 ### Setup Future Usage Override
 
@@ -556,4 +566,79 @@ The enhanced refund processing:
 5. Handles cases where no refund is found gracefully
 6. Provides comprehensive logging for debugging and monitoring
 7. Warns if webhook-based tracking may not work properly without the feature enabled
+
+## Crypto / Stablecoin Payments (async settlement)
+
+Stripe crypto/stablecoin (e.g. USDC) is an **asynchronous, redirect-based** payment method:
+the buyer confirms on a Stripe-hosted wallet page and the payment settles *after* confirmation.
+Unlike card, the `PaymentIntent` passes through a `processing` state
+(`requires_action → processing → succeeded`) before it is final. The connector models this
+in-flight window as a **`Authorization` / `Pending`** transaction on the commercetools payment
+and resolves it when the terminal event arrives.
+
+### Configuration tradeoff (why crypto may not appear in the Payment Element)
+
+Crypto only supports **automatic capture** and **cannot be saved** for off-session reuse. Stripe
+silently filters out any payment method incompatible with the current configuration, so crypto
+will not render if either of these is set:
+
+- `STRIPE_CAPTURE_METHOD` must be `automatic` (manual capture filters crypto out).
+- `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` must **not** force saving for off-session use. If
+  `payment_method_save` / `payment_method_save_usage` request an `off_session` saved method,
+  Stripe drops non-savable methods (crypto included) from the Payment Element.
+
+> This is the actual reason crypto did not show up in checkout while it was already enabled in the
+> Stripe Dashboard — the saved-payment-method config was requesting `off_session`.
+
+### Payment lifecycle
+
+| Stripe event | commercetools transaction |
+| --- | --- |
+| `payment_intent.processing` | `Authorization` / `Pending` (amount read from `data.amount`, since `amount_received` is still `0`) |
+| `payment_intent.succeeded` | `Authorization` / `Pending` → `Success`, then `Charge` / `Success`; **order is created here** |
+| `payment_intent.payment_failed` / `payment_intent.canceled` | `Authorization` / `Failure` (+ `CancelAuthorization` / `Success` on cancel) |
+| `payment_intent.requires_action` | no-op (transient wallet-redirect state; the terminal event resolves it) |
+
+The order is **only** created on `payment_intent.succeeded` — never during `processing`.
+
+### Synchronous confirm gate (`/confirmPayments/:id`)
+
+When the buyer returns and the front-end confirms, `updatePaymentIntentStripeSuccessful` runs the
+same three validations for every status — retrieve the PI from Stripe, verify
+`metadata.ct_payment_id` matches the path id, and verify amount + currency match the CT payment:
+
+- **`processing`** → writes `Authorization` / `Pending` only (never `Charge`/`Success`, never an
+  order) and the route responds **`202 { "outcome": "pending" }`**.
+- **`succeeded` / `requires_capture`** → `200 { "outcome": "approved" }`.
+- **invalid status / metadata or amount mismatch** → still throws (the `paymentIntentId` comes from
+  the browser, so these validations are the security boundary). Internal error detail is never
+  returned to the browser.
+
+### Enabler behavior
+
+On a `202 pending` response the enabler does **not** signal success, to avoid premature order
+fulfillment (the order is created by the webhook on `succeeded`).
+
+> **Known limitation (follow-up):** the enabler currently surfaces `pending` via
+> `onComplete({ isSuccess: false })`, which the host may render as a *failed* payment rather than
+> *processing*. A dedicated "processing" state on the `PaymentResult` contract is a pending
+> follow-up — the current behavior is safe (no premature fulfillment) but not ideal UX.
+
+### Webhook & dedup
+
+`payment_intent.processing` is subscribed in `enabled_events` and routed to `processStripeEvent`.
+Because the synchronous gate and the webhook can both write the pending authorization for the same
+PI, each path checks existing state with `hasTransactionInState` before writing (dedup). A write
+failure during `processing` is **propagated** (not swallowed) so Stripe retries; the dedup guard
+prevents a duplicate `Pending` on redelivery.
+
+### Local testing prerequisites
+
+- **Webhook delivery to localhost:** run `ngrok` (or `stripe listen`) and point Stripe at the
+  tunnel — `localhost` is not publicly reachable. `STRIPE_WEBHOOK_SIGNING_SECRET` must match the
+  forwarder that is actually delivering events, or webhooks fail signature verification.
+- **Synchronous return path:** the enabler needs a correct `MERCHANT_RETURN_URL` so the buyer
+  returns from the Stripe-hosted wallet page.
+- **Testnet:** Ethereum Sepolia + a wallet (e.g. MetaMask) with test USDC (Circle faucet) and gas.
+  Testnet settles in seconds; on mainnet the `processing` window can last minutes.
 
