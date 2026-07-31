@@ -5,6 +5,8 @@ import {
   mockEvent__paymentIntent_canceled,
   mockEvent__paymentIntent_paymentFailed,
   mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
+  mockEvent__paymentIntent_processing,
+  mockEvent__paymentIntent_requiresAction,
   mockEvent__charge_succeeded_notCaptured,
   mockEvent__charge_refund_notCaptured,
 } from '../../utils/mock-routes-data';
@@ -167,6 +169,28 @@ describe('stripeEvent.converter', () => {
         response: JSON.stringify(mockEvent__charge_refund_notCaptured),
       },
     });
+  });
+
+  test('convert a payment_intent.processing event to a pending authorization', () => {
+    const result = converter.convert(mockEvent__paymentIntent_processing);
+
+    expect(result.transactions).toEqual([
+      {
+        amount: {
+          centAmount: 13200,
+          currencyCode: 'MXN',
+        },
+        interactionId: 'pi_11111',
+        state: 'Pending',
+        type: 'Authorization',
+      },
+    ]);
+  });
+
+  test('convert a payment_intent.requires_action event to a no-op (no transactions, no throw)', () => {
+    const result = converter.convert(mockEvent__paymentIntent_requiresAction);
+
+    expect(result.transactions).toEqual([]);
   });
 
   test('convert a non supported event notification', () => {

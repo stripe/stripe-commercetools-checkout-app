@@ -123,21 +123,6 @@ const commonBillingDetails = {
   tax_id: null,
 } as Stripe.Charge.BillingDetails;
 
-export const mockEvent__paymentIntent_processing: Stripe.Event = {
-  id: 'evt_00000000000',
-  object: 'event',
-  api_version: '2024-04-10',
-  created: 1717093717,
-  data: commonData,
-  livemode: false,
-  pending_webhooks: 1,
-  request: {
-    id: 'req_11111',
-    idempotency_key: '11111',
-  },
-  type: 'payment_intent.processing',
-};
-
 const commonPaymentMethodDetails2 = {
   card: {
     amount_authorized: 34500,
@@ -329,6 +314,35 @@ export const mockEvent__paymentIntent_succeeded_captureMethodAutomatic: Stripe.E
     idempotency_key: '11111-ABCDE',
   },
   type: 'payment_intent.succeeded',
+};
+
+// Async payment methods (e.g. crypto/stablecoin) emit payment_intent.processing while the
+// deposit settles. amount_received is still 0 at this point, so the pending amount must be
+// read from `amount`, never `amount_received`.
+export const mockEvent__paymentIntent_processing: Stripe.Event = {
+  ...mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
+  data: {
+    object: {
+      ...mockEvent__paymentIntent_succeeded_captureMethodAutomatic.data.object,
+      amount_received: 0,
+      status: 'processing',
+    } as Stripe.PaymentIntent,
+  },
+  type: 'payment_intent.processing',
+};
+
+// Redirect-based async methods emit payment_intent.requires_action while the buyer is on the
+// Stripe-hosted page. No CT transaction is written for this transient state.
+export const mockEvent__paymentIntent_requiresAction: Stripe.Event = {
+  ...mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
+  data: {
+    object: {
+      ...mockEvent__paymentIntent_succeeded_captureMethodAutomatic.data.object,
+      amount_received: 0,
+      status: 'requires_action',
+    } as Stripe.PaymentIntent,
+  },
+  type: 'payment_intent.requires_action',
 };
 
 export const mockEvent__charge_refund_captured: Stripe.Event = {
@@ -820,21 +834,6 @@ export const mockEvent__charge_succeeded_captured: Stripe.Event = {
     idempotency_key: '7ae634ca-11111',
   },
   type: 'charge.succeeded',
-};
-
-export const mockEvent__paymentIntent_requiresAction: Stripe.Event = {
-  id: 'evt_11111',
-  object: 'event',
-  api_version: '2024-04-10',
-  created: 1717093717,
-  data: commonData,
-  livemode: false,
-  pending_webhooks: 1,
-  request: {
-    id: 'req_11111',
-    idempotency_key: '11111',
-  },
-  type: 'payment_intent.requires_action',
 };
 
 export const mockModifyPayment__payment_intent_succeeded: ModifyPayment = {

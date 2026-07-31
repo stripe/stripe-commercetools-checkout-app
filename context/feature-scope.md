@@ -27,6 +27,8 @@ What this connector supports, what it does not support, and what is partially su
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Per-cart capture method / flow type override | ✅ Supported | `STRIPE_PAYMENT_BEHAVIOR_RULES` (JSON map keyed by ISO country code or CT store key) lets `captureMethod` and `flowType` be overridden per store/country; resolved in `createPaymentIntentStripe()` via `resolvePaymentBehavior()` and falls back to the flat `STRIPE_CAPTURE_METHOD`/flow env vars when no rule matches. |
+| Early PaymentIntent creation (`pi_first`) | ✅ Opt-in | `STRIPE_PAYMENT_FLOW=pi_first` creates the PI during `_Setup`, before the Payment Element mounts — required for payment methods that need the PI to exist up front (e.g. Blik). Default is `deferred` (PI created at confirm time). |
+| Payment Element option overrides | ✅ Configurable | `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` — JSON merged into the Element's creation options on the enabler side. Malformed JSON silently falls back to `{}` — no error surfaced. |
 
 ---
 
@@ -35,6 +37,7 @@ What this connector supports, what it does not support, and what is partially su
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Stripe Payment Element (embedded) | ✅ Supported | All Stripe-supported payment methods surfaced automatically based on currency, country, and Stripe account settings |
+| Asynchronous / redirect payment methods (crypto, stablecoin) | ✅ Supported | PI confirms into `processing`; the connector models an `AUTHORIZATION:PENDING` transaction and finalizes on `payment_intent.succeeded` (webhook-driven — the synchronous confirm gate is not on the crypto redirect path). Requires automatic capture and saved payment methods NOT forced to `off_session` (`STRIPE_SAVED_PAYMENT_METHODS_CONFIG`), otherwise Stripe filters non-savable methods and crypto won't appear. See `processor/README.md`. |
 | Express Checkout Element (Apple Pay, Google Pay) | ✅ Supported | Including shipping address and rate change callbacks that update CT cart |
 | Hosted Payment Page (HPP) | ❌ Not supported | Defined in code but not exported from `enabler/src/main.ts` |
 | 3DS / SCA (Strong Customer Authentication) | ✅ Supported | Server-side PaymentIntent confirmation; `payment_intent.requires_action` is subscribed but has no handler — 3DS redirect handled client-side by Stripe.js |
@@ -63,11 +66,12 @@ Events registered in `processor/src/connectors/actions.ts`:
 | --- | --- | --- |
 | `charge.succeeded` | ✅ | Sets `AUTHORIZATION:SUCCESS` on CT payment (does NOT create a CHARGE transaction) |
 | `charge.updated` | ✅ | Creates `CHARGE:SUCCESS` transaction on CT payment; used for multi-capture delta tracking |
-| `charge.refunded` | ✅ | Creates `REFUND` transaction on CT payment |
+| `charge.refunded` | ✅ | Creates `REFUND` **and** `CHARGE_BACK` transactions on CT payment (see known-issues.md KI-025 — every ordinary refund is also recorded as a chargeback) |
 | `payment_intent.succeeded` | ✅ | Creates `CHARGE` transaction on CT payment |
 | `payment_intent.canceled` | ✅ | Creates `CANCEL_AUTHORIZATION` transaction |
 | `payment_intent.payment_failed` | ✅ | Updates CT payment state |
-| `payment_intent.requires_action` | ⚠️ Subscribed, no handler | Events are received and silently dropped — 3DS handled client-side by Stripe.js |
+| `payment_intent.processing` | ✅ | Async settlement (crypto/stablecoin, ACH-style): creates/transitions `AUTHORIZATION:PENDING` (amount from `data.amount`, not `amount_received`), deduped via `hasTransactionInState`; finalized to `SUCCESS` on `payment_intent.succeeded`. Write failures rethrow so Stripe retries (scoped exception to the KI-001 swallow). |
+| `payment_intent.requires_action` | ✅ No-op | Converter returns `[]` (deliberate no-op — no CT transaction). 3DS handled client-side by Stripe.js. |
 
 Events **not registered** (Stripe does not deliver them):
 
@@ -77,7 +81,7 @@ Events **not registered** (Stripe does not deliver them):
 | Any `invoice.*` event | ❌ Not registered |
 | Any `customer.subscription.*` event | ❌ Not registered |
 
-**Note:** The CT data model includes a `CHARGE_BACK` transaction type, but no webhook handler or registered event covers disputes. Dispute handling is entirely manual.
+**Note:** No `charge.dispute.*` event is registered or handled, so a genuine Stripe dispute is never reflected in CT — dispute handling for actual disputes is entirely manual. However, the `CHARGE_BACK` transaction type is not exclusively reserved for real disputes: the `charge.refunded` handler writes a `CHARGE_BACK` transaction on every ordinary refund too (see KI-025), so `CHARGE_BACK` records in CT do not reliably indicate an actual chargeback.
 
 ---
 

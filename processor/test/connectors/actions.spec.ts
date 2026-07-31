@@ -98,6 +98,24 @@ describe('Actions test', () => {
       expect(Logger.log.info).toHaveBeenCalled();
       expect(Logger.log.error).toHaveBeenCalled();
     });
+
+    test('should subscribe to payment_intent.processing for async crypto settlement', async () => {
+      Stripe.prototype.webhookEndpoints = {
+        update: jest.fn(),
+      } as unknown as Stripe.WebhookEndpointsResource;
+      const updateSpy = jest
+        .spyOn(Stripe.prototype.webhookEndpoints, 'update')
+        .mockResolvedValue(mock_Stripe_updateWebhookEnpoints_response);
+
+      await Actions.updateWebhookEndpoint('we_11111', 'https://myApp.com/stripe/webhooks');
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        'we_11111',
+        expect.objectContaining({
+          enabled_events: expect.arrayContaining(['payment_intent.processing']),
+        }),
+      );
+    });
   });
 
   describe('createLaunchpadPurchaseOrderNumberCustomType', () => {

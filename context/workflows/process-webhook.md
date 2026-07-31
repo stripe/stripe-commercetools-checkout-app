@@ -39,10 +39,15 @@ Stripe                    Processor                               CT
   |                           |    → processStripeEvent()          |
   |                           |    → updatePayment(AUTHORIZATION:FAILURE)
   |                           |                                    |
+  |                           |--- payment_intent.processing -----> |
+  |                           |    → processStripeEvent()          |
+  |                           |    → updatePayment(AUTHORIZATION:PENDING, deduped)
+  |                           |    → (write failure rethrows; Stripe retries)
+  |                           |                                    |
   |                           |--- payment_intent.requires_action  |
   |                           |    → processStripeEvent()          |
-  |                           |    → converter: no case found      |
-  |                           |    → error swallowed; CT not updated
+  |                           |    → converter: no-op (returns [])  |
+  |                           |    → CT not updated (by design)     |
   |                           |                                    |
   |                           |--- charge.refunded --------------> |
   |                           |    if multiOps:                    |
@@ -85,7 +90,8 @@ Events are routed to handlers based on type:
 | `payment_intent.succeeded` | `processStripeEvent()` | `storePaymentMethod()` | Converter emits `CHARGE: SUCCESS` |
 | `charge.succeeded` | `processStripeEvent()` | `storePaymentMethod()` | Converter emits `AUTHORIZATION: SUCCESS` |
 | `payment_intent.canceled` | `processStripeEvent()` | — | `AUTHORIZATION: FAILURE + CANCEL_AUTHORIZATION: SUCCESS` |
-| `payment_intent.requires_action` | `processStripeEvent()` | — | Converter has no case → `Unsupported event` thrown and swallowed; CT not updated |
+| `payment_intent.processing` | `processStripeEvent()` | — | `AUTHORIZATION: PENDING` (async settlement); deduped; resolved to SUCCESS on `payment_intent.succeeded`; write failure rethrows (Stripe retries). See `process-async-settlement.md` |
+| `payment_intent.requires_action` | `processStripeEvent()` | — | Converter no-op (returns `[]`); CT not updated by design |
 | `payment_intent.payment_failed` | `processStripeEvent()` | — | `AUTHORIZATION: FAILURE` |
 | `charge.refunded` | `processStripeEventRefunded()` (multi-ops) or `processStripeEvent()` | — | Multi-ops uses per-refund amount via `refunds.list` |
 | `charge.updated` | `processStripeEventMultipleCaptured()` (multi-ops only) | — | Skipped entirely when multi-ops disabled |

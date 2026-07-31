@@ -35,7 +35,6 @@ Stripe (async)
 | Routes | `src/routes/operation.route.ts` | CT Connect SDK endpoints (capture, cancel, refund, reverse) |
 | Service | `src/services/abstract-payment.service.ts` | Abstract base + `modifyPayment()` action dispatch |
 | Service | `src/services/stripe-payment.service.ts` | All Stripe business logic (PI, customer session, refunds, webhooks, multi-capture) |
-| Service | `src/services/payment-behavior-resolver.ts` | Resolves per-cart `STRIPE_PAYMENT_BEHAVIOR_RULES` overrides — `resolvePaymentBehavior()`, `extractDiscriminator()` |
 | Converter | `src/services/converters/stripeEventConverter.ts` | Maps Stripe events → CT transaction updates |
 | CT helpers | `src/services/commerce-tools/customerClient.ts`, `customTypeClient.ts`, `customTypeHelper.ts`, `productTypeClient.ts` | CT API helpers used by service and connectors |
 | Client | `src/clients/stripe.client.ts` | Stripe SDK factory + error wrapping |
@@ -69,11 +68,14 @@ Stripe (async)
 ```text
 GET /config-element/payment  ─┐  (parallel)
 GET /operations/config       ─┘
+[flowType === 'pi_first' only] GET /payments  — creates the PaymentIntent early, before Elements mounts
 GET /customer/session
 loadStripe(publishableKey)
 stripe.elements({ mode:'payment', amount, currency, customerOptions, appearance, capture_method })
 elements.create('payment', elementOptions)
 ```
+
+**Payment flow modes (`STRIPE_PAYMENT_FLOW`):** `deferred` (default) creates the PaymentIntent only at confirm time (`GET /payments` called from `handlePaymentConfirm`). `pi_first` creates the PaymentIntent up front during `_Setup`, before the Payment Element mounts — required for payment methods that need the PI to exist before the element renders (e.g. Blik). `enabler`'s `flowType` option controls which branch runs; `processor`'s `STRIPE_PAYMENT_FLOW` env var is the only other allowed value and falls back to `'deferred'` with a `console.warn` if set to anything else.
 
 **Express-without-session flow** (`_SetupExpress`) — used when rendering Express buttons before the user has a session (no `sessionId` on `EnablerOptions`):
 
@@ -104,7 +106,7 @@ loadStripe(publishableKey)
 | `GET` | `/customer/session` | `x-session-id` | stripeCustomerId, ephemeralKey, sessionId (204 = guest) |
 | `POST` | `/express-config` | none (CORS) | publishableKey, captureMethod, appearance, expressElementOptions |
 | `GET` | `/payments` | `x-session-id`, `x-express-checkout: true` (express only) | Creates PI + CT Payment; returns clientSecret |
-| `POST` | `/confirmPayments/:id` | `x-session-id` | 4-point validation; updates CT to AUTHORIZED |
+| `POST` | `/confirmPayments/:id` | `x-session-id` | 4-point validation; returns outcome APPROVED (200) or PENDING (202, async settlement). Enabler branches on the outcome — a pending result does not signal success (prevents premature fulfillment). |
 | `GET` | `/express-payment-data` | `x-session-id` | Cart totals and line items after shipping changes |
 
 ## API Endpoints
@@ -114,7 +116,7 @@ loadStripe(publishableKey)
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `GET /payments` | SessionHeader | Creates Stripe PaymentIntent + CT Payment. Accepts header `x-express-checkout: 'true'` or `'1'` (string, case-sensitive) to skip shipping params on the PI. |
-| `POST /confirmPayments/:id` | SessionHeader | Validates PI against CT payment (4-point check) and marks CT payment as AUTHORIZED. |
+| `POST /confirmPayments/:id` | SessionHeader | Validates PI against CT payment (4-point check) and returns a `PaymentModificationStatus`: `APPROVED` (HTTP 200) when the PI is `succeeded`/`requires_capture`; `PENDING` (HTTP 202) when the PI is still `processing` (async settlement — writes `AUTHORIZATION:PENDING` only, never creates an order). Invalid/mismatched PI still throws (rejected); internal error detail is not leaked to the browser. |
 | `GET /customer/session` | SessionHeader | Returns Stripe customer ID, ephemeral key, and customer session ID for saved payment methods. Returns 204 if the cart has no `customerId` (guest checkout) or the customer cannot be found. |
 | `GET /express-payment-data` | SessionHeader | Returns cart totals and line items for Express Checkout display. |
 | `GET /config-element/:paymentComponent` | SessionHeader | Returns appearance, layout, capture method, and billing address config for the element. |
@@ -124,12 +126,14 @@ loadStripe(publishableKey)
 
 ### CT Connect SDK (`operation.route.ts`)
 
+Registered with `prefix: '/operations'` in `server/plugins/operation.plugin.ts:8` — all four routes below are mounted under `/operations`, not at root.
+
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `GET /operations/config` | SessionHeader | Returns publishable key, capture method, appearance. |
-| `GET /status` | JWT | Health check — validates CT permissions + Stripe connectivity. |
-| `GET /payment-components` | JWT | Returns supported components under the `dropins` key: `dropin` (embedded), `express` (dropin). |
-| `POST /payment-intents/:id` | OAuth2 | Modifies a payment: capture, cancel, refund, or reverse. |
+| `GET /operations/status` | JWT | Health check — validates CT permissions + Stripe connectivity. |
+| `GET /operations/payment-components` | JWT | Returns supported components under the `dropins` key: `dropin` (embedded), `express` (dropin). |
+| `POST /operations/payment-intents/:id` | OAuth2 | Modifies a payment: capture, cancel, refund, or reverse. |
 
 ## Integration Boundaries
 
@@ -191,11 +195,11 @@ The CT Payment is the source of truth for transaction state. Stripe is the sourc
 
 | CT Transaction Type | Meaning |
 | --- | --- |
-| `AUTHORIZATION` | PI created (requires_capture) or succeeded |
+| `AUTHORIZATION` | PI created (requires_capture), succeeded, or pending during async settlement (`payment_intent.processing`) |
 | `CHARGE` | Payment captured or succeeded (automatic) |
 | `CANCEL_AUTHORIZATION` | PI canceled |
 | `REFUND` | Charge refunded |
-| `CHARGE_BACK` | Chargeback initiated (no handler — manual only) |
+| `CHARGE_BACK` | Written automatically by the `charge.refunded` webhook handler alongside `REFUND` (see `stripeEventConverter.ts` `populateTransactions()` — `CHARGE__REFUNDED` case). Every ordinary refund is therefore also recorded as a `CHARGE_BACK`, not only actual Stripe disputes; no `charge.dispute.*` event is registered or handled. See KI-025. |
 
 ## Webhook Event Subscriptions
 
@@ -207,7 +211,8 @@ The following events are registered on the Stripe webhook endpoint during `post-
 - `payment_intent.succeeded`
 - `payment_intent.canceled`
 - `payment_intent.payment_failed`
-- `payment_intent.requires_action` (subscribed but has no handler — events are received and silently dropped)
+- `payment_intent.processing` (async settlement — creates/transitions an `AUTHORIZATION:PENDING`, deduped, finalized on `payment_intent.succeeded`; write failures rethrow so Stripe retries)
+- `payment_intent.requires_action` (converter maps it to a no-op — returns `[]`, no CT transaction; 3DS handled client-side)
 
 ## Key Configuration
 
@@ -220,11 +225,11 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | `STRIPE_ENABLE_MULTI_OPERATIONS` | No | Enables multicapture + multi-refund via `charge.updated`. Default: `false`. |
 | `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` | No | Sets reuse intent on PaymentIntent. Values `''`, `'none'`, `'null'`, `'undefined'` treated as absent. |
 | `STRIPE_SAVED_PAYMENT_METHODS_CONFIG` | No | JSON config for Payment Element saved methods feature. |
+| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | No | JSON object merged into the Payment Element's creation options (`paymentElementOptions`) on the enabler side. Parsed by `parsePaymentElementOptions()`; invalid JSON falls back to `{}` silently — no startup failure, no warning. |
+| `STRIPE_PAYMENT_FLOW` | No | `deferred` (default) or `pi_first` — see "Payment flow modes" above. Any other value falls back to `'deferred'` with a `console.warn`. |
 | `STRIPE_COLLECT_BILLING_ADDRESS` | No | `auto`, `never`, or `if_required`. Default: `auto`. |
 | `STRIPE_APPLE_PAY_WELL_KNOWN` | No | Raw string returned by `/applePayConfig` for Apple Pay domain association. |
-| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | `processor/src/config/config.ts` (parsed by `getPaymentBehaviorConfig()`) + `processor/src/services/payment-behavior-resolver.ts` (`resolvePaymentBehavior()`) + `processor/src/services/stripe-payment.service.ts` (`createPaymentIntentStripe()` calls the resolver). JSON map keyed by ISO country code or CT store key; overrides `captureMethod` and `flowType` (and `setupFutureUsage`/`collectBillingAddress`) per cart based on cart country or store. Malformed JSON aborts startup. |
-| `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | No | JSON config merged with the legacy `layout`/`STRIPE_COLLECT_BILLING_ADDRESS` values in the enabler's `getElementsOptions()`. Supports `terms`, `wallets`, `defaultValues`, `business`, `paymentMethodOrder`, `readOnly`, `fields`, `layout`. An explicit value here wins over the legacy env var per attribute. |
-| `STRIPE_EXPRESS_ELEMENT_OPTIONS` | No | Options forwarded to the Express Checkout Element (Apple Pay / Google Pay) configuration. |
+| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | `processor/src/config/config.ts` (parsed by `getPaymentBehaviorConfig()`) + `processor/src/services/stripe-payment.service.ts` (`resolvePaymentBehavior()`, `createPaymentIntentStripe()`). JSON map keyed by ISO country code or CT store key; overrides `captureMethod` and `flowType` (and `setupFutureUsage`/`collectBillingAddress`) per cart based on cart country or store. Malformed JSON aborts startup. |
 | `ALLOWED_ORIGINS` | Yes | Comma-separated CORS whitelist for `/express-config`. Must include the storefront origin. |
 | `MERCHANT_RETURN_URL` | Yes | Return URL after 3DS or redirect-based payment methods. |
 | `PAYMENT_INTERFACE` | No | Value written to `paymentMethodInfo.paymentInterface`. Default: `checkout-stripe`. |
@@ -235,6 +240,9 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | `CT_CUSTOM_TYPE_LAUNCHPAD_PURCHASE_ORDER_KEY` | No | Custom type key for Launchpad PO. Default: `payment-launchpad-purchase-order`. |
 | `CONNECT_SERVICE_URL` | Yes (post-deploy) | CT Connect service URL; injected by CT Connect. |
 | `STRIPE_WEBHOOK_ID` | Yes (post-deploy) | Stripe webhook endpoint ID; injected by CT Connect. |
+| `MOCK_ENVIRONMENT` | No | Value returned as `environment` in the `GET /config`, `GET /operations/config`, and `POST /express-config` responses. Default: `'TEST'`. Despite the `MOCK_` name (template scaffold leftover), this is live functional config read by the enabler. |
+| `STRIPE_EXPRESS_ELEMENT_OPTIONS` | No | JSON string forwarded verbatim as `expressElementOptions` in the config responses when set; filtered enabler-side to `ALLOWED_EXPRESS_OPTION_KEYS`. No default. |
+| `MOCK_CLIENT_KEY` | No | Defaults to `'stripe'`. Set but not read anywhere else in `processor/src` — dead config, template scaffold leftover. |
 
 ## Out of Scope
 

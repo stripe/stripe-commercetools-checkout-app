@@ -47,6 +47,7 @@ export type StripeEventUpdatePayment = {
 
 export enum StripeEvent {
   PAYMENT_INTENT__SUCCEEDED = 'payment_intent.succeeded',
+  PAYMENT_INTENT__PROCESSING = 'payment_intent.processing',
   PAYMENT_INTENT__CANCELED = 'payment_intent.canceled',
   PAYMENT_INTENT__REQUIRED_ACTION = 'payment_intent.requires_action',
   PAYMENT_INTENT__PAYMENT_FAILED = 'payment_intent.payment_failed',

@@ -49,7 +49,8 @@ Stripe webhooks are the mechanism by which asynchronous payment outcomes (charge
 | `charge.succeeded` | AUTHORIZATION: SUCCESS |
 | `payment_intent.canceled` | AUTHORIZATION: FAILURE + CANCEL_AUTHORIZATION: SUCCESS |
 | `payment_intent.payment_failed` | AUTHORIZATION: FAILURE |
-| `payment_intent.requires_action` | (no case in converter — the dispatcher routes the event to `processStripeEvent()` which calls the converter; the converter `default` branch throws and the error is caught/logged in `processStripeEvent`. No CT transaction is created.) |
+| `payment_intent.processing` | AUTHORIZATION: PENDING (async settlement; deduped; resolved to SUCCESS on `payment_intent.succeeded` — see Rule 6) |
+| `payment_intent.requires_action` | (no CT transaction — converter has an explicit no-op case returning `[]`; see Rule 6) |
 | `charge.refunded` | REFUND: SUCCESS + CHARGE_BACK: SUCCESS |
 | `charge.updated` (multicapture, multi-ops only) | CHARGE: SUCCESS |
 
@@ -59,7 +60,7 @@ Stripe webhooks are the mechanism by which asynchronous payment outcomes (charge
 
 **Implementation:** `processor/src/services/converters/stripeEventConverter.ts` → `populateTransactions()`. The router in `processor/src/routes/stripe-payment.route.ts` dispatches each event type to either `processStripeEvent()`, `processStripeEventRefunded()` (multi-ops `charge.refunded`), or `processStripeEventMultipleCaptured()` (multi-ops `charge.updated`).
 
-**Note — limitation (`payment_intent.requires_action`):** The webhook dispatcher routes this event to `processStripeEvent()` even though the converter has no case for it. The converter throws `Unsupported event payment_intent.requires_action`, the error is swallowed by `processStripeEvent`'s try/catch, and CT is left unchanged. To map this event to a real CT transaction, add a case to `populateTransactions()` in `stripeEventConverter.ts`.
+**Note — unsupported events (general mechanism, still in effect):** The converter's `default` branch throws `Unsupported event …` for any event type with no case, and `processStripeEvent()` swallows that error (KI-001) — so a genuinely unsupported event (e.g. `charge.dispute.created`) produces no CT transaction. This mechanism is unchanged. What changed: `payment_intent.requires_action` no longer hits it — it now has an explicit no-op case (`return []`), and `payment_intent.processing` now has its own case (`AUTHORIZATION: PENDING`). See Rule 6, KI-017, and KI-026.
 
 **Note — limitation (`payment_intent.succeeded`):** The converter currently emits a `CHARGE: SUCCESS` transaction for `payment_intent.succeeded`, which conflates the "intent succeeded" event with a captured charge. The pairing of `charge.succeeded` → AUTHORIZATION:SUCCESS and `payment_intent.succeeded` → CHARGE:SUCCESS appears intentional for `automatic` capture mode (where both events arrive and together encode auth + capture), but it is brittle for `manual` capture and worth revisiting. Tracked location: `stripeEventConverter.ts` `case StripeEvent.PAYMENT_INTENT__SUCCEEDED`.
 
@@ -92,3 +93,27 @@ Stripe webhooks are the mechanism by which asynchronous payment outcomes (charge
 **Implementation:** `processor/src/services/stripe-payment.service.ts` → `savePaymentMethodIfNew()` (called from `storePaymentMethod()`). The dispatcher in `processor/src/routes/stripe-payment.route.ts` calls `storePaymentMethod` for both `payment_intent.succeeded` and `charge.succeeded`.
 
 **What breaks if violated:** Duplicate payment method tokens in CT. The customer would see the same card listed multiple times in their saved payment methods.
+
+---
+
+## Rule 6: `payment_intent.processing` is handled with dedup and a scoped no-swallow; `requires_action` is a no-op
+
+> Draft — added for crypto/stablecoin async settlement (ADR-007).
+
+**What:** `payment_intent.processing` is subscribed (`actions.ts` `enabled_events`), routed to `processStripeEvent()`, and mapped by the converter to `Authorization/Pending` (amount from `data.amount`). Two behaviors differ from the other events:
+1. **Dedup:** before writing, `hasTransactionInState()` skips the write if a `Charge/Success` or an `Authorization/Pending` already exists (the synchronous gate may have written the Pending first for non-redirect methods, and Stripe may redeliver).
+2. **Scoped no-swallow:** a CT-update failure on `payment_intent.processing` is **rethrown** (non-2xx → Stripe retries) instead of being swallowed. This is a deliberate exception to the general swallow described in `known-issues.md` KI-001 — all other events keep log-and-return so the card regression is unchanged.
+
+`payment_intent.requires_action` is a deliberate no-op: the converter returns `[]` (no CT transaction). It no longer throws `Unsupported event` (that was the pre-change behavior noted in Rule 3 and KI-017).
+
+**Why:** Async settlement (crypto/stablecoin, ACH-style) must not be lost — if the `Pending` write fails and is swallowed, the payment is stuck with no authorization while Stripe considers the event delivered. Rethrowing lets Stripe retry; the dedup prevents a duplicate `Pending` on redelivery. `requires_action` is authenticated client-side (Stripe.js), so no server-side transaction is needed.
+
+**Invariant:** For `payment_intent.processing`: never write a duplicate `Pending`; never swallow a write failure. For `requires_action`: never write a CT transaction.
+
+**Implementation:** `actions.ts` (`enabled_events` includes `payment_intent.processing`); `stripe-payment.route.ts` (dispatch); `stripe-payment.service.ts` → `processStripeEvent()` (dedup guard + `if (event.type === StripeEvent.PAYMENT_INTENT__PROCESSING) throw`); `stripeEventConverter.ts` (`case PAYMENT_INTENT__PROCESSING` and `case PAYMENT_INTENT__REQUIRED_ACTION → []`).
+
+**Closure criterion:** `grep -n 'payment_intent.processing' processor/src/connectors/actions.ts` — subscribed. `grep -n 'PAYMENT_INTENT__PROCESSING' processor/src/services/stripe-payment.service.ts` — the scoped rethrow exists.
+
+**Note — cross-reference:** Rule 3's mapping table has been updated with the `payment_intent.processing → Authorization/Pending` row and now reflects `requires_action` as a no-op; Rule 3's general "unsupported event" note still applies to other unhandled events.
+
+**What breaks if violated:** Without the rethrow, a failed `Pending` write is lost and the crypto payment has no authorization in CT. Without the dedup, a redelivered `processing` event (or a gate+webhook race) creates duplicate `Pending` transactions. See `known-issues.md` KI-026.
