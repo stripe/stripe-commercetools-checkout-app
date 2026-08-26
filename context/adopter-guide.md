@@ -30,8 +30,16 @@ Post-deploy creates these resources in your environment automatically:
 
 | Component | Type | What it does |
 | --- | --- | --- |
-| Stripe webhook endpoint | Stripe | Receives `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.succeeded`, `charge.refunded` — delivers to the processor's `/stripe/webhooks` |
+| Stripe webhook endpoint | Stripe | Receives 12 events — `charge.succeeded`, `charge.updated`, `charge.refunded`, `refund.updated`, `refund.failed`, `payment_intent.succeeded`, `payment_intent.canceled`, `payment_intent.payment_failed`, `payment_intent.requires_action`, `payment_intent.processing`, `payment_intent.partially_funded`, `customer_cash_balance_transaction.created` — delivers to the processor's `/stripe/webhooks`. The authoritative list is the `enabled_events` array in `processor/src/connectors/actions.ts`; an event handled in code but absent there is never delivered, and that fails silently |
 | `payment-connector-stripe-customer-id` | CT Custom Type (customer) | Stores `stripeConnector_stripeCustomerId` — links a CT customer to their Stripe Customer |
+| CT `OrderCreated` subscription | CT Subscription | Created by the `order-subscriber` app's post-deploy; delivers `OrderCreated` messages to `/orderSubscriber` so the order's `paymentState` can be written |
+
+> **Three applications are deployed, not two:** `processor` (service), `enabler` (assets) and
+> `order-subscriber` (event). The subscriber exists because for a card the money settles *before* the
+> order exists, so the webhook path has nothing to write `paymentState` onto. It needs the
+> `manage_orders` scope, and `connect.yaml` has no `inheritAs` block — it declares its own
+> `CTP_*` configuration. Omitting those values does not fail the deploy: the app boots and dies on
+> its first required-config check, which looks like a crash-loop rather than missing configuration.
 
 > **Not created by the connector:** `payment-launchpad-purchase-order` — this CT custom type is required for B2B purchase orders but must be created by your team before deploying. See Section 5.
 
@@ -60,6 +68,14 @@ Deploy `ct-connect-stripe-checkout` through the CT Connect marketplace. The post
 | `STRIPE_COLLECT_BILLING_ADDRESS` | No | `auto` (default), `never`, or `if_required` |
 | `STRIPE_PAYMENT_FLOW` | No | `deferred` (default) or `pi_first` — set to `pi_first` if you need to support Blik. See Section 4 "Blik" for what changes when you enable this. |
 | `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` | No | JSON object merged into the Payment Element's creation options on the enabler side. Invalid JSON is silently ignored (falls back to no overrides) — validate your JSON before deploying. |
+| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | JSON map of per-market exceptions, keyed by ISO country code or CT store key. Each rule may set `flowType`, `captureMethod`, `setupFutureUsage`, `collectBillingAddress`, `euBankTransferCountry`. Only the fields you supply override; omitted fields fall back to the flat env var above, **which may be the opposite instruction** — "field absent" is not "no instruction". Malformed JSON aborts startup. Matched on `cart.country` then `cart.store.key`; shopper-supplied billing/shipping countries deliberately never select a rule. |
+
+**If you want EU bank transfer,** set `euBankTransferCountry` (`DE`, `FR`, `IE` or `NL`) on the markets that should offer it. Two things Stripe does silently, and they are the most common reason the tab never appears:
+
+- A **customer must be attached** to the PaymentIntent. Guest carts do not get the rail; Stripe accepts and discards the options rather than erroring.
+- **`setup_future_usage` must be absent.** Stripe removes `customer_balance` from `payment_method_types` when the method cannot be saved, with no error and no warning — so enabling saved payment methods (`STRIPE_SAVED_PAYMENT_METHODS_CONFIG`) or `STRIPE_CAPTURE_METHOD=manual` suppresses the tab. Subscription carts set `setup_future_usage`, so those markets need `flowType: pi_first`, which strips it.
+
+`euBankTransferCountry` only chooses **which** of your own IBANs a EUR shopper sees — it is not an enable flag, and leaving it unset does not disable the rail: Stripe then derives the variant from the currency and defaults to an Irish IBAN.
 
 > **After first deploy:** go to Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret. Copy it into `STRIPE_WEBHOOK_SIGNING_SECRET` and redeploy. Payments will succeed but CT will not update until this is set.
 
@@ -70,6 +86,10 @@ In CT Merchant Center → Settings → Developer → API → Custom Types:
 
 In Stripe Dashboard → Developers → Webhooks:
 - A webhook endpoint pointing at `https://your-processor/stripe/webhooks` exists
+- It lists all 12 events from Section 2. A missing event is delivered by nobody and fails silently — compare against `processor/src/connectors/actions.ts`, which is the only source of truth
+
+In CT Merchant Center → Settings → Developer → Subscriptions:
+- A subscription for the `OrderCreated` message pointing at `/orderSubscriber` exists. Without it, orders are created with no `paymentState` and nothing reports the error — the subscriber simply never runs
 
 ---
 
@@ -136,6 +156,9 @@ Before go-live:
 - [ ] Stripe Dashboard → Webhooks → Recent deliveries — all events should show HTTP 200
 - [ ] Express Checkout buttons appear on the page (if using `expressCheckout` drop-in)
 - [ ] If `STRIPE_PAYMENT_FLOW=pi_first` is set: Blik appears as a payment option for eligible currency/country combinations, and the PaymentIntent is visible in Stripe Dashboard before the shopper submits the form
+- [ ] The completed test order has `paymentState: Paid` in CT — if it is unset, the `order-subscriber` is not running or its `OrderCreated` subscription is missing
+- [ ] If using EU bank transfer: the `customer_balance` tab actually renders for a **signed-in** shopper on a EUR cart. If it does not, check `setup_future_usage` and `capture_method` before anything else — Stripe suppresses the rail silently, and the processor logs a warning naming the reason
+- [ ] If using EU bank transfer: complete one transfer end to end and confirm the order moves `Pending` → `Paid`. Then abandon one deliberately and confirm you are comfortable with the result — the pending authorization stays forever and nothing reconciles it
 
 ---
 
@@ -151,3 +174,9 @@ Before go-live:
 | Double charge after network retry | Connector does not use stable idempotency keys on capture | Check Stripe Dashboard; manually refund duplicate; disable infrastructure-level auto-retry |
 | All payments fail at startup with auth errors | Placeholder credentials in env vars (`'stripeSecretKey'`, `'xxx'`) | Set all required env vars with real values |
 | `payment-launchpad-purchase-order` not found | Custom type not created before deploy | Create the custom type manually (see Section 4) |
+| Bank transfer tab never appears, no error anywhere | `setup_future_usage` is set (often via `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`) or `STRIPE_CAPTURE_METHOD=manual` — Stripe removes `customer_balance` from `payment_method_types` when the method cannot be saved, silently | Clear `setup_future_usage` for that market, or set `flowType: pi_first` in `STRIPE_PAYMENT_BEHAVIOR_RULES` to strip it. Check processor logs — the connector warns and names the reason |
+| Bank transfer tab missing only for some shoppers | Those carts have no customer attached. `customer_balance` requires one; Stripe accepts and discards the options for a guest cart rather than erroring | Expected. The rail is only available to signed-in shoppers |
+| Shopper sees an Irish IBAN when you expected a local one | `euBankTransferCountry` not set for that market — Stripe derives the variant from the currency and defaults to IE | Set `euBankTransferCountry` to `DE`, `FR`, `IE` or `NL` in that market's rule |
+| Order sits at `paymentState: Pending` for days | Normal for a bank transfer awaiting a wire — or the shopper abandoned it and never sent the money | Nothing to fix if the wire is in flight. If abandoned, nothing resolves it automatically; reconcile out of band and cancel the PaymentIntent in Stripe |
+| Orders have no `paymentState` at all | `order-subscriber` not deployed, missing its `CTP_*` configuration, or its `OrderCreated` subscription absent | Check the app is running (missing config looks like a crash-loop, not a config error) and that the subscription exists in Merchant Center |
+| Refund shows as successful in CT but the money never arrived | Before `refund.updated`/`refund.failed` were registered this was permanent. Now only Dashboard-issued refunds have it — they carry no `ct_payment_id` stamp, so the failure cannot be matched back | Issue refunds through the connector, not the Stripe Dashboard |

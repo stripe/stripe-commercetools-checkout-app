@@ -15,6 +15,8 @@ What this connector supports, what it does not support, and what is partially su
 | Automatic capture | ✅ Supported | `STRIPE_CAPTURE_METHOD=automatic` (default) |
 | Manual capture (authorize now, capture later) | ✅ Opt-in | `STRIPE_CAPTURE_METHOD=manual` |
 | Multi-capture (partial captures) | ✅ Opt-in | `STRIPE_ENABLE_MULTI_OPERATIONS=true`; requires multicapture enabled on Stripe account |
+| `Order.paymentState` reflection | ✅ Supported | A third deployed application (`order-subscriber`, `applicationType: event`) subscribes to CT's `OrderCreated` message and writes `Paid`, `Pending`, or nothing. Separate app by necessity: for a card the money settles *before* the order exists, so the webhook path has nothing to write onto (a bounded retry measured 0/3). Writes only onto an unset field; `Paid` outranks `Pending`. Requires `manage_orders`. `Failed` is unreachable in checkout. See `business-rules/order-payment-state.md` and ADR-009. |
+| Order creation | ❌ Not supported, by design | commercetools Checkout owns the cart and creates the order. The code that called `createOrderFromCart` was removed in `0ab8d2c` because it raced Checkout into a 409 `ConcurrentModification`, and the SDK's order service is read-only. This connector only ever *updates* `paymentState`. |
 | Subscriptions / recurring billing | ❌ Not supported | Use `ct-connect-stripe-composable` |
 | SetupIntent (save now, charge later) | ❌ Not supported | CT custom types defined but not installed by this connector |
 | Mixed carts (subscription + one-time) | ❌ Not supported | — |
@@ -26,7 +28,7 @@ What this connector supports, what it does not support, and what is partially su
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Per-cart capture method / flow type override | ✅ Supported | `STRIPE_PAYMENT_BEHAVIOR_RULES` (JSON map keyed by ISO country code or CT store key) lets `captureMethod` and `flowType` be overridden per store/country; resolved in `createPaymentIntentStripe()` via `resolvePaymentBehavior()` and falls back to the flat `STRIPE_CAPTURE_METHOD`/flow env vars when no rule matches. |
+| Per-cart capture method / flow type override | ✅ Supported | `STRIPE_PAYMENT_BEHAVIOR_RULES` (JSON map keyed by ISO country code or CT store key) lets `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress` and `euBankTransferCountry` be overridden per store/country; resolved via `resolvePaymentBehaviorWithSteeringCheck()` and falls back to the flat env vars when no rule matches. Matched on `cart.country` then `cart.store.key` only — shopper-supplied billing/shipping countries never select a rule. |
 | Early PaymentIntent creation (`pi_first`) | ✅ Opt-in | `STRIPE_PAYMENT_FLOW=pi_first` creates the PI during `_Setup`, before the Payment Element mounts — required for payment methods that need the PI to exist up front (e.g. Blik). Default is `deferred` (PI created at confirm time). |
 | Payment Element option overrides | ✅ Configurable | `STRIPE_BEHAVIOR_PAYMENT_ELEMENT` — JSON merged into the Element's creation options on the enabler side. Malformed JSON silently falls back to `{}` — no error surfaced. |
 
@@ -40,7 +42,8 @@ What this connector supports, what it does not support, and what is partially su
 | Asynchronous / redirect payment methods (crypto, stablecoin) | ✅ Supported | PI confirms into `processing`; the connector models an `AUTHORIZATION:PENDING` transaction and finalizes on `payment_intent.succeeded` (webhook-driven — the synchronous confirm gate is not on the crypto redirect path). Requires automatic capture and saved payment methods NOT forced to `off_session` (`STRIPE_SAVED_PAYMENT_METHODS_CONFIG`), otherwise Stripe filters non-savable methods and crypto won't appear. See `processor/README.md`. |
 | Express Checkout Element (Apple Pay, Google Pay) | ✅ Supported | Including shipping address and rate change callbacks that update CT cart |
 | Hosted Payment Page (HPP) | ❌ Not supported | Defined in code but not exported from `enabler/src/main.ts` |
-| 3DS / SCA (Strong Customer Authentication) | ✅ Supported | Server-side PaymentIntent confirmation; `payment_intent.requires_action` is subscribed but has no handler — 3DS redirect handled client-side by Stripe.js |
+| Bank transfer (`customer_balance`) | ✅ Supported | EU bank transfer through the Payment Element. `payment_intent.requires_action` carrying `display_bank_transfer_instructions` books an `AUTHORIZATION:PENDING`; settlement days later moves it to `SUCCESS`. **Two silent prerequisites:** a customer must be attached to the PaymentIntent, and `setup_future_usage` must be absent — Stripe removes `customer_balance` from `payment_method_types` when the method cannot be saved, with no error and no warning. Subscription carts set `setup_future_usage`, so those markets need `flowType: pi_first`. `euBankTransferCountry` chooses which IBAN (DE/FR/IE/NL) the shopper sees; it does not enable the rail. |
+| 3DS / SCA (Strong Customer Authentication) | ✅ Supported | Server-side PaymentIntent confirmation; 3DS redirect handled client-side by Stripe.js. `payment_intent.requires_action` is subscribed but for a card it writes **no** CT transaction — the event is filtered at the route by `isBankTransferNextAction()`, which only lets bank transfers through |
 | Apple Pay domain verification | ✅ Supported | `/applePayConfig` endpoint returns domain association file (no auth required) |
 | Billing address collection | ✅ Configurable | `STRIPE_COLLECT_BILLING_ADDRESS`: `auto`, `never`, `if_required` |
 | Setup future usage (save card) | ✅ Configurable | `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE` |
@@ -71,7 +74,10 @@ Events registered in `processor/src/connectors/actions.ts`:
 | `payment_intent.canceled` | ✅ | Creates `CANCEL_AUTHORIZATION` transaction |
 | `payment_intent.payment_failed` | ✅ | Updates CT payment state |
 | `payment_intent.processing` | ✅ | Async settlement (crypto/stablecoin, ACH-style): creates/transitions `AUTHORIZATION:PENDING` (amount from `data.amount`, not `amount_received`), deduped via `hasTransactionInState`; finalized to `SUCCESS` on `payment_intent.succeeded`. Write failures rethrow so Stripe retries (scoped exception to the KI-001 swallow). |
-| `payment_intent.requires_action` | ✅ No-op | Converter returns `[]` (deliberate no-op — no CT transaction). 3DS handled client-side by Stripe.js. |
+| `payment_intent.requires_action` | ✅ Method-dependent | **Bank transfer only:** creates `AUTHORIZATION:PENDING` for `pi.amount`. Card 3DS, Boleto and redirect-based methods emit the same event and write nothing — they are filtered at the route by `isBankTransferNextAction()`, which fails closed. Widening that predicate writes a pending authorization on every 3DS card payment; narrowing it to nothing kills the bank transfer rail with a green suite. See known-issues.md KI-017. |
+| `payment_intent.partially_funded` | ✅ No-op | A bank transfer arriving in instalments. Writes no CT transaction — a second `Pending` would break the dedup invariant, and a partial `Charge` would recognise revenue sitting in the customer's cash balance. The interface interaction is persisted as an audit trail. |
+| `refund.updated` / `refund.failed` | ✅ Failure only | Write `REFUND:FAILURE`, and **only** when the refund's status is `failed` or `canceled`. Successes are ignored — `charge.refunded` already owns that side, so acting here too would book the same refund twice. Do not use the converter; they read `ct_payment_id` from the refund's own metadata, so a Dashboard-issued refund carries no stamp and is not correctable this way. |
+| `customer_cash_balance_transaction.created` | ✅ Observability only | Never converted — `convert()` rejects it explicitly. The event is customer-scoped and carries no `ct_payment_id`. `funding_reversed` and `adjusted_for_overdraft` log at **error** level: the only signal that money left the customer's cash balance after a payment was credited, with no CT update. |
 
 Events **not registered** (Stripe does not deliver them):
 
@@ -102,7 +108,8 @@ Events **not registered** (Stripe does not deliver them):
 | CT price → Stripe price sync | Not implemented |
 | Dispute / chargeback automation | No `charge.dispute.*` webhook handler; manual process required |
 | Stripe Connect (marketplace, split payments) | Handled by separate `mirakl-stripe` integration |
-| ACH / bank transfers | Not dedicated; Payment Element may surface it based on Stripe account settings |
+| ACH (US bank debit) | Not dedicated; Payment Element may surface it based on Stripe account settings. EU bank transfer (`customer_balance`) **is** supported — see the Payment Element table above |
+| Reconciliation of stale `Pending` authorizations | None, deliberately. An abandoned bank transfer leaves a pending authorization no terminal event resolves, and the cart is not frozen during the funding window. Reconcile out of band — see ADR-007 |
 | BNPL (Klarna, Afterpay, Affirm) | Not dedicated; Payment Element may surface it based on Stripe account settings |
 | Stripe Terminal (in-person) | Not implemented |
 | Stripe Link | Surfaced by Payment Element only; no dedicated flow |

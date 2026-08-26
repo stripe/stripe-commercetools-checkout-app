@@ -116,6 +116,32 @@ describe('Actions test', () => {
         }),
       );
     });
+
+    // An event with a route handler but no registration is a silent no-op: Stripe simply never
+    // delivers it, and nothing in the connector goes red. This connector already carries that
+    // failure shape as a known issue, so the registration is asserted rather than assumed.
+    it('should register the four bank transfer and refund events (SB3-207 task 005)', async () => {
+      Stripe.prototype.webhookEndpoints = {
+        update: jest.fn(),
+      } as unknown as Stripe.WebhookEndpointsResource;
+      const updateSpy = jest
+        .spyOn(Stripe.prototype.webhookEndpoints, 'update')
+        .mockResolvedValue(mock_Stripe_updateWebhookEnpoints_response);
+
+      await Actions.updateWebhookEndpoint('we_11111', 'https://myApp.com/stripe/webhooks');
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        'we_11111',
+        expect.objectContaining({
+          enabled_events: expect.arrayContaining([
+            'payment_intent.partially_funded',
+            'customer_cash_balance_transaction.created',
+            'refund.updated',
+            'refund.failed',
+          ]),
+        }),
+      );
+    });
   });
 
   describe('createLaunchpadPurchaseOrderNumberCustomType', () => {

@@ -1,0 +1,32 @@
+{
+  "name": "order-subscriber",
+  "version": "4.0.1",
+  "description": "Sets Order.paymentState=Pending when commercetools creates an order, closing the timing gap the webhook path cannot.",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "start:dev": "nodemon -q dist/main.js",
+    "build": "rm -rf dist && tsc",
+    "dev": "ts-node src/main.ts",
+    "test": "jest --detectOpenHandles",
+    "lint": "prettier --check \"**/**/*.{ts,js,json}\"",
+    "connector:post-deploy": "node dist/connectors/post-deploy.js",
+    "connector:pre-undeploy": "node dist/connectors/pre-undeploy.js"
+  },
+  "dependencies": {
+    "@commercetools/platform-sdk": "8.16.0",
+    "@commercetools/ts-client": "3.4.0",
+    "dotenv": "17.2.2",
+    "fastify": "^5.8.4"
+  },
+  "devDependencies": {
+    "@types/jest": "30.0.0",
+    "@types/node": "22.18.6",
+    "jest": "30.2.0",
+    "prettier": "3.6.2",
+    "ts-jest": "29.4.4",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.2"
+  }
+}

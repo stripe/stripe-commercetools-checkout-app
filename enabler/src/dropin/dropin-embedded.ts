@@ -7,6 +7,7 @@ import {
 } from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-mock";
 import { StripePaymentElement} from "@stripe/stripe-js";
+import { isBankTransferNextAction } from "../utils";
 
 interface BillingAddress {
   name: string;
@@ -167,10 +168,41 @@ export class DropinComponents implements DropinComponent {
     });
 
     if (error) {
+      // A buyer who closed the bank transfer instructions has NOT failed, and Stripe.js reports
+      // that dismissal HERE — as an error — not as a resolved PaymentIntent. Measured 2026-08-17
+      // against the commercetools overlay: the guard further down never ran, because this throw
+      // fires first, and the buyer landed on "Payment Failed" while the PaymentIntent was alive
+      // and awaiting a wire.
+      //
+      // The PaymentIntent is re-read rather than taken from `error.payment_intent`, which Stripe
+      // populates inconsistently: the client secret is already in scope and retrieve is
+      // authoritative, so this does not depend on the error's shape.
+      //
+      // Only an awaiting-bank-transfer intent is rescued. A genuine decline leaves the intent in
+      // requires_payment_method, and every other next_action variant fails the predicate, so both
+      // keep throwing exactly as before.
+      const rescued = await this.retrieveAwaitingBankTransfer(clientSecret);
+      if (rescued) {
+        return { paymentIntent: rescued };
+      }
       throw error;
     }
-    
-    if (paymentIntent.status === "requires_action") {
+
+    // A bank transfer awaiting funds is NOT an error, and this is the branch that decides it.
+    //
+    // Stripe.js has already shown the buyer its own instructions modal (measured 2026-08-13 inside
+    // the commercetools overlay), and they have closed it to go to their bank. From the buyer's side
+    // everything that can happen inside checkout has happened; the money is days away. Throwing here
+    // surfaced as `payment_failed` on the host and put them on a "Payment Failed" screen — after
+    // which nobody wires anything. Instead we fall through to confirmPaymentIntent(), where the
+    // processor answers 202/`pending` and onComplete({ isSuccess: false }) reports a non-success
+    // without claiming a failure.
+    //
+    // EVERY OTHER `requires_action` STILL THROWS, and that is required rather than incidental: card
+    // 3DS, Boleto and redirect-based methods reach here having completed nothing, so the host must
+    // treat them as errors exactly as before. The predicate is the only thing separating the two,
+    // which is why it checks the next_action type strictly and fails closed.
+    if (paymentIntent.status === "requires_action" && !isBankTransferNextAction(paymentIntent)) {
       const error: any = new Error("Payment requires additional action");
       error.type = "requires_action";
       error.next_action = paymentIntent.next_action;
@@ -184,6 +216,27 @@ export class DropinComponents implements DropinComponent {
     } 
 
     return { paymentIntent };
+  }
+
+  /**
+   * Returns the PaymentIntent when it is a bank transfer awaiting funds, otherwise undefined.
+   *
+   * Used from the error path of confirmPayment. Never throws: if the retrieve itself fails there is
+   * nothing to rescue, and the caller must be free to re-throw the ORIGINAL error rather than a
+   * diagnostic one about the rescue attempt.
+   */
+  private async retrieveAwaitingBankTransfer(
+    clientSecret: string,
+  ): Promise<Awaited<ReturnType<typeof this.baseOptions.sdk.retrievePaymentIntent>>['paymentIntent'] | undefined> {
+    try {
+      const { paymentIntent } = await this.baseOptions.sdk.retrievePaymentIntent(clientSecret);
+      if (paymentIntent?.status === "requires_action" && isBankTransferNextAction(paymentIntent)) {
+        return paymentIntent;
+      }
+    } catch {
+      // fall through — the original error is the one worth surfacing
+    }
+    return undefined;
   }
 
   private async confirmPaymentIntent({

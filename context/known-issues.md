@@ -9,7 +9,12 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 **Problem:** `processStripeEvent()`, `processStripeEventRefunded()`, `processStripeEventMultipleCaptured()`, and `storePaymentMethod()` each contain a top-level try/catch that logs the exception and returns void. The route handler then returns HTTP 200 to Stripe, which considers the event delivered and never retries. The CT payment object is left in an inconsistent state with no automatic recovery.
 **Root cause:** `processor/src/services/stripe-payment.service.ts:984` (`processStripeEvent()`), `:1107` (`processStripeEventRefunded()`), `:1155` (`processStripeEventMultipleCaptured()`), `:1051` (`storePaymentMethod()`) — all event processing functions absorb exceptions before they can bubble to the route layer.
 **Rule:** Webhook handlers must return HTTP 5xx when CT update fails so Stripe retries. See hub `known-issues.md` Issue 1.
-**Implementation note:** Affected events: `charge.succeeded`, `charge.updated`, `charge.refunded`, `payment_intent.succeeded`, `payment_intent.canceled`, `payment_intent.payment_failed`. **Exception:** `payment_intent.processing` is scoped OUT of the swallow — `processStripeEvent()` rethrows on failure for that event so Stripe retries (async settlement must not be lost). All other events still swallow the error and return 200. See KI-026.
+**Implementation note:** Affected events: `charge.succeeded`, `charge.updated`, `charge.refunded`, `payment_intent.succeeded`, `payment_intent.canceled`, `payment_intent.payment_failed`. All of these still swallow the error and return 200. See KI-026.
+
+**Three scoped exceptions, all deliberate (updated 2026-08-13, SB3-207):**
+1. `payment_intent.processing` **and** `payment_intent.requires_action` — the members of `ASYNC_PENDING_EVENTS` — are scoped OUT of the swallow. `processStripeEvent()` rethrows on failure so Stripe retries; async settlement must not be lost.
+2. `processStripeEventRefundFailed()` rethrows for the same reason: answering 200 after failing to write a refund correction stops Stripe redelivering it, and the payment keeps claiming a refund that never happened.
+3. **The one exception that answers 200 on purpose** — a PaymentIntent carrying no `ct_payment_id` is skipped with a warning and a 200. It looks like the violation this entry describes and is not one: no write was attempted, and no retry can ever succeed because the metadata will never appear on an intent this connector did not create. Answering 5xx there buys three days of pointless retries and risks the endpoint being disabled. See `business-rules/webhook-handling.md` Rule 8 before "fixing" it.
 
 ---
 
@@ -58,12 +63,13 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 ---
 
-## KI-007: Idempotency keys are `crypto.randomUUID()` on PI create; absent on capture/cancel/refund
+## KI-007: Idempotency keys are `crypto.randomUUID()` on PI create/update; absent on capture/cancel
 
-**Problem:** `paymentIntents.create()` uses `crypto.randomUUID()` as idempotency key — a different value is generated each call, so retries create duplicate PIs. `paymentIntents.capture()`, `paymentIntents.cancel()`, and `refunds.create()` carry no idempotency key — retries after network timeouts may double-capture, double-cancel, or double-refund.
-**Root cause:** `processor/src/services/stripe-payment.service.ts:554` (create), `623` (update), `212` (capture), `251` (cancel), `304` (refund) — no stable idempotency keys derived from CT payment ID. (Line numbers corrected 2026-07-28 — prior refresh pointed to stale locations from before the `STRIPE_PAYMENT_BEHAVIOR_RULES` and tax-calculation additions shifted the file.)
+**Problem:** `paymentIntents.create()` and `paymentIntents.update()` use `crypto.randomUUID()` as idempotency key — a different value is generated each call, so a retry is treated as a new request and creates a duplicate PaymentIntent. `paymentIntents.capture()` and `paymentIntents.cancel()` carry no idempotency key at all — retries after network timeouts may double-capture or double-cancel.
+**Root cause:** `processor/src/services/stripe-payment.service.ts` — no stable idempotency keys derived from CT payment ID at four call sites, named by their enclosing method rather than by line: `createPaymentIntentStripe()` (the `paymentIntents.create` call), `updatePaymentIntentMetadata()` (the `paymentIntents.update` call), `capturePayment()` and `cancelPayment()`. Line numbers are deliberately omitted — they were "corrected" on 2026-07-28 and all five had rotted again by 2026-08-13, so citing methods is the only reference that survives a refactor.
 **Rule:** Every Stripe write must carry a key derived from a stable CT identifier (CT payment ID + operation type suffix). See hub `known-issues.md` Issue 5.
 **Implementation note:** Workaround: disable HTTP retries at the infrastructure level on outbound Stripe calls.
+**Narrowed 2026-08-13.** `refunds.create()` was removed from this issue: it carries a stable entity-derived key, `refund-{ctPaymentId}-{amount}`. See `business-rules/refunds-reversals.md` Rule 5 — "has a key" is not the same claim as "is idempotent", and that section states precisely what the refund key does and does not guarantee. `create` and `update` remain listed above and are correct as written: they still use `crypto.randomUUID()`.
 
 ---
 
@@ -142,12 +148,28 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 ---
 
-## KI-017: `payment_intent.requires_action` is a deliberate no-op (no CT transaction)
+## KI-017: `payment_intent.requires_action` is method-dependent — a bank transfer writes a Pending authorization, card 3DS writes nothing
 
-**Problem:** `payment_intent.requires_action` is subscribed and delivered by Stripe. The converter maps it to an explicit no-op (`return []`) — no CT transaction is written. 3DS/authentication is handled client-side by Stripe.js, so no server-side action is taken.
-**Root cause / mechanism:** `processor/src/services/converters/stripeEventConverter.ts` — `case PAYMENT_INTENT__REQUIRED_ACTION: return []`. (Previously this had no case, threw `Unsupported event`, and was swallowed by KI-001; it is now an intentional no-op that no longer relies on the swallow.)
-**Rule:** Every registered webhook event must have a defined behavior. requires_action's defined behavior is "no-op by design".
-**Implementation note:** The no-op still means an async 3DS failure that only surfaced via webhook would not update CT — an edge case, since 3DS resolves client-side in the current flow.
+> **Rewritten 2026-08-13 (SB3-207).** This entry previously read "`requires_action` is a deliberate no-op (no CT transaction)". That statement is now false for one payment method and still true for the rest, which is precisely why it needs an entry rather than a deletion.
+
+**Problem:** one Stripe event type, two behaviours. `payment_intent.requires_action` is emitted by card 3DS (`next_action.use_stripe_sdk`), Boleto (`boleto_display_details`), redirect-based methods (`redirect_to_url`) **and** bank transfers (`display_bank_transfer_instructions`). Only the last writes a CT transaction — an `Authorization/Pending` for `pi.amount`. All others keep a log-only path on that axis.
+
+> **Amended 2026-08-18 (SB3-207 task 028): "produce nothing" is no longer accurate, and the correction matters.** The sentence above used to end *"All others keep a log-only path and produce nothing."* Since ADR-009 there are **two** axes, and only the transaction axis is method-dependent:
+>
+> | | card 3DS / Boleto / redirect | bank transfer |
+> | --- | --- | --- |
+> | `Payment.transactions[]` | nothing (log-only) | `Authorization/Pending` |
+> | `Order.paymentState` | **`Pending`** | **`Pending`** |
+>
+> So a 3DS `requires_action` *does* now write to commercetools — just to the order, not to the payment. The gate `isBankTransferNextAction()` governs the transaction axis only, and `reflectOrderPaymentStateBestEffort()` is called **above** it in the route on purpose. Anyone reading this entry as licence to widen the predicate so 3DS "gets its order state" would reintroduce the exact regression the predicate exists to prevent. See `business-rules/order-payment-state.md` Rule 3.
+
+**Root cause / mechanism:** the discrimination is at the route, `processor/src/routes/stripe-payment.route.ts`, via `isBankTransferNextAction()` in `processor/src/utils.ts`. The converter's `case PAYMENT_INTENT__REQUIRED_ACTION` is unconditional and is only ever reached for bank transfers.
+
+**Rule:** every registered webhook event must have a defined behaviour. This one's is "Pending authorization for bank transfer, log-only for every other `next_action` variant". Do not restate it as unconditional in either direction.
+
+**Implementation note — the failure mode to understand before touching the predicate.** Widening it writes an `Authorization/Pending` on every 3DS card payment; narrowing it to nothing kills the bank transfer rail with a green suite. Both directions are held by release-gate tests, and the second only because a mirror assertion exists — a gate written purely in the negative cannot tell "correctly rejects 3DS" from "rejects everything".
+
+**Still true from the original entry:** an async 3DS failure that surfaced only via webhook would not update CT. That remains an edge case, since 3DS resolves client-side in the current flow.
 
 ---
 

@@ -30,6 +30,9 @@ For questions about the Integration as a whole (failure modes, connector selecti
 | How does multi-capture work? | `business-rules/multi-operations.md` |
 | How does customer session / saved methods work? | `business-rules/customer-session.md` |
 | How does the payment lifecycle map to CT transactions? | `business-rules/payment-lifecycle.md` |
+| Who marks the **order** as paid, and when? | `business-rules/order-payment-state.md` |
+| Which Stripe event becomes which CT state, per payment method? | `business-rules/order-payment-state.md` |
+| Why is my order stuck with no `paymentState`? | `business-rules/order-payment-state.md` Rule 1 |
 
 ### "What happens when X fails?"
 
@@ -46,6 +49,10 @@ For questions about the Integration as a whole (failure modes, connector selecti
 | --- | --- |
 | Rules for refunds | `business-rules/refunds-reversals.md` |
 | Rules for webhooks | `business-rules/webhook-handling.md` |
+| Rules for the **order** payment state | `business-rules/order-payment-state.md` |
+| What gets stripped from a persisted event, and why | `business-rules/webhook-handling.md` Rule 9 |
+| Why does the bank transfer tab never appear? | `failure-modes.md` + `business-rules/payment-behavior-rules.md` |
+| Which IBAN does a EUR shopper see? | `business-rules/payment-behavior-rules.md` (`euBankTransferCountry`) |
 | Rules for multi-capture | `business-rules/multi-operations.md` |
 | Universal Stripe + CT rules | `../../context/business-rules/stripe-ct-shared.md` |
 | Universal refund rules | `../../context/business-rules/refunds.md` |

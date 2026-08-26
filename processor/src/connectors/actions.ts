@@ -67,10 +67,22 @@ export async function updateWebhookEndpoint(weId: string, weAppUrl: string): Pro
         'charge.updated',
         'payment_intent.succeeded',
         'charge.refunded',
+        // Terminal outcome of a refund. `charge.refunded` only reports that a Refund was CREATED,
+        // which on a delayed rail is not the same as succeeded — a bank transfer refund is created
+        // `pending` and resolves minutes to days later. Without these two the connector recorded
+        // every refund as successful at creation and could never correct one that failed.
+        'refund.updated',
+        'refund.failed',
         'payment_intent.canceled',
         'payment_intent.payment_failed',
         'payment_intent.requires_action',
         'payment_intent.processing',
+        // A bank transfer funded in instalments. Writes no commercetools transaction; registered so
+        // the partial funding leaves an interface interaction behind as an audit trail.
+        'payment_intent.partially_funded',
+        // Observability only, and the only signal that money was withdrawn from the customer's cash
+        // balance after we credited the payment. Never routed to processStripeEvent.
+        'customer_cash_balance_transaction.created',
       ],
       url: weAppUrl,
     });

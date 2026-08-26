@@ -90,10 +90,20 @@ Runs `processor/src/connectors/post-deploy.ts`. Executed automatically by CT Con
    - `charge.succeeded`
    - `charge.updated`
    - `charge.refunded`
+   - `refund.updated`
+   - `refund.failed`
    - `payment_intent.succeeded`
    - `payment_intent.canceled`
    - `payment_intent.payment_failed`
    - `payment_intent.requires_action`
+   - `payment_intent.processing`
+   - `payment_intent.partially_funded`
+   - `customer_cash_balance_transaction.created`
+
+   > This list was stale in two generations before 2026-08-13: it was missing `payment_intent.processing`
+   > (added for async settlement, ADR-007) as well as the four bank-transfer and refund events. Verify it
+   > against `processor/src/connectors/actions.ts` — that array is the only source of truth, and an event
+   > handled in the route but absent there is never delivered by Stripe, which fails silently.
 3. **Create customer custom type** — creates or updates `payment-connector-stripe-customer-id` with field `stripeConnector_stripeCustomerId`.
 
 > If `STRIPE_WEBHOOK_ID` is empty, step 2 is skipped with a warning. The webhook URL must be configured manually in the Stripe Dashboard.

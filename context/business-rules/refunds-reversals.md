@@ -50,7 +50,9 @@ Note: `Pending` state is included in the "already reverted" check — a refund o
 
 **Implementation:** `processor/src/services/stripe-payment.service.ts` → `refundPayment()` returns `RECEIVED`; the webhook path uses `processStripeEventRefunded()` (multi-ops) or `processStripeEvent()` (default), which delegate to `stripeEventConverter.populateTransactions()` (`charge.refunded` → `REFUND: SUCCESS` + `CHARGE_BACK: SUCCESS`).
 
-**What breaks if violated:** CT shows a successful refund that Stripe later fails, with no mechanism to correct it.
+**What breaks if violated:** CT shows a successful refund that Stripe later fails.
+
+**Correction available since 2026-08-13 (SB3-207):** this line used to end "…with no mechanism to correct it". There is one now — `refund.failed` / `refund.updated` write `Refund/Failure`. Read Rule 6 before relying on it: the correction is one-directional, it depends on a metadata stamp a Dashboard-issued refund does not carry, and the optimism this rule describes is otherwise unchanged.
 
 ---
 
@@ -68,20 +70,61 @@ Note: `Pending` state is included in the "already reverted" check — a refund o
 
 ---
 
-## Rule 5: Idempotency keys — known gap
+## Rule 5: Idempotency keys — partially closed
 
 **What:** Idempotency keys are not consistently applied across all Stripe write operations. Current state:
 
+- `refunds.create()` — **has a stable key**: `refund-{ctPaymentId}-{amount}`. Read "What the refund key does and does not do" below before treating refunds as idempotent.
 - `paymentIntents.create()` — uses `crypto.randomUUID()` per call (non-deterministic; a retry generates a different key and Stripe treats it as a new request)
 - `paymentIntents.update()` (metadata patch after PI creation) — uses a separate `crypto.randomUUID()`; same non-deterministic problem
 - `paymentIntents.capture()` — no idempotency key
 - `paymentIntents.cancel()` — no idempotency key
-- `refunds.create()` — no idempotency key
 
 **Why this matters:** Network failures can cause the same request to arrive at Stripe twice. Without a stable idempotency key, Stripe processes it as a new request — risking double-charge or double-refund.
 
-**Intended design:** Every Stripe mutating call should carry an idempotency key derived from a stable identifier (CT payment ID + operation type). The current implementation does not meet this standard.
+### What the refund key does and does not do
 
-**What breaks:** On network timeout and retry, `paymentIntents.create` creates a duplicate PI (and a duplicate CT Payment if the first response was lost). Capture, cancel, and refund retries execute the operation twice.
+Do not read "it has a key now" as "refunds are solved".
 
-**Status:** Known gap — tracked for remediation. Do not document these operations as idempotent until keys are implemented.
+**It does:** dedupe any repeat of the same refund — client retry, proxy replay, redelivery — for Stripe's full 24-hour key window. This is the protection that matters: before it, a retried `refundPayment` issued a second real refund.
+
+**It deliberately has no sequence component,** and this is the part that is easy to get wrong on a second reading. A key of the form `refund-{id}-{amount}-{sequence}`, counting refunds already recorded, looks safer and is not: **any sequence derived from observed state increments once the first refund succeeds, so a retry can never reproduce the original key.** The response is lost, `charge.refunded` has meanwhile written the transaction, the retry computes `sequence + 1`, and a second real refund goes out — the exact failure the key exists to prevent. Counting from Stripe with `refunds.list` instead fails identically, because what moved is the observation, not where it is read from.
+
+**The cost of that choice:** two *legitimate* partial refunds of the same amount inside 24 hours collapse into one. Stripe replays the first refund rather than creating a second. The connector detects this — a collapsed create returns the *same* refund id — logs an error and returns `REJECTED` with that id as `pspReference`, so the caller can reconcile instead of refunding by hand. Detection has two gaps, both failing safe (never a false rejection): it only arms once `charge.refunded` has been processed, and it cannot fire at all with `STRIPE_ENABLE_MULTI_OPERATIONS` disabled, where the handler records the PaymentIntent id rather than the refund id.
+
+**The key is only partly entity-derived.** `ctPaymentId` is the platform-entity component. `amount` is a *discriminator*: it is caller-supplied, and the request schema validates neither positivity nor a ceiling against the captured amount, so varying it by one cent produces a fresh key and bypasses the dedupe.
+
+**Intended design:** Every Stripe mutating call should carry an idempotency key derived from a stable identifier (CT payment ID + operation type). `refunds.create` now meets this; the other four call sites do not.
+
+**What breaks:** On network timeout and retry, `paymentIntents.create` creates a duplicate PI (and a duplicate CT Payment if the first response was lost). Capture and cancel retries execute the operation twice.
+
+**Status:** Partially closed. `refunds.create` is done. `capture`, `cancel`, and the two `crypto.randomUUID()` sites remain — do not document *those* operations as idempotent until keys are implemented.
+
+---
+
+## Rule 6: A refund is booked Success at creation and corrected only if it fails
+
+> Added 2026-08-13 (SB3-207).
+
+**What:** `charge.refunded` writes `Refund/Success` when Stripe reports that a Refund was **created**. `refund.updated` and `refund.failed` act **only** when the refund's `status` is `failed` or `canceled`, writing `Refund/Failure` via `processStripeEventRefundFailed()`. A refund that succeeds produces no second write.
+
+**Why the asymmetry is deliberate and not half-finished work.** `charge.refunded` already owns the success side, so acting on a succeeded `refund.updated` too would book the same refund twice — the same duplication class this connector has been burned by before. Failure, by contrast, was written **nowhere**: a refund Stripe later rejected stayed recorded in commercetools as successful forever, and the merchant saw money returned that never left.
+
+**Why this matters far more on a delayed rail.** On cards, created and succeeded are effectively simultaneous. On a bank transfer the refund is created `pending` and resolves minutes to days later, so the `Refund/Success` written at creation is optimistic for that entire window. Measured 2026-08-05 on both rails:
+
+| Rail | Sequence |
+|---|---|
+| card | `refund.created(succeeded)` → `charge.refunded` → `refund.updated(succeeded)` |
+| bank transfer | `refund.created(PENDING)` → `charge.refunded` → `refund.updated(succeeded)` |
+
+**Invariant:** never write a `Refund` transaction from a refund event whose status is not `failed` or `canceled`. Never let a failed-refund write be swallowed into a 200 — `processStripeEventRefundFailed()` rethrows, unlike `processStripeEventRefunded()`.
+
+**The stopgap, stated as a stopgap.** `refund.updated` fires with the terminal status on **every** rail and is therefore the natural single owner of the `Refund` transaction. `charge.refunded` cannot be, because its payload omits the refunds sublist entirely and so cannot distinguish pending from succeeded. Moving ownership is the real end state; it was not taken here because it changes card behaviour too and is a decision of its own.
+
+**Correlation depends on a metadata stamp, and it has a hole.** `processStripeEventRefundFailed()` reads `ct_payment_id` from `refund.metadata`, stamped by this connector at `refunds.create`. A Stripe Refund does **not** inherit the PaymentIntent's metadata, and a Refund is neither PaymentIntent- nor Charge-shaped, so `getCtPaymentId()` cannot help. **A refund issued from the Stripe Dashboard carries no stamp and is therefore uncorrectable** — logged and skipped, never guessed.
+
+**Implementation:** `stripe-payment.route.ts` (the `REFUND__UPDATED`/`REFUND__FAILED` case and its status check); `stripe-payment.service.ts` → `processStripeEventRefundFailed()`; the `metadata` argument at the `refunds.create` call site.
+
+**Closure criterion:** `grep -n "refund.status !== 'failed'" processor/src/routes/stripe-payment.route.ts` — the status gate exists.
+
+**What breaks if violated:** acting on a succeeded refund double-books it. Swallowing a failed-refund write leaves the payment permanently claiming a refund that never happened.
