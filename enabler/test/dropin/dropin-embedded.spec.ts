@@ -145,3 +145,222 @@ describe('DropinComponents.submit — error path reaches onError', () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Guards the requires_action branching in confirmStripePayment (SB3-207 task 026).
+ *
+ * `payment_intent.requires_action` arrives for card 3DS, Boleto, redirect methods AND bank
+ * transfers, and the two groups must go opposite ways. For 3DS/Boleto the buyer completed nothing,
+ * so the enabler must keep throwing and the host must treat it as an error. For a bank transfer the
+ * buyer has done everything they can do inside checkout — Stripe.js already showed them the
+ * instructions — so throwing put them on a "Payment Failed" screen, measured 2026-08-13 against the
+ * commercetools overlay. Nobody wires money after being told the payment failed.
+ */
+describe('DropinComponents.confirmStripePayment — requires_action branching (SB3-207 task 026)', () => {
+  const CONFIRM_ARGS = {
+    merchantReturnUrl: 'https://shop.example.com/return',
+    cartId: 'cart-1',
+    clientSecret: 'pi_test_secret',
+    paymentReference: 'pay-ref-1',
+  };
+
+  const buildWithIntent = (paymentIntent: unknown, confirmResult?: unknown, retrieved?: unknown) => {
+    const baseOptions = {
+      sdk: {
+        confirmPayment: jest.fn().mockResolvedValue(confirmResult ?? { paymentIntent }),
+        retrievePaymentIntent: jest.fn().mockResolvedValue({ paymentIntent: retrieved ?? paymentIntent }),
+      },
+      environment: 'test',
+      processorUrl: 'http://localhost:8080',
+      sessionId: 'test-session',
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      paymentElement: {} as unknown as StripePaymentElement,
+      elements: {} as unknown as StripeElements,
+    } as unknown as BaseOptions;
+    const component = new DropinComponents({ baseOptions, dropinOptions: {} as DropinOptions });
+    const call = (): Promise<{ paymentIntent: unknown }> =>
+      (
+        component as unknown as {
+          confirmStripePayment: (p: typeof CONFIRM_ARGS) => Promise<{ paymentIntent: unknown }>;
+        }
+      ).confirmStripePayment(CONFIRM_ARGS);
+    return { baseOptions, call };
+  };
+
+  const bankTransferIntent = {
+    id: 'pi_bt_1',
+    status: 'requires_action',
+    next_action: {
+      type: 'display_bank_transfer_instructions',
+      display_bank_transfer_instructions: { reference: 'BT-REF-1', type: 'eu_bank_transfer' },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // ***** MIRROR ASSERTION *****
+  // The release gates below pass just as happily if NOTHING is let through — which is the state
+  // that put the buyer on a failure screen. This is the half that fails if the predicate is broken
+  // in the other direction.
+  test('MIRROR: a bank transfer requires_action does NOT throw and returns the intent', async () => {
+    const { call } = buildWithIntent(bankTransferIntent);
+
+    await expect(call()).resolves.toEqual({ paymentIntent: bankTransferIntent });
+  });
+
+  // ***** RELEASE GATE *****
+  test('RELEASE GATE: card 3DS requires_action still throws with type requires_action', async () => {
+    const { call } = buildWithIntent({
+      id: 'pi_3ds_1',
+      status: 'requires_action',
+      next_action: { type: 'use_stripe_sdk', use_stripe_sdk: { type: 'three_d_secure_redirect' } },
+    });
+
+    await expect(call()).rejects.toMatchObject({ type: 'requires_action' });
+  });
+
+  // ***** RELEASE GATE *****
+  test('RELEASE GATE: Boleto requires_action still throws with type requires_action', async () => {
+    const { call } = buildWithIntent({
+      id: 'pi_boleto_1',
+      status: 'requires_action',
+      next_action: { type: 'boleto_display_details', boleto_display_details: { number: '00000' } },
+    });
+
+    await expect(call()).rejects.toMatchObject({ type: 'requires_action' });
+  });
+
+  // Fails CLOSED: discriminator matches but the payload Stripe promises alongside it is absent.
+  test('the bank transfer type without the instructions object still throws', async () => {
+    const { call } = buildWithIntent({
+      id: 'pi_x',
+      status: 'requires_action',
+      next_action: { type: 'display_bank_transfer_instructions' },
+    });
+
+    await expect(call()).rejects.toMatchObject({ type: 'requires_action' });
+  });
+
+  test('a succeeded intent is unaffected — returns without throwing', async () => {
+    const { call } = buildWithIntent({ id: 'pi_ok', status: 'succeeded', next_action: null });
+
+    await expect(call()).resolves.toMatchObject({ paymentIntent: { status: 'succeeded' } });
+  });
+});
+
+/**
+ * The error path of confirmPayment — SB3-207 task 026, reopened after the 2026-08-17 end-to-end run.
+ *
+ * The first version of the fix guarded `paymentIntent.status === 'requires_action'`, and the suite
+ * passed, and it did not work. Stripe.js reports a dismissed instructions modal as an ERROR, so the
+ * throw fires before that guard is ever reached. The tests could not have caught it: their mock
+ * resolved confirmPayment with `{ paymentIntent }` and no error — encoding the very assumption under
+ * test. A mock cannot refute its own premise.
+ *
+ * These tests therefore drive the ERROR shape Stripe actually returns.
+ */
+describe('DropinComponents.confirmStripePayment — the error path (SB3-207 task 026, reopened)', () => {
+  const CONFIRM_ARGS = {
+    merchantReturnUrl: 'https://shop.example.com/return',
+    cartId: 'cart-1',
+    clientSecret: 'pi_test_secret',
+    paymentReference: 'pay-ref-1',
+  };
+
+  const awaitingBankTransfer = {
+    id: 'pi_bt_1',
+    status: 'requires_action',
+    next_action: {
+      type: 'display_bank_transfer_instructions',
+      display_bank_transfer_instructions: { reference: 'BT-REF-1', type: 'eu_bank_transfer' },
+    },
+  };
+
+  const build = (confirmResult: unknown, retrieved: unknown) => {
+    const baseOptions = {
+      sdk: {
+        confirmPayment: jest.fn().mockResolvedValue(confirmResult),
+        retrievePaymentIntent: jest.fn().mockResolvedValue({ paymentIntent: retrieved }),
+      },
+      environment: 'test',
+      processorUrl: 'http://localhost:8080',
+      sessionId: 'test-session',
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      paymentElement: {} as unknown as StripePaymentElement,
+      elements: {} as unknown as StripeElements,
+    } as unknown as BaseOptions;
+    const component = new DropinComponents({ baseOptions, dropinOptions: {} as DropinOptions });
+    const call = (): Promise<{ paymentIntent: unknown }> =>
+      (
+        component as unknown as {
+          confirmStripePayment: (p: typeof CONFIRM_ARGS) => Promise<{ paymentIntent: unknown }>;
+        }
+      ).confirmStripePayment(CONFIRM_ARGS);
+    return { baseOptions, call };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // ***** THE REGRESSION THIS TASK EXISTS FOR *****
+  // This is the exact shape measured in production: confirmPayment rejects with an error while the
+  // PaymentIntent is alive and awaiting a wire.
+  test('a dismissed bank transfer modal is rescued instead of thrown', async () => {
+    const { call } = build({ error: { type: 'invalid_request_error', message: 'cancelled' } }, awaitingBankTransfer);
+
+    await expect(call()).resolves.toEqual({ paymentIntent: awaitingBankTransfer });
+  });
+
+  // ***** RELEASE GATE *****
+  // A real decline leaves the intent in requires_payment_method. It must still throw — rescuing it
+  // would tell the buyer their payment is pending when it was declined.
+  test('RELEASE GATE: a genuine card decline still throws', async () => {
+    const declined = { id: 'pi_card_1', status: 'requires_payment_method', next_action: null };
+    const { call } = build({ error: { type: 'card_error', code: 'card_declined' } }, declined);
+
+    await expect(call()).rejects.toMatchObject({ code: 'card_declined' });
+  });
+
+  // ***** RELEASE GATE *****
+  test('RELEASE GATE: an error on a 3DS intent still throws', async () => {
+    const threeDs = {
+      id: 'pi_3ds_1',
+      status: 'requires_action',
+      next_action: { type: 'use_stripe_sdk', use_stripe_sdk: {} },
+    };
+    const { call } = build({ error: { type: 'card_error', code: 'authentication_failure' } }, threeDs);
+
+    await expect(call()).rejects.toMatchObject({ code: 'authentication_failure' });
+  });
+
+  // The rescue must never mask the original error with one about itself.
+  test('a failing retrieve re-throws the ORIGINAL error', async () => {
+    const baseOptions = {
+      sdk: {
+        confirmPayment: jest.fn().mockResolvedValue({ error: { type: 'api_error', message: 'original' } }),
+        retrievePaymentIntent: jest.fn().mockRejectedValue(new Error('retrieve blew up')),
+      },
+      environment: 'test',
+      processorUrl: 'http://localhost:8080',
+      sessionId: 'test-session',
+      onComplete: jest.fn(),
+      onError: jest.fn(),
+      paymentElement: {} as unknown as StripePaymentElement,
+      elements: {} as unknown as StripeElements,
+    } as unknown as BaseOptions;
+    const component = new DropinComponents({ baseOptions, dropinOptions: {} as DropinOptions });
+
+    await expect(
+      (
+        component as unknown as {
+          confirmStripePayment: (p: typeof CONFIRM_ARGS) => Promise<unknown>;
+        }
+      ).confirmStripePayment(CONFIRM_ARGS),
+    ).rejects.toMatchObject({ message: 'original' });
+  });
+});

@@ -207,7 +207,9 @@ The response will provide the necessary information to populate the payment elem
 
 Two related environment variables let the connector's payment behavior vary per cart instead of being fixed globally:
 
-- **`STRIPE_PAYMENT_BEHAVIOR_RULES`**: a JSON map keyed by ISO country code (`cart.country`, falling back to billing/shipping address country) or commercetools store key. Each matched rule can override `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` for that cart only. Carts that match no key use the flat env vars (`STRIPE_CAPTURE_METHOD`, `STRIPE_PAYMENT_FLOW`, `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`, `STRIPE_COLLECT_BILLING_ADDRESS`) unchanged. Resolution happens in `resolvePaymentBehavior()` (`src/services/payment-behavior-resolver.ts`), called from both `initializeCartPayment()` and `createPaymentIntentStripe()`.
+- **`STRIPE_PAYMENT_BEHAVIOR_RULES`**: a JSON map keyed by ISO country code or commercetools store key. Each matched rule can override `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress`, and `euBankTransferCountry` for that cart only. Carts that match no key use the flat env vars (`STRIPE_CAPTURE_METHOD`, `STRIPE_PAYMENT_FLOW`, `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`, `STRIPE_COLLECT_BILLING_ADDRESS`) unchanged. Resolution happens in `resolvePaymentBehaviorWithSteeringCheck()` (`src/services/payment-behavior-resolver.ts`), called from both `initializeCartPayment()` and `createPaymentIntentStripe()`.
+
+  **The discriminator is `cart.country`, falling back to `cart.store.key` — and nothing else.** Both are merchant-controlled. `billingAddress.country` and `shippingAddress.country` are **not** used to select a rule: they are shopper-supplied, and inside this connector the express enabler writes the shopper's own shipping address onto the cart, so honouring them would let a shopper steer their own capture method or IBAN. A shopper-supplied country that *would* have matched a rule is reported as a divergence signal (`steeredFields`) and otherwise ignored, so the cart falls through to its store key or to the flat env vars. See [`business-rules/payment-behavior-rules.md`](../context/business-rules/payment-behavior-rules.md) Rule 1 and Rule 4.
 - **`STRIPE_PAYMENT_FLOW`** (flat default) / **`flowType`** (per-cart override): selects between `deferred` (PaymentIntent created at submit time, compatible with all payment methods) and `pi_first` (PaymentIntent created eagerly so Stripe Elements can be initialized with `clientSecret` instead of `{ mode, amount, currency }`). `pi_first` is required for payment methods — e.g. **Blik** — that must bind to a PaymentIntent before the payment element renders, and suppresses `setupFutureUsage` on both the config-element response and the PaymentIntent.
 
 See [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md) for the full rationale, the TOCTOU window `pi_first` closes, the orphan-PaymentIntent tradeoff, and the storefront contract for handling `requires_action`/Blik authorization.
@@ -326,7 +328,10 @@ The following webhooks currently supported and transformed to different payment 
 - **payment_intent.canceled**: Modified the payment transaction Authorization to Failure and create a payment transaction CancelAuthorization: Success 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success. 
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
-- **payment_intent.requires_action**: Logs the information in the connector app inside the Processor logs.
+- **payment_intent.requires_action**: Method-dependent. For a **bank transfer** (`next_action.type = display_bank_transfer_instructions`) it creates an Authorization: Pending transaction — see [Bank Transfer](#bank-transfer-customer_balance). For every other method that emits this event (card 3DS, Boleto, redirect-based) it only logs, inside the Processor logs, and writes no transaction. The gate is `isBankTransferNextAction()` at the route.
+- **payment_intent.partially_funded**: A bank transfer funded in instalments. Writes no transaction; the interface interaction is persisted as an audit trail.
+- **refund.updated** / **refund.failed**: Create a Refund: Failure transaction, and only when the refund's status is `failed` or `canceled`. Successes are ignored — `charge.refunded` already owns that side. See [`business-rules/refunds-reversals.md`](../context/business-rules/refunds-reversals.md) Rule 6.
+- **customer_cash_balance_transaction.created**: Observability only, never converted. `funding_reversed` and `adjusted_for_overdraft` log at error level — the only signal that money left the customer's cash balance after a payment was credited.
 - **charge.refunded**: Creates a payment transaction Refund to Success, and a Chargeback to Success. When `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled, the system uses a dedicated `processStripeEventRefunded` method that retrieves the latest refund information from Stripe API and properly updates the payment with the correct refund details. When disabled, uses basic refund tracking. More information in [Enhanced support for multiple refunded events](#enhanced-refund-processing)
 - **charge.succeeded**: If the charge is not captured, create the payment transaction to Authorization:Success.
 - **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. **Note**: This webhook is only processed when `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled. This supports multicapture scenarios where multiple partial captures are performed on the same payment intent.
@@ -595,11 +600,17 @@ will not render if either of these is set:
 | Stripe event | commercetools transaction |
 | --- | --- |
 | `payment_intent.processing` | `Authorization` / `Pending` (amount read from `data.amount`, since `amount_received` is still `0`) |
-| `payment_intent.succeeded` | `Authorization` / `Pending` → `Success`, then `Charge` / `Success`; **order is created here** |
+| `payment_intent.succeeded` | `Authorization` / `Pending` → `Success`, then `Charge` / `Success` |
 | `payment_intent.payment_failed` / `payment_intent.canceled` | `Authorization` / `Failure` (+ `CancelAuthorization` / `Success` on cancel) |
-| `payment_intent.requires_action` | no-op (transient wallet-redirect state; the terminal event resolves it) |
+| `payment_intent.requires_action` | no-op **on this rail** — crypto is redirect-based (`next_action.type = redirect_to_url`), a transient state the terminal event resolves. Not a global rule: a bank transfer's `requires_action` carries `display_bank_transfer_instructions` and *does* write `Authorization` / `Pending`. See [Bank Transfer](#bank-transfer-customer_balance) |
 
-The order is **only** created on `payment_intent.succeeded` — never during `processing`.
+> **Corrected 2026-08-24.** This section previously said the order is created on
+> `payment_intent.succeeded`. **This connector never creates orders.** commercetools Checkout owns the
+> cart and creates the order itself; the code that used to call `createOrderFromCart` was removed in
+> `0ab8d2c` precisely because it raced commercetools Checkout into `409 ConcurrentModification`. The
+> SDK's order service is read-only — it exposes `getOrderByPaymentId()` and no write. What the
+> connector does is **reflect** the outcome onto the order commercetools already created; see
+> [Order payment state](#order-payment-state).
 
 ### Synchronous confirm gate (`/confirmPayments/:id`)
 
@@ -642,3 +653,122 @@ prevents a duplicate `Pending` on redelivery.
 - **Testnet:** Ethereum Sepolia + a wallet (e.g. MetaMask) with test USDC (Circle faucet) and gas.
   Testnet settles in seconds; on mainnet the `processing` window can last minutes.
 
+
+## Bank Transfer (`customer_balance`)
+
+EU bank transfer is an **asynchronous, non-redirect** payment method: Stripe.js shows the shopper a
+modal with IBAN, BIC and a reference, the shopper leaves to wire the money from their bank, and the
+payment settles **days later**. Unlike crypto it never passes through `processing` — it sits in
+`requires_action` with `next_action.type = display_bank_transfer_instructions` until funded.
+
+The connector models that window as an `Authorization` / `Pending` transaction, and this is the one
+`requires_action` that books a transaction: card 3DS, Boleto and redirect-based methods reach the same
+status having completed nothing, so for them it stays a no-op. The predicate is
+`isBankTransferNextAction()` and it fails **closed** — it requires both
+`next_action.type === 'display_bank_transfer_instructions'` and the presence of
+`display_bank_transfer_instructions`.
+
+### Why bank transfer may not appear in the Payment Element
+
+Two conditions, both imposed by Stripe, and both easy to lose hours to because Stripe simply omits
+`customer_balance` from `payment_method_types` rather than reporting an error:
+
+- **A customer must be attached to the PaymentIntent.** Verified 2026-08-21 with three otherwise
+  identical PaymentIntents: without a customer, `customer_balance` is absent from
+  `payment_method_types`; with one, it is present.
+- **`setup_future_usage` must be absent.** With `off_session`, Stripe drops `customer_balance` (and
+  `bancontact`, `eps`, `mb_way`) because the method cannot be saved. `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`
+  has no default, so a one-time cart is normally fine — but **subscription carts set it**, because a
+  subscription needs the mandate. Those markets need `flowType: pi_first` in
+  `STRIPE_PAYMENT_BEHAVIOR_RULES`, which strips `setup_future_usage` from the PaymentIntent.
+
+`STRIPE_CAPTURE_METHOD` must also be `automatic`; manual capture filters `customer_balance` out, the
+same way it filters crypto.
+
+`euBankTransferCountry` in a behaviour rule does **not** enable the rail — it only chooses which of
+your accounts the EUR shopper is told to wire to. Omitting it yields an Irish IBAN, which works across
+SEPA.
+
+### Payment lifecycle
+
+| Stripe event | commercetools transaction |
+| --- | --- |
+| `payment_intent.requires_action` (bank transfer only) | `Authorization` / `Pending` |
+| `payment_intent.partially_funded` | **no-op** — a partial deposit adds no transaction |
+| `payment_intent.succeeded` | `Authorization` / `Pending` → `Success`, then `Charge` / `Success` |
+| `payment_intent.canceled` (instructions expired) | `Authorization` / `Failure` |
+
+`partially_funded` being a no-op is deliberate rather than an omission: the order already says
+`Pending`, and a partial deposit changes nothing a merchant can act on. Verified end to end — a
+partial deposit lowered `next_action.amount_remaining` and produced no second transaction.
+
+**One silent terminal state to be aware of:** if the shopper never wires the money and the
+instructions expire without Stripe emitting `canceled`, no further event arrives and the order stays
+`Pending` indefinitely. That is the rail's behaviour, not a connector defect, but nothing will correct
+it on its own.
+
+### Dismissing the instruction sheet is not a failure
+
+Closing the modal surfaces as an **error** from `confirmPayment`, not as a resolved PaymentIntent. The
+enabler re-reads the PaymentIntent on that error path and continues **only** when it is a bank transfer
+awaiting funds; every other `requires_action` still throws. Note the shopper may still land on a
+non-success screen: `PaymentResult` cannot express "pending" — see `context/known-issues.md` KI-027.
+
+## Order payment state
+
+commercetools **never derives** `Order.paymentState` from the linked Payment's transactions, and
+commercetools Checkout creates the order **without** one. Orders therefore stayed stateless, and
+operations could not distinguish a paid order from an abandoned one.
+
+Two writers fill it, on two different triggers.
+
+| Trigger | Writer | What it writes |
+| --- | --- | --- |
+| commercetools `OrderCreated` | `order-subscriber` app | the truth at order-creation time |
+| Stripe webhook event | this processor | terminal outcomes for orders it owns |
+
+### Why a separate application
+
+For a **card**, commercetools Checkout creates the order **after** the money settles — measured at
+333 ms, 701 ms, 877 ms and 1 160 ms after `Charge/Success` across four real runs. So
+`payment_intent.succeeded` reaches the webhook while no order exists; a terminal target gets one lookup
+attempt with no retry, the write is skipped, and **no later event ever arrives**. Adding retry does not
+fix it: the ownership rule correctly declines a card, and retrying would hold the Stripe webhook open
+~11 s on every card payment, since webhooks here are processed synchronously with no early ack.
+
+A bounded retry was tried first and measured **0/3** at lags of 0.88 s, 3.8 s and 13 s before the
+approach was changed.
+
+### What the subscriber writes
+
+| At the moment the order is created | → `paymentState` |
+| --- | --- |
+| any of our payments has a `Charge/Success` | `Paid` |
+| else, any has an `Authorization/Pending` | `Pending` |
+| else `Authorization/Success` with no charge (manual capture) | **nothing** |
+| else (`Initial`, failures, no transactions) | **nothing** |
+
+`Paid` outranks `Pending`, and for a retried checkout that precedence is load-bearing: an abandoned
+bank transfer leaves its `Authorization/Pending` on the order forever, so ranking the other way would
+freeze a subsequently-card-paid order as pending while the money sat in the account.
+
+Manual capture is left unwritten deliberately — `Paid` would be false and `Pending` misdescribes it,
+because nothing is awaited from the shopper; the merchant simply has not captured. `BalanceDue` is the
+commercetools state that fits and is out of this connector's scope.
+
+The subscriber **only ever writes onto an unset field** and never transitions, so it cannot overwrite a
+state another writer produced.
+
+### `Failed` is not reachable in checkout
+
+A declined authorization creates **no order**, so there is nothing to mark. The shopper reuses the same
+cart, pays again, and the order is created once on success — carrying both payments, the failed one and
+the settled one. `Failed` remains in the processor's event→state map but is not a state a checkout order
+reaches.
+
+### Requirements
+
+`manage_orders` on the commercetools client, for both the processor and the `order-subscriber`.
+
+Full rules: [`context/business-rules/order-payment-state.md`](../context/business-rules/order-payment-state.md)
+and [ADR-009](../context/decisions/adr-009-order-payment-state-reflection.md).

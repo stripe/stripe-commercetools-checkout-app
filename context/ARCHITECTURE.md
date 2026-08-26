@@ -4,7 +4,10 @@ Commercetools Connect connector that integrates Stripe Payment Element and Expre
 
 ## System Overview
 
-Two-tier architecture: a **processor** (Node.js backend) and an **enabler** (TypeScript frontend wrapper). They communicate via HTTP; the processor talks to both Stripe and CT APIs.
+Three deployed applications: a **processor** (Node.js backend), an **enabler** (TypeScript frontend
+wrapper), and an **order-subscriber** (CT event application). The enabler and processor communicate
+via HTTP; the processor talks to both Stripe and CT APIs. The order-subscriber has no HTTP contract
+with either sibling — it is triggered by a commercetools message and writes back to CT only.
 
 ```text
 Browser / Storefront
@@ -14,11 +17,20 @@ Browser / Storefront
         ▼
     Processor (Fastify)
         ├── Stripe API (Payment Intents, Customers, Refunds, Webhooks)
-        └── commercetools API (Payments, Carts, Customers, Custom Types)
+        └── commercetools API (Payments, Carts, Customers, Custom Types, Orders)
 
 Stripe (async)
   └── POST /stripe/webhooks → Processor → CT Payment updates
+                                        └── CT Order.paymentState (terminal outcomes)
+
+commercetools (async)
+  └── OrderCreated message → Order Subscriber → CT Order.paymentState
 ```
+
+> **Why the order-subscriber is a separate application and not a webhook branch.** For a card the
+> money settles 333–1160 ms *before* the order exists, so the webhook path has nothing to write to;
+> a bounded retry was measured at 0/3. The two writers are therefore on two different triggers by
+> necessity, not preference. See `decisions/adr-009-order-payment-state-reflection.md`.
 
 ## Components
 
@@ -26,6 +38,7 @@ Stripe (async)
 | --- | --- | --- |
 | `processor/` | Backend — all Stripe and CT API calls | `processor/src/main.ts` |
 | `enabler/` | Frontend — mounts Stripe Elements, orchestrates payment submission | `enabler/src/main.ts` |
+| `order-subscriber/` | CT event app — subscribes to `OrderCreated`, writes `Order.paymentState` | `order-subscriber/src/main.ts` |
 
 ### Processor internals
 
@@ -35,7 +48,9 @@ Stripe (async)
 | Routes | `src/routes/operation.route.ts` | CT Connect SDK endpoints (capture, cancel, refund, reverse) |
 | Service | `src/services/abstract-payment.service.ts` | Abstract base + `modifyPayment()` action dispatch |
 | Service | `src/services/stripe-payment.service.ts` | All Stripe business logic (PI, customer session, refunds, webhooks, multi-capture) |
-| Converter | `src/services/converters/stripeEventConverter.ts` | Maps Stripe events → CT transaction updates |
+| Converter | `src/services/converters/stripeEventConverter.ts` | Maps Stripe events → CT transaction updates; also redacts the `pspInteraction` payload before it is persisted |
+| Resolver | `src/services/payment-behavior-resolver.ts` | Resolves the per-cart `PaymentBehaviorRule` from `STRIPE_PAYMENT_BEHAVIOR_RULES`, and reports shopper-steering divergence |
+| Mapper | `src/mappers/bank-transfer-mapper.ts` | Builds `payment_method_options.customer_balance` for EUR bank transfers; detects configurations under which Stripe silently suppresses the rail |
 | CT helpers | `src/services/commerce-tools/customerClient.ts`, `customTypeClient.ts`, `customTypeHelper.ts`, `productTypeClient.ts` | CT API helpers used by service and connectors |
 | Client | `src/clients/stripe.client.ts` | Stripe SDK factory + error wrapping |
 | Config | `src/config/config.ts` | Environment variable access |
@@ -52,6 +67,23 @@ Stripe (async)
 | Implementation | `src/payment-enabler/payment-enabler-mock.ts` | SDK init, session setup, config fetch |
 | Drop-in | `src/dropin/dropin-embedded.ts` | Stripe Payment Element — submit flow |
 | Express | `src/express/dropin-express.ts` | Express Checkout Element — session and shipping callbacks |
+
+### Order Subscriber internals
+
+| Layer | Path | Purpose |
+| --- | --- | --- |
+| Controller | `src/controllers/order.controller.ts` | Handles the decoded `OrderCreated` message |
+| Route | `src/routes/order.route.ts` | Single endpoint the CT subscription delivers to (`/orderSubscriber`) |
+| Validator | `src/validators/message.validator.ts` | Validates the incoming CT message envelope |
+| Guard | `src/guard.ts` | Decides whether a state may be written, and which state wins |
+| CT client | `src/clients/ct.client.ts`, `src/clients/order.client.ts` | Reads the order's payments fresh, writes `paymentState` |
+| Connectors | `src/connectors/subscription.ts`, `post-deploy.ts`, `pre-undeploy.ts` | Creates and tears down the CT `OrderCreated` subscription |
+| Config | `src/config.ts` | Its own env access — this app declares its own configuration in `connect.yaml`, there is no `inheritAs` block |
+
+> The subscriber writes only onto an **unset** `paymentState`, and `Paid` outranks `Pending`. The
+> ranking is load-bearing on a retried checkout: an abandoned bank transfer leaves its pending
+> authorization on the order forever, so ranking the other way would freeze a subsequently-paid
+> order as pending. See `business-rules/order-payment-state.md`.
 
 #### Dropin types
 
@@ -158,9 +190,15 @@ Registered with `prefix: '/operations'` in `server/plugins/operation.plugin.ts:8
 | --- | --- |
 | Create payment | `ctCartService.getCart()`, `ctPaymentService.createPayment()`, `ctCartService.addPayment()` |
 | Confirm payment | `ctPaymentService.getPayment()`, `ctPaymentService.updatePayment()` |
-| Webhooks | `ctPaymentService.updatePayment()` |
+| Webhooks | `ctPaymentService.updatePayment()`; plus a best-effort `Order.paymentState` write for terminal outcomes |
 | Customer session | `paymentSDK.ctAPI.client.customers()`, `updateCustomerById()` |
 | Saved methods | `ctPaymentMethodService.getByTokenValue()`, `ctPaymentMethodService.save()` |
+| Order payment state (subscriber) | Reads the order and its payments fresh, then `setOrderPaymentState` — `order-subscriber/src/clients/order.client.ts` |
+
+> **This connector does not create orders.** commercetools Checkout owns the cart and creates the
+> order; the code that called `createOrderFromCart` was removed in `0ab8d2c` because it raced
+> Checkout into a 409 `ConcurrentModification`, and the SDK's order service is read-only. Orders are
+> only ever *updated* here, and only on `paymentState`.
 
 ## CT Data Model
 
@@ -212,7 +250,10 @@ The following events are registered on the Stripe webhook endpoint during `post-
 - `payment_intent.canceled`
 - `payment_intent.payment_failed`
 - `payment_intent.processing` (async settlement — creates/transitions an `AUTHORIZATION:PENDING`, deduped, finalized on `payment_intent.succeeded`; write failures rethrow so Stripe retries)
-- `payment_intent.requires_action` (converter maps it to a no-op — returns `[]`, no CT transaction; 3DS handled client-side)
+- `payment_intent.requires_action` — **method-dependent, and the only event in this list whose behaviour is.** Routed to `processStripeEvent` only when `isBankTransferNextAction()` holds (`next_action.type === 'display_bank_transfer_instructions'`, strict equality plus a presence check on the instructions object, failing closed), where it writes an `AUTHORIZATION:PENDING` for `pi.amount`. Card 3DS (`use_stripe_sdk`), Boleto (`boleto_display_details`) and redirect-based methods emit the identical event and stay log-only. Widening this predicate writes a pending authorization on every 3DS card payment — the most severe regression this area can cause. See `known-issues.md` KI-017.
+- `payment_intent.partially_funded` (a bank transfer arriving in instalments — writes **no** transaction; the interface interaction is persisted as an audit trail)
+- `refund.updated`, `refund.failed` (write `REFUND:FAILURE`, and only when the refund's status is `failed` or `canceled`; successes are ignored because `charge.refunded` already owns that side. Do not use the converter — they read `ct_payment_id` from the refund's own metadata)
+- `customer_cash_balance_transaction.created` (observability only — `convert()` rejects it explicitly; the event is customer-scoped and carries no `ct_payment_id`)
 
 ## Key Configuration
 
@@ -229,7 +270,7 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | `STRIPE_PAYMENT_FLOW` | No | `deferred` (default) or `pi_first` — see "Payment flow modes" above. Any other value falls back to `'deferred'` with a `console.warn`. |
 | `STRIPE_COLLECT_BILLING_ADDRESS` | No | `auto`, `never`, or `if_required`. Default: `auto`. |
 | `STRIPE_APPLE_PAY_WELL_KNOWN` | No | Raw string returned by `/applePayConfig` for Apple Pay domain association. |
-| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | `processor/src/config/config.ts` (parsed by `getPaymentBehaviorConfig()`) + `processor/src/services/stripe-payment.service.ts` (`resolvePaymentBehavior()`, `createPaymentIntentStripe()`). JSON map keyed by ISO country code or CT store key; overrides `captureMethod` and `flowType` (and `setupFutureUsage`/`collectBillingAddress`) per cart based on cart country or store. Malformed JSON aborts startup. |
+| `STRIPE_PAYMENT_BEHAVIOR_RULES` | No | `processor/src/config/config.ts` (parsed by `getPaymentBehaviorConfig()`) + `processor/src/services/payment-behavior-resolver.ts` (`resolvePaymentBehaviorWithSteeringCheck()`), called from `initializeCartPayment()` and `createPaymentIntentStripe()`. JSON map keyed by ISO country code or CT store key; overrides `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress` and `euBankTransferCountry` per cart. Matched on `cart.country` falling back to `cart.store.key` — both merchant-controlled; shopper-supplied billing/shipping countries are reported as a steering signal and never select a rule. Malformed JSON aborts startup. See `business-rules/payment-behavior-rules.md`. |
 | `ALLOWED_ORIGINS` | Yes | Comma-separated CORS whitelist for `/express-config`. Must include the storefront origin. |
 | `MERCHANT_RETURN_URL` | Yes | Return URL after 3DS or redirect-based payment methods. |
 | `PAYMENT_INTERFACE` | No | Value written to `paymentMethodInfo.paymentInterface`. Default: `checkout-stripe`. |
@@ -244,6 +285,12 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | `STRIPE_EXPRESS_ELEMENT_OPTIONS` | No | JSON string forwarded verbatim as `expressElementOptions` in the config responses when set; filtered enabler-side to `ALLOWED_EXPRESS_OPTION_KEYS`. No default. |
 | `MOCK_CLIENT_KEY` | No | Defaults to `'stripe'`. Set but not read anywhere else in `processor/src` — dead config, template scaffold leftover. |
 
+> **The table above is the processor's.** `connect.yaml` has no `inheritAs` block, so the
+> `order-subscriber` declares its own configuration independently: `CTP_PROJECT_KEY`, `CTP_AUTH_URL`,
+> `CTP_API_URL`, `CTP_CLIENT_ID`, `CTP_CLIENT_SECRET`. Same names, separate declaration — omitting
+> them does not fail the deploy, the app boots and dies on its first `required()` check, which reads
+> as a crash-loop rather than as missing configuration. The client needs `manage_orders`.
+
 ## Out of Scope
 
 | Feature | Status |
@@ -251,6 +298,7 @@ The following events are registered on the Stripe webhook endpoint during `post-
 | Subscriptions / recurring billing | Use `ct-connect-stripe-composable` |
 | SetupIntent (save now, charge later) | CT custom types defined but not installed or used |
 | Dispute / chargeback automation | `charge.dispute.*` not registered; requires manual process |
+| Reconciliation of stale `Pending` authorizations | **None, deliberately.** A shopper who receives wire instructions and never sends the money leaves an `AUTHORIZATION:PENDING` that no terminal event resolves. On bank transfer this is ordinary abandonment, not an edge case. The cart is not frozen either. Operators must reconcile out of band — see `decisions/adr-007-async-settlement-processing.md` |
 | CT coupon / discount → Stripe sync | Not implemented |
 | Stripe Connect (marketplace, split payments) | Not in this hub |
 | Stripe Terminal (in-person) | Not implemented |

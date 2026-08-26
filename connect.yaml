@@ -1,6 +1,35 @@
 deployAs:
   - name: enabler
     applicationType: assets
+  - name: order-subscriber
+    applicationType: event
+    endpoint: /orderSubscriber
+    scripts:
+      postDeploy: npm install && npm run build && npm run connector:post-deploy
+      preUndeploy: npm install && npm run build && npm run connector:pre-undeploy
+    configuration:
+      # This connect.yaml has no `inheritAs` block, so every app declares its own configuration.
+      # Omitting these does not fail the deploy -- the app boots and dies on the first required()
+      # check, which reads as a crash-loop rather than as missing configuration.
+      standardConfiguration:
+        - key: CTP_PROJECT_KEY
+          description: commercetools project key
+          required: true
+        - key: CTP_AUTH_URL
+          description: commercetools Auth URL (example - https://auth.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://auth.europe-west1.gcp.commercetools.com
+        - key: CTP_API_URL
+          description: commercetools API URL (example - https://api.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://api.europe-west1.gcp.commercetools.com
+      securedConfiguration:
+        - key: CTP_CLIENT_ID
+          description: commercetools client ID. Needs manage_orders to write Order.paymentState, and view_published_products is not required.
+          required: true
+        - key: CTP_CLIENT_SECRET
+          description: commercetools client secret.
+          required: true
   - name: processor
     applicationType: service
     endpoint: /
@@ -83,19 +112,23 @@ deployAs:
           description: >
             JSON map of per-cart payment behavior rules keyed by store key or ISO country code.
             Env vars are always the default — this map contains exceptions only. No wildcard key.
-            Discriminator priority per cart: cart.country (most reliable, set at creation, not
-            customer-editable) > billingAddress.country > shippingAddress.country > store.key.
+            Discriminator per cart: cart.country (set at creation, not customer-editable), falling
+            back to store.key (merchant-defined). Nothing else selects a rule.
             Each rule may override any combination of:
             flowType ("deferred"|"pi_first"),
             captureMethod ("automatic"|"automatic_async"|"manual"),
             setupFutureUsage ("off_session"|"on_session"|""|"none"|"null"|"undefined"),
-            collectBillingAddress ("auto"|"never"|"if_required").
+            collectBillingAddress ("auto"|"never"|"if_required"),
+            euBankTransferCountry ("DE"|"FR"|"IE"|"NL" — which IBAN a EUR bank-transfer shopper sees;
+            validated at startup, so an invalid value aborts the deploy rather than reaching Stripe).
             Only explicitly supplied fields override the corresponding flat env var; omitted fields
             fall back to their individual env var.
-            Security note: captureMethod:manual overrides are merchant-controlled but billingAddress.country
-            and shippingAddress.country are customer-supplied. For high-security deployments, use
-            store.key as the discriminator — it is not customer-editable.
-            Example: {"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"}}
+            Security note: billingAddress.country and shippingAddress.country are customer-supplied and
+            are deliberately NOT used to select a rule — the express enabler writes the shopper's own
+            shipping address onto the cart, so honouring them would let a shopper steer their own
+            capture method or IBAN. A shopper-supplied country that would have matched is logged as a
+            divergence signal and ignored.
+            Example: {"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"},"DE":{"euBankTransferCountry":"DE"}}
         - key: STRIPE_API_VERSION
           description: Stripe API version to use (example - 2025-12-15.clover).
           default: '2025-12-15.clover'

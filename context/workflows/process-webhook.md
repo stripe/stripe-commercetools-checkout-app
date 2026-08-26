@@ -91,10 +91,17 @@ Events are routed to handlers based on type:
 | `charge.succeeded` | `processStripeEvent()` | `storePaymentMethod()` | Converter emits `AUTHORIZATION: SUCCESS` |
 | `payment_intent.canceled` | `processStripeEvent()` | — | `AUTHORIZATION: FAILURE + CANCEL_AUTHORIZATION: SUCCESS` |
 | `payment_intent.processing` | `processStripeEvent()` | — | `AUTHORIZATION: PENDING` (async settlement); deduped; resolved to SUCCESS on `payment_intent.succeeded`; write failure rethrows (Stripe retries). See `process-async-settlement.md` |
-| `payment_intent.requires_action` | `processStripeEvent()` | — | Converter no-op (returns `[]`); CT not updated by design |
+| `payment_intent.requires_action` | `processStripeEvent()` **only for bank transfers** | — | Gated by `isBankTransferNextAction()`. Bank transfer → `AUTHORIZATION: PENDING` for `pi.amount` (never `amount_received`, which is 0 until the wire lands). Card 3DS, Boleto and redirect methods emit the same event and stay **log-only** — they never reach the service. See `business-rules/webhook-handling.md` Rule 6 |
+| `payment_intent.partially_funded` | `processStripeEvent()` (same gate) | — | No CT transaction; the interface interaction is still persisted via `ZERO_TRANSACTION_PERSIST_EVENTS`. Excluded from the rethrow set on purpose |
 | `payment_intent.payment_failed` | `processStripeEvent()` | — | `AUTHORIZATION: FAILURE` |
+| `customer_cash_balance_transaction.created` | **none** — `logCustomerCashBalanceTransaction()` | — | Observability only; never converted (`convert()` rejects it). `funding_reversed` / `adjusted_for_overdraft` log at error level. Payload carries `sender_name`, `iban_last4`, `sort_code` — never log the raw event |
 | `charge.refunded` | `processStripeEventRefunded()` (multi-ops) or `processStripeEvent()` | — | Multi-ops uses per-refund amount via `refunds.list` |
+| `refund.updated` / `refund.failed` | `processStripeEventRefundFailed()` | — | Acts **only** on `status` `failed` or `canceled` → `REFUND: FAILURE`. Does not use the converter; correlates via `refund.metadata.ct_payment_id`. See `business-rules/refunds-reversals.md` Rule 6 |
 | `charge.updated` | `processStripeEventMultipleCaptured()` (multi-ops only) | — | Skipped entirely when multi-ops disabled |
+
+> **Before any of the above runs:** an event whose PaymentIntent carries no `ct_payment_id` is skipped
+> with a warning and a 200 — it belongs to another integration. See `business-rules/webhook-handling.md`
+> Rule 8 for why that 200 is not a KI-001 violation.
 
 ### 3. CT Payment ID Extraction
 - `stripeEventConverter.getCtPaymentId()` reads `event.data.object.metadata.ct_payment_id`

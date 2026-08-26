@@ -62,7 +62,7 @@ Undeploy → connector:pre-undeploy (processor/src/connectors/pre-undeploy.ts)
 What `post-deploy` actually does today (`processor/src/connectors/post-deploy.ts` and `connectors/actions.ts`):
 
 1. Calls `createLaunchpadPurchaseOrderNumberCustomType()` — only **logs** if the type already exists (no creation logic in the function as written).
-2. If `STRIPE_WEBHOOK_ID` env var is set, retrieves the existing Stripe webhook endpoint and, if its URL differs from `${CONNECT_SERVICE_URL}stripe/webhooks`, calls `webhookEndpoints.update()` with the connector URL and the canonical `enabled_events` list (`charge.succeeded`, `charge.updated`, `payment_intent.succeeded`, `charge.refunded`, `payment_intent.canceled`, `payment_intent.payment_failed`, `payment_intent.requires_action`).
+2. If `STRIPE_WEBHOOK_ID` env var is set, retrieves the existing Stripe webhook endpoint and, if its URL differs from `${CONNECT_SERVICE_URL}stripe/webhooks`, calls `webhookEndpoints.update()` with the connector URL and the canonical `enabled_events` list. That list lives in `processor/src/connectors/actions.ts` and is the only source of truth — it is not reproduced here, because the copy that used to be inline went stale twice (updated 2026-08-13, SB3-207).
 3. If `STRIPE_WEBHOOK_ID` is not set, prints a stderr message asking the operator to register the webhook manually in the Stripe dashboard. It does **not** call `webhookEndpoints.create()` or persist a signing secret to CT.
 4. Calls `createOrUpdateCustomerCustomType()` to install the `payment-connector-stripe-customer-id` custom type (`stripeCustomerIdCustomType` in `custom-types.ts`).
 

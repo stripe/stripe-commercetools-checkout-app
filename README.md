@@ -18,6 +18,8 @@ This repository provides a commercetools [connect](https://docs.commercetools.co
 - **Stripe Tax Calculation Integration**: Support for automatic tax calculations on payment intents. When a cart has a tax calculation reference in the custom field `connectorStripeTax_calculationReferences`, it will be automatically applied to the payment intent. More information in [Stripe Tax Calculation](./processor/README.md#stripe-tax-calculation-integration)
 - **Stripe Express Checkout**: Support for the [Stripe Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element), aligned with **commercetools Checkout Express integration** (callbacks, checkout session via `onPayButtonClick` on each wallet open, cart updates). Includes processor endpoints [`GET /express-payment-data`](./processor/README.md#get-express-payment-data) and [`POST /express-config`](./processor/README.md#express-config-no-session), shipping-related enabler callbacks, and PaymentIntent creation **without** shipping when the frontend sends `x-express-checkout`. More detail in [Express Checkout](./enabler/README.md#express-checkout) and the [processor APIs](./processor/README.md#get-express-payment-data).
 - **Stablecoin / Crypto Payments (async settlement)**: Support for Stripe crypto/stablecoin (e.g. USDC) through the [Payment Element](https://stripe.com/docs/payments/payment-element). These methods confirm asynchronously into a `processing` state; the connector models an `Authorization: Pending` transaction and finalizes it on `payment_intent.succeeded`. More information in [Crypto / Stablecoin Payments](./processor/README.md#crypto--stablecoin-payments-async-settlement).
+- **`Order.paymentState`**: commercetools never derives the order's payment state from its Payment, and commercetools Checkout creates the order without one. A dedicated `order-subscriber` application subscribes to the `OrderCreated` message and records what is true at that moment — `Paid`, `Pending`, or nothing when neither is truthful (for example a card authorized but not captured). It only ever writes onto an unset field. More information in [Order payment state](./context/business-rules/order-payment-state.md).
+- **Bank transfer (`customer_balance`)**: EU bank transfer through the Payment Element. The shopper receives wire instructions, the order is recorded as `Pending`, and settlement days later moves it to `Paid`. Requires a customer on the PaymentIntent and no `setup_future_usage` — subscription carts need `flowType: pi_first` because they set it.
 
 ## Prerequisite
 
@@ -64,7 +66,11 @@ Regarding the development of a processor or enabler module, please refer to the 
 4. **Enabler**
     - Assists in creating the [Stripe Payment Element](https://docs.stripe.com/payments/payment-element) and [Stripe Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element) components used as payment methods in the commercetools Checkout.
     - Connects to any sample site that wants to integrate the connector, providing the available payment components (dropins, components, and express) for seamless integration.
-5. **Stripe**
+5. **Order Subscriber**
+    - A third deployed application (`applicationType: event`) that subscribes to the commercetools `OrderCreated` message and writes `Order.paymentState`.
+    - It exists as a separate application because of timing, not preference: for a card the money settles *before* the order exists, so the webhook path has nothing to write to. Reads the order's payments fresh and records `Paid`, `Pending`, or nothing — never overwriting a state another writer already set.
+    - Requires the `manage_orders` scope. More information in [Order payment state](./context/business-rules/order-payment-state.md).
+6. **Stripe**
     - The external payment service provider that handles various payment operations sends webhooks for events such as authorization, capture, refund, and cancel.
 
 # Webhooks
@@ -74,8 +80,11 @@ The following webhooks are currently supported, and the payment transactions in 
 - **payment_intent.succeeded**: Creates a payment transaction Charge: Success.
 - **payment_intent.payment_failed**: Modify the payment transaction Authorization to Failure.
 - **payment_intent.processing**: Async settlement (crypto/stablecoin). Creates/transitions a payment transaction Authorization: Pending (deduped via existing-transaction check), finalized to Success on `payment_intent.succeeded`. Write failures are re-thrown so Stripe retries. More information in [Crypto / Stablecoin Payments](./processor/README.md#crypto--stablecoin-payments-async-settlement).
-- **payment_intent.requires_action**: No-op — no commercetools transaction is created (3DS/authentication is handled client-side by Stripe.js).
+- **payment_intent.requires_action**: Method-dependent, and the difference matters. For a **bank transfer** (`next_action.type = display_bank_transfer_instructions`) this creates a payment transaction Authorization: Pending for the PaymentIntent's amount — a shopper who has been handed wire instructions has not failed, they have not paid *yet*. For **every other** payment method that emits this event — card 3DS, Boleto, redirect-based methods — no commercetools transaction is created; authentication is handled client-side by Stripe.js. The discrimination happens at the route via `isBankTransferNextAction()`, which fails closed. More information in [Bank Transfer](./processor/README.md#bank-transfer-customer_balance).
+- **payment_intent.partially_funded**: A bank transfer funded in instalments. Deliberately creates **no** transaction — the order already reflects pending, and a partial deposit sits in the customer's cash balance rather than on the platform balance. The interface interaction is still persisted as an audit trail.
 - **charge.refunded**: Creates a payment transaction Refund to Success and a Chargeback to Success. When `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled, the system uses enhanced refund tracking to properly handle multiple refund events by retrieving the latest refund information from Stripe. When disabled, basic refund tracking is used. More information in [Enhanced support for multiple refunded events](./processor/README.md#enhanced-refund-processing)
+- **refund.updated** / **refund.failed**: Create a payment transaction Refund: Failure, and **only** when the refund's status is `failed` or `canceled`. A refund that succeeds produces no second write, because `charge.refunded` already owns the success side — acting here too would book the same refund twice. This matters most on delayed rails: a bank transfer refund is created `pending` and resolves minutes to days later, so before these events a rejected refund stayed recorded in commercetools as successful forever. More information in [`business-rules/refunds-reversals.md`](./context/business-rules/refunds-reversals.md) Rule 6.
+- **customer_cash_balance_transaction.created**: Observability only — never converted to a commercetools transaction. The event is customer-scoped and carries no `ct_payment_id`. The `funding_reversed` and `adjusted_for_overdraft` cases log at **error** level: they are the only signal that money was withdrawn from the customer's cash balance after a payment was credited, and commercetools is not updated.
 - **charge.succeeded**: Create the payment transaction to 'Authorization:Success' if charge is not capture.
 - **charge.updated**: Creates a partial payment transaction Charge: Success with the partial amount. **Note**: This webhook is only processed when `STRIPE_ENABLE_MULTI_OPERATIONS` is enabled. This supports multicapture scenarios where multiple partial captures are performed on the same payment intent. More information in [Multicapture Support](./processor/README.md#multicapture-support)
 
@@ -127,7 +136,7 @@ Before installing the connector, you must create a Stripe account and obtain the
 20. **STRIPE_API_VERSION**: Stripe API version to use for API requests. Default: `2025-12-15.clover`
 21. **STRIPE_EXPRESS_ELEMENT_OPTIONS**: Optional JSON configuration for the Express Checkout Element options. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. The value needs to be a valid stringified JSON. Example: `{"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}`. More information about the properties can be found in the [Stripe Express Checkout Element docs](https://docs.stripe.com/js/elements/express_checkout_element).
 22. **STRIPE_PAYMENT_FLOW**: Controls the Stripe Elements initialization strategy. Possible values: `deferred` (default, PaymentIntent created at submit time via `GET /payments`) or `pi_first` (PaymentIntent created eagerly so Elements can be initialized with `clientSecret`; required for payment methods such as Blik that must bind to a PaymentIntent before rendering). See [ADR-006](./context/decisions/adr-006-pi-first-blik-toctou.md) for the full design and tradeoffs.
-23. **STRIPE_PAYMENT_BEHAVIOR_RULES**: Optional JSON map, keyed by ISO country code or commercetools store key, that overrides `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per cart (e.g. `{"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"}}`). Flat env vars remain the default for carts that match no key. Malformed JSON aborts startup.
+23. **STRIPE_PAYMENT_BEHAVIOR_RULES**: Optional JSON map, keyed by ISO country code or commercetools store key, that overrides `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress`, and `euBankTransferCountry` per cart (e.g. `{"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"},"DE":{"euBankTransferCountry":"DE"}}`). Flat env vars remain the default for carts that match no key. Malformed JSON aborts startup. The key is matched against `cart.country`, falling back to `cart.store.key` — both merchant-controlled; shopper-supplied billing and shipping countries deliberately do not select a rule. More information in [Payment Behavior Rules](./processor/README.md#payment-behavior-rules--pi-first-flow).
 24. **STRIPE_BEHAVIOR_PAYMENT_ELEMENT**: Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Coexists with `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS`: values set here take priority per attribute; unset attributes fall back to those.
 
 
@@ -160,6 +169,10 @@ In addition, the tax integration connector template has a folder structure, as l
 │   ├── src
 │   ├── test
 │   └── package.json
+├── order-subscriber
+│   ├── src
+│   ├── test
+│   └── package.json
 └── connect.yaml
 ```
 
@@ -169,6 +182,32 @@ The connect deployment configuration specifie in `connect.yaml`, the information
 deployAs:
   - name: enabler
     applicationType: assets
+  - name: order-subscriber
+    applicationType: event
+    endpoint: /orderSubscriber
+    scripts:
+      postDeploy: npm install && npm run build && npm run connector:post-deploy
+      preUndeploy: npm install && npm run build && npm run connector:pre-undeploy
+    configuration:
+      standardConfiguration:
+        - key: CTP_PROJECT_KEY
+          description: commercetools project key
+          required: true
+        - key: CTP_AUTH_URL
+          description: commercetools Auth URL (example - https://auth.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://auth.europe-west1.gcp.commercetools.com
+        - key: CTP_API_URL
+          description: commercetools API URL (example - https://api.europe-west1.gcp.commercetools.com).
+          required: true
+          default: https://api.europe-west1.gcp.commercetools.com
+      securedConfiguration:
+        - key: CTP_CLIENT_ID
+          description: commercetools client ID. Needs manage_orders to write Order.paymentState.
+          required: true
+        - key: CTP_CLIENT_SECRET
+          description: commercetools client secret.
+          required: true
   - name: processor
     applicationType: service
     endpoint: /
@@ -284,7 +323,7 @@ Here, you can see the details about various variables in the configuration
 - `CT_PRODUCT_TYPE_SUBSCRIPTION_KEY`: Product type key for subscription information. Default: `payment-connector-subscription-information`
 - `STRIPE_API_VERSION`: Stripe API version to use for API requests. Default value is `2025-12-15.clover`. This version is used when creating ephemeral keys for customer sessions.
 - `STRIPE_PAYMENT_FLOW`: Controls the Stripe Elements initialization strategy. Values: `deferred` (default) or `pi_first`. See [ADR-006](./context/decisions/adr-006-pi-first-blik-toctou.md) for details on the `pi_first` flow (required for Blik) and its TOCTOU/orphan-PI tradeoffs.
-- `STRIPE_PAYMENT_BEHAVIOR_RULES`: Optional JSON map keyed by ISO country code or commercetools store key that overrides `captureMethod`, `flowType`, `setupFutureUsage`, and `collectBillingAddress` per cart. Flat env vars remain the default for unmatched carts. Malformed JSON aborts startup.
+- `STRIPE_PAYMENT_BEHAVIOR_RULES`: Optional JSON map keyed by ISO country code or commercetools store key that overrides `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress`, and `euBankTransferCountry` per cart. Matched on `cart.country` falling back to `cart.store.key`. Flat env vars remain the default for unmatched carts. Malformed JSON aborts startup.
 - `STRIPE_BEHAVIOR_PAYMENT_ELEMENT`: Optional JSON configuration for `elements.create('payment', options)` (Elements Behavior). Supported fields: `terms`, `wallets`, `defaultValues`, `fields`, `business`, `paymentMethodOrder`, `readOnly`, `layout`. Values set here take priority over the legacy `STRIPE_LAYOUT`/`STRIPE_COLLECT_BILLING_ADDRESS` variables per attribute.
 
 ## Development

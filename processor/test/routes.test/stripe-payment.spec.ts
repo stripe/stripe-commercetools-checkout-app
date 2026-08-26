@@ -40,6 +40,16 @@ import {
   mockRoute__get_config_element_succeed,
   mockEvent__charge_capture_succeeded_notCaptured,
   mockEvent__paymentIntent_requiresAction,
+  mockEvent__paymentIntent_requiresAction_3ds,
+  mockEvent__paymentIntent_requiresAction_boleto,
+  mockEvent__paymentIntent_requiresAction_bankTransfer,
+  mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
+  mockEvent__paymentIntent_partiallyFunded_bankTransfer,
+  mockEvent__customerCashBalanceTransaction_appliedToPayment,
+  mockEvent__customerCashBalanceTransaction_fundingReversed,
+  mockEvent__refund_failed,
+  mockEvent__refund_updated_succeeded,
+  mockEvent__refund_updated_canceled,
   mockRoute__well_know__succeed,
   mockRoute__customer_session_succeed,
 } from '../utils/mock-routes-data';
@@ -489,6 +499,79 @@ describe('Stripe Payment APIs', () => {
       expect(Logger.log.error).toHaveBeenCalled();
     });
 
+    // A StripeSignatureVerificationError carries the full raw request body as an own enumerable
+    // `payload` property and the signature header as `header`. The route used to log
+    // JSON.stringify(err), which wrote the entire body — for a bank transfer that is the merchant
+    // IBAN/BIC, the unauthenticated instructions URL and a live client_secret — to a sink that is
+    // typically readable by more people than Merchant Center payment-read users, bypassing the
+    // redaction choke point in StripeEventConverter. Asserted on content, not on shape, so the
+    // test still bites if the log call is restructured.
+    test('it should never log the raw webhook payload when signature verification fails.', async () => {
+      setupMockConfig({
+        stripeSecretKey: 'stripeSecretKey',
+        stripeWebhookSigningSecret: 'stripeWebhookSigningSecret',
+        authUrl: 'https://auth.europe-west1.gcp.commercetools.com',
+      });
+
+      const rawBodyWithSecrets = JSON.stringify({
+        id: 'evt_bt_11111',
+        data: {
+          object: {
+            client_secret: 'pi_bt_11111_secret',
+            next_action: {
+              display_bank_transfer_instructions: {
+                financial_addresses: [{ iban: { iban: 'DE89370400440532013000', bic: 'BUKBGB22' } }],
+                hosted_instructions_url: 'https://payments.stripe.com/bank_transfer_instructions/test_11111',
+              },
+            },
+          },
+        },
+      });
+
+      Stripe.prototype.webhooks = { constructEvent: jest.fn() } as unknown as Stripe.Webhooks;
+      jest.spyOn(Stripe.prototype.webhooks, 'constructEvent').mockImplementation(() => {
+        // Mirrors stripe-node's StripeSignatureVerificationError: `header` and `payload` are set
+        // as own enumerable properties (stripe/cjs/Error.js:157-163).
+        const err = new Error('Timestamp outside the tolerance zone') as Error & {
+          type: string;
+          header: string;
+          payload: string;
+        };
+        err.type = 'StripeSignatureVerificationError';
+        err.header = 't=123123123,v1=gk2j34gk2j34g2k3j4';
+        err.payload = rawBodyWithSecrets;
+        throw err;
+      });
+
+      //When
+      const response = await fastifyApp.inject({
+        method: 'POST',
+        url: `/stripe/webhooks`,
+        headers: {
+          'stripe-signature': 't=123123123,v1=gk2j34gk2j34g2k3j4',
+          'content-type': 'application/json',
+        },
+        payload: rawBodyWithSecrets,
+      });
+
+      //Then
+      expect(response.statusCode).toEqual(400);
+      expect(Logger.log.error).toHaveBeenCalled();
+
+      const logged = JSON.stringify((Logger.log.error as jest.Mock).mock.calls);
+      expect(logged).not.toContain('DE89370400440532013000');
+      expect(logged).not.toContain('BUKBGB22');
+      expect(logged).not.toContain('payments.stripe.com/bank_transfer_instructions');
+      expect(logged).not.toContain('pi_bt_11111_secret');
+      expect(logged).not.toContain('v1=gk2j34gk2j34g2k3j4');
+
+      // The fix must not trade a leak for a lost night: the failure has to stay diagnosable.
+      // These five messages are the only ones stripe-node throws here, and they are what
+      // distinguishes a misconfigured signing secret from clock skew from a mangled raw body.
+      expect(logged).toContain('Timestamp outside the tolerance zone');
+      expect(logged).toContain('StripeSignatureVerificationError');
+    });
+
     test('it should print a log when the Stripe event received is not supported.', async () => {
       setupMockConfig({
         stripeSecretKey: 'stripeSecretKey',
@@ -512,6 +595,249 @@ describe('Stripe Payment APIs', () => {
       //Then
       expect(response.statusCode).toEqual(200);
       expect(Logger.log.info).toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // Bank transfers (customer_balance) — SB3-207 task 005
+    //
+    // These test the ROUTE's narrowing, which is the only thing standing between card 3DS and a
+    // booked Authorization/Pending now that the converter returns one unconditionally for
+    // payment_intent.requires_action.
+    // -----------------------------------------------------------------------
+    const postWebhook = () =>
+      fastifyApp.inject({
+        method: 'POST',
+        url: `/stripe/webhooks`,
+        headers: { 'stripe-signature': 't=123123123,v1=gk2j34gk2j34g2k3j4' },
+      });
+
+    const arrangeWebhook = (event: Stripe.Event) => {
+      setupMockConfig({
+        stripeSecretKey: 'stripeSecretKey',
+        stripeWebhookSigningSecret: 'stripeWebhookSigningSecret',
+        authUrl: 'https://auth.europe-west1.gcp.commercetools.com',
+      });
+      Stripe.prototype.webhooks = { constructEvent: jest.fn() } as unknown as Stripe.Webhooks;
+      jest.spyOn(Stripe.prototype.webhooks, 'constructEvent').mockReturnValue(event);
+      jest.spyOn(StripePaymentService.prototype, 'processStripeEvent').mockReturnValue(Promise.resolve());
+      jest.spyOn(StripePaymentService.prototype, 'processStripeEventRefundFailed').mockReturnValue(Promise.resolve());
+      jest
+        .spyOn(StripePaymentService.prototype, 'reflectOrderPaymentStateBestEffort')
+        .mockReturnValue(Promise.resolve());
+    };
+
+    // ***** RELEASE GATE *****
+    // Card 3DS emits payment_intent.requires_action too. If the next_action predicate is ever
+    // removed or widened, every 3DS payment would get an Authorization/Pending written to
+    // commercetools. This test must fail if that happens.
+    test('RELEASE GATE: a card 3DS requires_action event is logged only and never processed', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_3ds);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+      expect(Logger.log.info).toHaveBeenCalledWith('Received: payment_intent.requires_action event of pi_3ds_11111');
+    });
+
+    // ***** RELEASE GATE *****
+    test('RELEASE GATE: a Boleto requires_action event is logged only and never processed', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_boleto);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+      expect(Logger.log.info).toHaveBeenCalledWith('Received: payment_intent.requires_action event of pi_boleto_11111');
+    });
+
+    // ***** MIRROR ASSERTION *****
+    // The two gates above pass just as happily if the predicate rejects EVERYTHING. Without this
+    // test the whole feature can be silently dead with a green suite — which is the failure mode
+    // a release gate written only in the negative cannot see.
+    test('MIRROR: a bank transfer requires_action event IS routed to processStripeEvent', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_bankTransfer);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    // ***** MIRROR ASSERTION *****
+    test('MIRROR: a bank transfer partially_funded event IS routed to processStripeEvent', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_partiallyFunded_bankTransfer);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    // -----------------------------------------------------------------------
+    // The two-axis gate split — SB3-207 task 028 / ADR-009
+    //
+    // `Order.paymentState` and `Payment.transactions[].state` are separate axes with DIFFERENT
+    // gates, and that is the decision of the 2026-08-18 session rather than an oversight:
+    // `requires_action` reflects a pending ORDER for every payment method, while only a bank
+    // transfer books a pending AUTHORIZATION. These tests pin both halves, because a future reader
+    // seeing 3DS "leak past" the predicate will otherwise be tempted to unify the two.
+    // -----------------------------------------------------------------------
+
+    // ***** RELEASE GATE *****
+    test('GATE SPLIT: card 3DS reflects the ORDER state but books NO transaction', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_3ds);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.reflectOrderPaymentStateBestEffort).toHaveBeenCalledTimes(1);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+    });
+
+    // ***** RELEASE GATE *****
+    test('GATE SPLIT: Boleto reflects the ORDER state but books NO transaction', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_boleto);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.reflectOrderPaymentStateBestEffort).toHaveBeenCalledTimes(1);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+    });
+
+    // ***** MIRROR ASSERTION *****
+    // Without this, the two gates above are equally satisfied by a route that calls NEITHER method.
+    test('MIRROR: a bank transfer requires_action drives BOTH axes', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_requiresAction_bankTransfer);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.reflectOrderPaymentStateBestEffort).toHaveBeenCalledTimes(1);
+      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    // ***** ORDERING ASSERTION *****
+    // The one invariant no other test can see. Ownership of an order is decided partly from the
+    // presence of an `Authorization/Pending` on the CT payment, and `processStripeEvent` →
+    // `transitionPendingAuthorizationToSuccess` flips exactly that transaction to `Success`. Swap
+    // these two calls and every async order silently reads as a synchronous card payment and is
+    // left unset — with no other test going red.
+    test('ORDERING: the order state is reflected BEFORE processStripeEvent on succeeded', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_succeeded_captureMethodAutomatic);
+      jest.spyOn(StripePaymentService.prototype, 'storePaymentMethod').mockReturnValue(Promise.resolve());
+      const callOrder: string[] = [];
+      (spiedPaymentService.reflectOrderPaymentStateBestEffort as jest.Mock).mockImplementation(() => {
+        callOrder.push('reflect');
+        return Promise.resolve();
+      });
+      (spiedPaymentService.processStripeEvent as jest.Mock).mockImplementation(() => {
+        callOrder.push('process');
+        return Promise.resolve();
+      });
+
+      await postWebhook();
+
+      expect(callOrder).toEqual(['reflect', 'process']);
+    });
+
+    test('partially_funded does not touch the order state axis', async () => {
+      arrangeWebhook(mockEvent__paymentIntent_partiallyFunded_bankTransfer);
+
+      await postWebhook();
+
+      // Routed for the transaction axis, but the reflection call itself no-ops on this event type
+      // because it is absent from ORDER_PAYMENT_STATE_BY_EVENT. The route calls it anyway (the two
+      // event types share a case block), so this asserts the reflection is a no-op by MAPPING and
+      // not by routing — see the service spec for the mapping assertion.
+      expect(spiedPaymentService.processStripeEvent).toHaveBeenCalledTimes(1);
+    });
+
+    test('customer_cash_balance_transaction.created is never routed to processStripeEvent', async () => {
+      arrangeWebhook(mockEvent__customerCashBalanceTransaction_appliedToPayment);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'Received customer cash balance transaction',
+        expect.objectContaining({
+          cashBalanceTransactionId: 'ccsbtxn_11111',
+          transactionType: 'applied_to_payment',
+          paymentIntentId: 'pi_bt_11111',
+        }),
+      );
+    });
+
+    test('customer_cash_balance_transaction.created with funding_reversed raises an alertable error', async () => {
+      arrangeWebhook(mockEvent__customerCashBalanceTransaction_fundingReversed);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEvent).not.toHaveBeenCalled();
+      expect(Logger.log.error).toHaveBeenCalledWith(
+        expect.stringContaining('Cash balance funds withdrawn'),
+        expect.objectContaining({
+          transactionType: 'funding_reversed',
+          cashBalanceTransactionId: 'ccsbtxn_22222',
+          customerId: 'cus_11111',
+          centAmount: -12300,
+          currencyCode: 'EUR',
+        }),
+      );
+    });
+
+    // The handler builds its payload field by field precisely so this holds. Asserted on content
+    // rather than on shape, so it still bites if someone "simplifies" the log call into passing
+    // the event — which is the change that would leak, and which no structural assertion catches.
+    test('the cash balance log never emits sender_name, iban_last4 or sort_code', async () => {
+      arrangeWebhook(mockEvent__customerCashBalanceTransaction_fundingReversed);
+
+      await postWebhook();
+
+      const logged = JSON.stringify(
+        (Logger.log.error as unknown as jest.Mock).mock.calls.concat(
+          (Logger.log.info as unknown as jest.Mock).mock.calls,
+        ),
+      );
+      expect(logged).not.toContain('Erika Mustermann');
+      expect(logged).not.toContain('iban_last4');
+      expect(logged).not.toContain('BUKBGB22');
+    });
+
+    test('refund.updated with a succeeded status changes nothing in commercetools', async () => {
+      arrangeWebhook(mockEvent__refund_updated_succeeded);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEventRefundFailed).not.toHaveBeenCalled();
+      expect(Logger.log.info).toHaveBeenCalledWith(
+        'Received: refund.updated with status succeeded — no commercetools change.',
+      );
+    });
+
+    test('refund.failed is routed to processStripeEventRefundFailed', async () => {
+      arrangeWebhook(mockEvent__refund_failed);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEventRefundFailed).toHaveBeenCalledTimes(1);
+    });
+
+    // A refund canceled after creation leaves the same false Refund/Success behind as a failed
+    // one, so it takes the same correction path.
+    test('refund.updated with a canceled status is routed to processStripeEventRefundFailed', async () => {
+      arrangeWebhook(mockEvent__refund_updated_canceled);
+
+      const response = await postWebhook();
+
+      expect(response.statusCode).toEqual(200);
+      expect(spiedPaymentService.processStripeEventRefundFailed).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -624,6 +950,96 @@ describe('Stripe Payment APIs', () => {
       // The internal error message must not appear in the response body.
       expect(responseGetConfig.body).not.toContain('metadata.ct_payment_id');
       expect(spiedPaymentService.updatePaymentIntentStripeSuccessful).toHaveBeenCalled();
+    });
+
+    // Sibling of the test above: not leaking to the client is only half of it. The catch used to
+    // pass the whole error to the logger, and Stripe errors expose `raw`, `payment_intent`,
+    // `charge` and `headers` as own enumerable properties — so a rejection on a customer_balance
+    // PaymentIntent wrote the full PI, client_secret and financial_addresses included, to the log.
+    test('should call /confirmPayments/:id and NOT leak the Stripe error object to the log', async () => {
+      //Given
+      jest.spyOn(spiedPaymentService, 'updatePaymentIntentStripeSuccessful').mockImplementation(() => {
+        const err = new Error('PaymentIntent is not in a confirmable state') as Error & {
+          type: string;
+          code: string;
+          statusCode: number;
+          raw: unknown;
+          payment_intent: unknown;
+          headers: unknown;
+        };
+        err.type = 'StripeInvalidRequestError';
+        err.code = 'payment_intent_unexpected_state';
+        err.statusCode = 400;
+        err.headers = { 'request-id': 'req_leak_11111' };
+        err.payment_intent = {
+          id: 'pi_bt_11111',
+          client_secret: 'pi_bt_11111_secret',
+          next_action: {
+            display_bank_transfer_instructions: {
+              financial_addresses: [{ iban: { iban: 'DE89370400440532013000', bic: 'BUKBGB22' } }],
+              hosted_instructions_url: 'https://payments.stripe.com/bank_transfer_instructions/test_11111',
+            },
+          },
+        };
+        err.raw = { message: err.message, payment_intent: err.payment_intent };
+        throw err;
+      });
+
+      //When
+      const responseGetConfig = await fastifyApp.inject({
+        method: 'POST',
+        url: `/confirmPayments/id`,
+        headers: {
+          'x-session-id': sessionId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ paymentIntent: 'paymentId' }),
+      });
+
+      //Then
+      expect(responseGetConfig.statusCode).toEqual(400);
+      expect(Logger.log.warn).toHaveBeenCalled();
+
+      const logged = JSON.stringify((Logger.log.warn as jest.Mock).mock.calls);
+      expect(logged).not.toContain('DE89370400440532013000');
+      expect(logged).not.toContain('BUKBGB22');
+      expect(logged).not.toContain('payments.stripe.com/bank_transfer_instructions');
+      expect(logged).not.toContain('pi_bt_11111_secret');
+      expect(logged).not.toContain('req_leak_11111');
+
+      // Diagnosis must survive: the paymentReference is what makes this traceable, and the
+      // message was never actually logged before (non-enumerable on Error).
+      expect(logged).toContain('PaymentIntent is not in a confirmable state');
+      expect(logged).toContain('payment_intent_unexpected_state');
+      expect(logged).toContain('StripeInvalidRequestError');
+      expect(logged).toContain('paymentReference');
+    });
+  });
+
+  describe('GET /express-payment-data', () => {
+    test('should call getExpressPaymentData and return totalPrice, currencyCode and lineItems (Express / CT shape)', async () => {
+      const mockExpressPaymentData = {
+        totalPrice: { centAmount: 2500, currencyCode: 'EUR', fractionDigits: 2 },
+        currencyCode: 'EUR',
+        lineItems: [
+          { name: 'Subtotal', amount: { centAmount: 2000, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SUBTOTAL' },
+          { name: 'Shipping', amount: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 }, type: 'SHIPPING' },
+        ],
+      };
+      jest.spyOn(spiedPaymentService, 'getExpressPaymentData').mockResolvedValue(mockExpressPaymentData);
+
+      const response = await fastifyApp.inject({
+        method: 'GET',
+        url: '/express-payment-data',
+        headers: {
+          'x-session-id': sessionId,
+          'content-type': 'application/json',
+        },
+      });
+
+      expect(response.statusCode).toEqual(200);
+      expect(response.json()).toEqual(mockExpressPaymentData);
+      expect(spiedPaymentService.getExpressPaymentData).toHaveBeenCalled();
     });
   });
 
