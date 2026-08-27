@@ -65,7 +65,7 @@ The `Authorization/Pending` write can occur from both the gate and the `payment_
 
 **Positive:**
 - Crypto/stablecoin supported end-to-end in checkout; the in-flight state is visible in CT as `Authorization/Pending`.
-- The `processing` plumbing is method-agnostic — directly reusable by ACH and bank transfers.
+- The `processing` plumbing is method-agnostic — directly reusable by ACH and bank transfers. **Confirmed 2026-08-27:** ACH `us_bank_account` validated E2E (instant Financial Connections + microdeposits) — it rides this exact plumbing with no ACH-specific code, and the synchronous-gate `PENDING`/202 path (decision items 4–5) is now load-bearing as predicted, not merely defensive.
 - Card / synchronous regression intact (gate still returns `APPROVED`/200 for `succeeded`).
 
 **Negative:**

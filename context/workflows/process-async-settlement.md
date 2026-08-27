@@ -1,6 +1,6 @@
 # Workflow: Async Settlement (crypto / stablecoin)
 
-**Trigger:** A buyer pays with an asynchronous / redirect payment method (crypto/stablecoin — USDC — today; ACH / bank transfers in future) whose PaymentIntent confirms into `processing` before settling.
+**Trigger:** A buyer pays with an asynchronous / redirect payment method (crypto/stablecoin — USDC; **ACH `us_bank_account` — validated E2E 2026-08-27**; EU bank transfers) whose PaymentIntent confirms into `processing` before settling.
 **Actors:** Buyer, Stripe (redirect wallet page + webhooks), Processor, CT API.
 **Outcome:** The CT Payment reflects the in-flight state as `Authorization/Pending`, then resolves to `Authorization/Success` + `Charge/Success` (order created) on settlement, or to `Authorization/Failure` on failure/cancellation.
 
@@ -54,6 +54,7 @@ Buyer            Enabler           Stripe                     Processor         
 ### 3. Failure / cancellation
 - `payment_intent.payment_failed` → `Authorization/Failure`.
 - `payment_intent.canceled` → `Authorization/Failure` + `CancelAuthorization/Success`. Expiration without a deposit surfaces as `payment_intent.canceled`.
+- **Order axis (ACH, measured 2026-08-27).** An **async** ACH debit failure (`insufficient_funds`/`no_account`) arrives *after* commercetools Checkout already created the order, so `payment_failed`/`canceled` also drives `Order.paymentState → Failed` (ownership-gated). A **synchronous** rejection at confirm (`charge_exceeds_source_limit`) is the opposite case: the PI never confirms, so **no order is created** (cart stays `Active`) and only the Payment carries `Authorization/Failure`.
 
 ### Synchronous gate variant (non-redirect async methods)
 - For methods that confirm synchronously through `POST /confirmPayments/:id`, `updatePaymentIntentStripeSuccessful()` runs the 4-point validation (see `business-rules/payment-lifecycle.md` Rules 2 & 8) and, when the PI is `processing`, writes `Authorization/Pending` only and returns `PENDING` (HTTP 202). It never creates an order while processing.
