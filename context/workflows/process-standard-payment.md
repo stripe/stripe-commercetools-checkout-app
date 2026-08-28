@@ -146,3 +146,4 @@ Browser                    Enabler                 Processor               Strip
 | PI metadata update fails | Stripe API error after PI creation | PI created but `ct_payment_id` missing; webhook events skipped |
 | `stripe.confirmPayment()` fails | Card declined, 3DS failed | PI created in Stripe; CT has PENDING AUTHORIZATION (orphaned) |
 | `/confirmPayments/:id` validation fails | PI/CT mismatch | CT stays PENDING; PI succeeded in Stripe (orphaned) |
+| Synchronous ACH rejection at confirm | e.g. `charge_exceeds_source_limit` (weekly-volume test account) | PI never confirms → **no order created**, cart stays `Active`, Payment `Authorization/Failure` (measured 2026-08-27). Contrast with async ACH failure, where the order exists and goes `Failed` |

@@ -70,6 +70,16 @@ order (`c10572fc`) that resolved to `Paid` because `resolveTargetPaymentState` r
 dead attempt. **`Failed` therefore stays in the event→state map for the processor's own path but must
 not be presented as a state checkout orders reach.**
 
+> **Follow-up 2026-08-27 (ACH E2E) — `[HUMAN REVIEW]`:** "unreachable" holds for **synchronous** declines
+> only. The 2026-08-21 reasoning generalized from a **card** decline, where the rejection is inline and no
+> order is ever created. **Async ACH is different:** the confirm succeeds and commercetools Checkout creates
+> the order (Pending) *before* the debit resolves; when the ACH debit then returns `insufficient_funds`
+> (run 2) or `no_account` (run 7), `payment_intent.payment_failed` reaches a **real** order and the processor
+> sets `paymentState = Failed`. Measured both times: cart `Ordered`, order `Failed`, Payment
+> `Authorization/Failure`. So the `Failed` rows in the event→state map are **live for async rails**, not
+> merely vestigial. (The sync-reject subcase — ACH `charge_exceeds_source_limit`, run 5 — still produces no
+> order, so *there* `Failed` remains unreachable.)
+
 **`paymentMethodInfo.method` was empty while a bank transfer was `Pending` — fixed 2026-08-21 in
 `53e7be3`.** Raised by Luis against a real Pending order (`ce54b7db`, `method: None`).
 

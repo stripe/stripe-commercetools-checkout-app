@@ -77,6 +77,14 @@ Deploy `ct-connect-stripe-checkout` through the CT Connect marketplace. The post
 
 `euBankTransferCountry` only chooses **which** of your own IBANs a EUR shopper sees — it is not an enable flag, and leaving it unset does not disable the rail: Stripe then derives the variant from the currency and defaults to an Irish IBAN.
 
+**If you want ACH (US bank debit, `us_bank_account`),** there is **no connector config** — enable `us_bank_account` (and Financial Connections) in Stripe Dashboard → Payment methods, on a USD-capable account. It then surfaces in the Payment Element automatically. Validated E2E 2026-08-27. What to expect:
+
+- **Async by nature.** The order goes `Pending` on `requires_action`/`processing` and `Paid` only when the debit settles (`succeeded`) — **days** later in production. The buyer's `/success`-vs-`/failed` screen is not authoritative for ACH; trust `Order.paymentState`.
+- **Two verification paths, both hosted by Stripe:** *instant* (Financial Connections — the shopper logs into their bank in-session, no microdeposits) and *manual entry* (microdeposits — Stripe emails a hosted link; the shopper returns and enters the descriptor code; 1–2 business days). Both resolve to the same `succeeded` → `Paid`. No connector code drives the verification.
+- **Not suppressed by `setup_future_usage`.** Unlike EU bank transfer (`customer_balance`), ACH via Financial Connections is savable, so enabling saved methods / `setup_future_usage` does **not** hide the tab.
+- **Failures.** An async debit failure (insufficient funds, account closed → `insufficient_funds`/`no_account`) lands *after* the order exists, so the order becomes `Failed`. A synchronous rejection at confirm (e.g. weekly-volume limit → `charge_exceeds_source_limit`) is rejected before any order is created — the cart stays `Active`, no order.
+- **Same abandonment caveat as bank transfer.** A shopper who never completes microdeposit verification leaves a durable `Pending` (no terminal event, cart not frozen) — reconcile out of band.
+
 > **After first deploy:** go to Stripe Dashboard → Developers → Webhooks → your endpoint → Signing secret. Copy it into `STRIPE_WEBHOOK_SIGNING_SECRET` and redeploy. Payments will succeed but CT will not update until this is set.
 
 ### Step 3 — Verify post-deploy resources
@@ -159,6 +167,7 @@ Before go-live:
 - [ ] The completed test order has `paymentState: Paid` in CT — if it is unset, the `order-subscriber` is not running or its `OrderCreated` subscription is missing
 - [ ] If using EU bank transfer: the `customer_balance` tab actually renders for a **signed-in** shopper on a EUR cart. If it does not, check `setup_future_usage` and `capture_method` before anything else — Stripe suppresses the rail silently, and the processor logs a warning naming the reason
 - [ ] If using EU bank transfer: complete one transfer end to end and confirm the order moves `Pending` → `Paid`. Then abandon one deliberately and confirm you are comfortable with the result — the pending authorization stays forever and nothing reconciles it
+- [ ] If offering ACH (`us_bank_account`): run one Financial Connections *instant* payment (Success test account) and confirm `Order.paymentState` reaches `Paid`; run one *microdeposit* payment (manual entry, code `SM11AA` in test) and confirm the order is `Pending` until verification then `Paid`. Do **not** trust the `/failed` screen for ACH — verify in CT / Merchant Center (validated E2E 2026-08-27)
 
 ---
 
@@ -177,6 +186,7 @@ Before go-live:
 | Bank transfer tab never appears, no error anywhere | `setup_future_usage` is set (often via `STRIPE_SAVED_PAYMENT_METHODS_CONFIG`) or `STRIPE_CAPTURE_METHOD=manual` — Stripe removes `customer_balance` from `payment_method_types` when the method cannot be saved, silently | Clear `setup_future_usage` for that market, or set `flowType: pi_first` in `STRIPE_PAYMENT_BEHAVIOR_RULES` to strip it. Check processor logs — the connector warns and names the reason |
 | Bank transfer tab missing only for some shoppers | Those carts have no customer attached. `customer_balance` requires one; Stripe accepts and discards the options for a guest cart rather than erroring | Expected. The rail is only available to signed-in shoppers |
 | Shopper sees an Irish IBAN when you expected a local one | `euBankTransferCountry` not set for that market — Stripe derives the variant from the currency and defaults to IE | Set `euBankTransferCountry` to `DE`, `FR`, `IE` or `NL` in that market's rule |
-| Order sits at `paymentState: Pending` for days | Normal for a bank transfer awaiting a wire — or the shopper abandoned it and never sent the money | Nothing to fix if the wire is in flight. If abandoned, nothing resolves it automatically; reconcile out of band and cancel the PaymentIntent in Stripe |
+| Order sits at `paymentState: Pending` for days | Normal for a bank transfer awaiting a wire, **or an ACH debit awaiting settlement / microdeposit verification** — or the shopper abandoned it and never completed it | Nothing to fix if the payment is in flight. If abandoned, nothing resolves it automatically; reconcile out of band and cancel the PaymentIntent in Stripe |
+| ACH order shows `/failed` in the storefront but the payment actually worked | The sample site routes every non-instant ACH outcome (processing, requires_action) to `/failed` — a **storefront** display bug, not the connector. `Order.paymentState` and the Stripe PaymentIntent are correct | Verify in CT / Stripe, not the screen. Fix belongs in the sample site's result routing, not this connector |
 | Orders have no `paymentState` at all | `order-subscriber` not deployed, missing its `CTP_*` configuration, or its `OrderCreated` subscription absent | Check the app is running (missing config looks like a crash-loop, not a config error) and that the subscription exists in Merchant Center |
 | Refund shows as successful in CT but the money never arrived | Before `refund.updated`/`refund.failed` were registered this was permanent. Now only Dashboard-issued refunds have it — they carry no `ct_payment_id` stamp, so the failure cannot be matched back | Issue refunds through the connector, not the Stripe Dashboard |

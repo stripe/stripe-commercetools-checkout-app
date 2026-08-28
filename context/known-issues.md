@@ -152,7 +152,7 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 > **Rewritten 2026-08-13 (SB3-207).** This entry previously read "`requires_action` is a deliberate no-op (no CT transaction)". That statement is now false for one payment method and still true for the rest, which is precisely why it needs an entry rather than a deletion.
 
-**Problem:** one Stripe event type, two behaviours. `payment_intent.requires_action` is emitted by card 3DS (`next_action.use_stripe_sdk`), Boleto (`boleto_display_details`), redirect-based methods (`redirect_to_url`) **and** bank transfers (`display_bank_transfer_instructions`). Only the last writes a CT transaction — an `Authorization/Pending` for `pi.amount`. All others keep a log-only path on that axis.
+**Problem:** one Stripe event type, two behaviours. `payment_intent.requires_action` is emitted by card 3DS (`next_action.use_stripe_sdk`), Boleto (`boleto_display_details`), redirect-based methods (`redirect_to_url`), **ACH microdeposits (`verify_with_microdeposits`)** **and** bank transfers (`display_bank_transfer_instructions`). Only the last writes a CT transaction — an `Authorization/Pending` for `pi.amount`. All others keep a log-only path on that axis (ACH microdeposits therefore leaves the Payment at `Authorization/Initial` — confirmed 2026-08-27; its order axis is still driven, see `business-rules/order-payment-state.md` Rule 3).
 
 > **Amended 2026-08-18 (SB3-207 task 028): "produce nothing" is no longer accurate, and the correction matters.** The sentence above used to end *"All others keep a log-only path and produce nothing."* Since ADR-009 there are **two** axes, and only the transaction axis is method-dependent:
 >

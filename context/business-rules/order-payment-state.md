@@ -115,7 +115,7 @@ settlement write get skipped too, so a bank transfer that **was paid** keeps an 
 **What:** the two axes are gated differently, on purpose.
 
 - `reflectOrderPaymentStateBestEffort()` is called for **all** `payment_intent.requires_action`
-  events — card 3DS, Boleto, Blik, redirect methods, bank transfer.
+  events — card 3DS, Boleto, Blik, redirect methods, bank transfer, and **ACH microdeposits (`verify_with_microdeposits`)**. The ACH-microdeposits case is the direct measured confirmation of this rule's design (2026-08-27): its `next_action.type` is **not** matched by `isBankTransferNextAction()`, so it books **no** payment-axis authorization (the Payment stays `Authorization/Initial`), yet the **order** axis still reflects it generically to `Pending` — exactly the asymmetry this rule describes.
 - `processStripeEvent()` still receives `requires_action` **only** when
   `isBankTransferNextAction()` holds.
 
@@ -320,7 +320,7 @@ empty field because it is a wrong answer signed by this connector.
 Two things that table settles. A **completed** redirect rail behaves exactly like a card — it is not a
 third category; only an *abandoned* one is, and it produces no order to be wrong about. And a
 **declined** attempt produces no order either, which is the intended behaviour (see ADR-009 follow-up),
-so `Failed` is not a state a checkout order reaches.
+so `Failed` is not a state a **synchronously-declined** checkout order reaches — no order exists to mark. It **is** reached by **async** rails whose order was already created before the debit resolved: an ACH debit returning `insufficient_funds`/`no_account` after the pending window leaves an order the processor marks `Failed` via `payment_intent.payment_failed`, consistent with the Axis-1 table above `[HUMAN REVIEW — measured 2026-08-27, ACH E2E; runs 2 & 7 both produced cart Ordered + paymentState Failed]`.
 
 **`paymentMethodInfo.method` is now filled for asynchronous rails too** (fixed 2026-08-21, `53e7be3`).
 It used to be empty for the whole time a bank transfer sat at `Pending`, because the converter took it
@@ -381,7 +381,7 @@ have method-specific code at all.
 | Crypto / stablecoin | async, minutes | `processing` → `succeeded` | `Pending` → `Paid` | ✅ ADR-007, e2e |
 | Boleto | async, days | `requires_action` → `succeeded` | `Pending` → `Paid` | ⚠️ order axis by code path; not run e2e |
 | Blik | sync, 60 s window | `requires_action` (`blik_authorize`) → `succeeded` | `Pending` → `Paid` | ⚠️ ADR-006 covers `pi_first`; order axis not run e2e |
-| ACH (`us_bank_account`) | async, days | `processing` → `succeeded` | `Pending` → `Paid` | ⚠️ inferred — no ACH-specific code exists yet |
+| ACH (`us_bank_account`) | async, days | success→`succeeded`; indefinite→`processing`; microdeposits→`requires_action`(`verify_with_microdeposits`)→verify→`processing`→`succeeded`; async fail (`insufficient_funds`/`no_account`)→`payment_failed`; sync reject (`charge_exceeds_source_limit`)→confirm rejected | `Pending`→`Paid`; async fail→**`Failed`** (order exists); sync reject→**no order** (cart Active) | ✅ **e2e 2026-08-27** (Financial Connections test accts). No ACH-specific code — rides the generic async + `requires_action` + `payment_failed` paths |
 | Redirect methods (iDEAL, Klarna, P24…) | mostly sync | `requires_action` (`redirect_to_url`) → `succeeded` | `Pending` → `Paid` | ⚠️ inferred from event shape |
 | Wallets (Apple/Google Pay, Express) | sync | `succeeded` | **unset** — site's job | ⚠️ inferred; no per-wallet branching |
 | Pix / voucher / QR rails | async | `requires_action` → `succeeded`/expiry | `Pending` → `Paid`/`Failed` | ⚠️ inferred; not configured today |
