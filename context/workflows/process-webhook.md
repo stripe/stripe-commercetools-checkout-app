@@ -45,9 +45,12 @@ Stripe                    Processor                               CT
   |                           |    → (write failure rethrows; Stripe retries)
   |                           |                                    |
   |                           |--- payment_intent.requires_action  |
-  |                           |    → processStripeEvent()          |
-  |                           |    → converter: no-op (returns [])  |
-  |                           |    → CT not updated (by design)     |
+  |                           |    gated by isBankTransferNextAction():
+  |                           |    • bank transfer → processStripeEvent()
+  |                           |      → converter: AUTHORIZATION:PENDING (pi.amount)
+  |                           |    • card 3DS / Boleto / ACH microdeposit / redirect
+  |                           |      → log-only, service NOT called
+  |                           |    (order axis still runs first, see note below)
   |                           |                                    |
   |                           |--- charge.refunded --------------> |
   |                           |    if multiOps:                    |
@@ -98,6 +101,8 @@ Events are routed to handlers based on type:
 | `charge.refunded` | `processStripeEventRefunded()` (multi-ops) or `processStripeEvent()` | — | Multi-ops uses per-refund amount via `refunds.list` |
 | `refund.updated` / `refund.failed` | `processStripeEventRefundFailed()` | — | Acts **only** on `status` `failed` or `canceled` → `REFUND: FAILURE`. Does not use the converter; correlates via `refund.metadata.ct_payment_id`. See `business-rules/refunds-reversals.md` Rule 6 |
 | `charge.updated` | `processStripeEventMultipleCaptured()` (multi-ops only) | — | Skipped entirely when multi-ops disabled |
+
+> **Order-payment-state axis runs first.** For `payment_intent.succeeded` / `charge.succeeded` / `payment_intent.processing` / `payment_intent.canceled` / `payment_intent.payment_failed` / `payment_intent.requires_action`, the route calls `reflectOrderPaymentStateBestEffort(event)` **before** `processStripeEvent()` (`stripe-payment.route.ts:268, 277, 322`). This best-effort order-state reflection is load-bearing and independent of the transaction axis — see `business-rules/order-payment-state.md` Rule 3. (The webhook diagram above omits it for brevity.)
 
 > **Before any of the above runs:** an event whose PaymentIntent carries no `ct_payment_id` is skipped
 > with a warning and a 200 — it belongs to another integration. See `business-rules/webhook-handling.md`

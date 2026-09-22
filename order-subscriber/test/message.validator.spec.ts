@@ -19,6 +19,13 @@ describe('classify', () => {
     expect(v).toEqual({ act: true, orderId: 'ord-1' });
   });
 
+  // Recurring cycles emit OrderCreatedFromRecurringOrder (an Order-domain message, resource.typeId
+  // 'order'), NOT OrderCreated. Confirmed against @commercetools/platform-sdk@8.16.0.
+  test('acts on an OrderCreatedFromRecurringOrder carrying an order id (recurring cycle)', () => {
+    const v = classify({ type: 'OrderCreatedFromRecurringOrder', resource: { typeId: 'order', id: 'ord-rec-1' } });
+    expect(v).toEqual({ act: true, orderId: 'ord-rec-1' });
+  });
+
   // commercetools sends this once when the Subscription is created. Acting on it would mean processing
   // a payload with no order in it.
   test('ignores the subscription creation test message', () => {

@@ -254,4 +254,37 @@ describe('/operations APIs', () => {
       expect(responseGetStatus.json()).toEqual(mockRoute__paymentIntent_succeed);
     });
   });
+
+  describe('POST /operations/transactions', () => {
+    test('it returns 201 with the handleTransaction result under OAuth2 + manage_checkout_transactions', async () => {
+      //Given
+      const result = { transactionStatus: { state: 'Completed', errors: [] }, paymentId: 'ct-payment-1' };
+      const handleTransactionSpy = jest
+        .spyOn(spiedPaymentService, 'handleTransaction')
+        .mockResolvedValue(result as never);
+
+      //When
+      const response = await app.inject({
+        method: 'POST',
+        url: `/operations/transactions`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: {
+          cartId: '11111111-1111-1111-1111-111111111111',
+          checkoutTransactionItemId: '33333333-3333-3333-3333-333333333333',
+          futureOrderNumber: 'order-42',
+          type: 'Recurring',
+        },
+      });
+
+      //Then
+      // The request clears the OAuth2 + authority preHandlers (asserted inside the hook mocks); a
+      // 201 with the delegated body confirms the route is wired to handleTransaction.
+      expect(response.statusCode).toEqual(201);
+      expect(response.json()).toEqual(result);
+      expect(handleTransactionSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });

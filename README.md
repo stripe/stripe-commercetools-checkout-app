@@ -39,10 +39,11 @@ Configure Stripe secret and public keys so the Connect application can handle en
 
 ## Getting started
 
-The `connect-payment-integration-stripe` contains two modules:
+The `connect-payment-integration-stripe` contains three deployable modules (all declared in `connect.yaml`):
 
 - **Enabler**: This is a wrapper implementation where Stripe frontend [Payment Element](https://docs.stripe.com/payments/payment-element) and [Express Checkout Element](https://docs.stripe.com/payments/express-checkout-element) components are embedded. It gives checkout the control over when and how to load the connector frontend based on business configuration. Use `createExpressBuilder(type)` (e.g. `type: 'dropin'`) for Express flows that follow **commercetools Checkout Express** expectations. More information in [Express Checkout](./enabler/README.md#express-checkout).
 - **Processor**: This functions as a backend service and middleware for integration with the Stripe platform. It interacts with Stripe for transactions and updates the payment entity within Composable Commerce. Finding the Stripe customer that own the commercetools cart, or creating the customer and adding the information to the custome field of the cart. Additionally, it supports a listener for triggers related to Stripe webhook events to update the payment entity with `connect-payment-sdk` based on webhook events.
+- **Order Subscriber**: A standalone deployable that subscribes to the commercetools `OrderCreated` message and reflects the Stripe payment outcome onto the order's `paymentState` (`Pending`/`Paid`), only over an unset state, with a 409-retry that re-resolves the target. See [`order-subscriber/`](./order-subscriber) and `context/business-rules/order-payment-state.md`.
 
 Regarding the development of a processor or enabler module, please refer to the following documentation:
 

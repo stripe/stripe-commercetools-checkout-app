@@ -38,8 +38,8 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 ## KI-004: `handleRequest()` in `actions.ts` does not await async post-deploy functions
 
-**Problem:** `handleRequest()` at `processor/src/connectors/actions.ts:32` is async but the functions it invokes (`createCustomerIdCustomType()`, `createLaunchpadPurchaseOrderNumberCustomType()`, etc.) are awaited only partially — the top-level caller of `handleRequest` does not await its result. Post-deploy functions may fail silently and the deploy succeeds regardless.
-**Root cause:** `processor/src/connectors/actions.ts:32` — missing await on async function call.
+**Problem:** `handleRequest()` at `processor/src/connectors/actions.ts:32` takes `fn: () => void` and does not `await` it, so an async post-deploy function it wraps (e.g. `createOrUpdateCustomerCustomType()`) can reject *after* `handleRequest` already returned — the failure is lost and the deploy succeeds regardless. (Note: `createLaunchpadPurchaseOrderNumberCustomType()`, `actions.ts:41-46`, does **not** go through `handleRequest` — it calls `getTypeByKey` directly — so it is not affected by this specific defect.)
+**Root cause:** `processor/src/connectors/actions.ts:32` — `fn()` invoked without `await`; a rejected promise is never surfaced to the CT Connect SDK.
 **Rule:** All async post-deploy lifecycle functions must be awaited with their errors propagated to the CT Connect SDK to fail the deploy.
 **Implementation note:** If a custom type creation fails silently, the connector starts without the required custom type and runtime calls that depend on it produce confusing errors.
 
@@ -90,11 +90,11 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 
 ---
 
-## KI-010: `getCustomerOptions()` has no `response.ok` check — non-204 error responses treated as guest checkout
+## KI-010: `getCustomerOptions()` has no `response.ok` check — non-204 error responses are parsed as a valid customer session
 
-**Problem:** At `enabler/src/payment-enabler/payment-enabler-mock.ts:433` (`getCustomerOptions()`), the check at line 438 treats any non-204 response (including 400 and 500 errors from the processor) as "guest checkout" and returns null. A server error during customer session setup silently degrades to guest mode without notifying the host application.
-**Root cause:** `enabler/src/payment-enabler/payment-enabler-mock.ts:438` — status code check is `=== 204` only; any other status (including error codes) falls through to the null return.
-**Rule:** Error status codes must be distinguished from intentional 204 No Content. See hub `business-rules/customer-data.md`.
+**Problem:** At `enabler/src/payment-enabler/payment-enabler-mock.ts:433-444` (`getCustomerOptions()`), only a `204` is treated as guest checkout (returns `undefined`). **Any other status — including 400/500 errors from the processor — is not distinguished:** the code calls `await response.json()` on the error body and returns it as if it were a valid `CustomerResponseSchemaDTO`. A server error during customer session setup therefore feeds a bogus/error payload into the session flow rather than failing or degrading cleanly (same class of defect as KI-009: garbage config, not safe degradation). *(Corrected 2026-09-02 @ `10f0ab5`: this entry previously claimed non-204 responses returned null / degraded to guest checkout — the opposite of what the code does.)*
+**Root cause:** `enabler/src/payment-enabler/payment-enabler-mock.ts:433-444` — the only status branch is `=== 204`; there is no `response.ok` check before `response.json()`, so error responses are parsed and returned as data.
+**Rule:** Error status codes must be distinguished from both an intentional 204 No Content and a valid session body — add a `response.ok` check before parsing. See hub `business-rules/customer-data.md`.
 
 ---
 
@@ -257,3 +257,12 @@ Connector-specific limitations, code defects, and operational gotchas. Cross-cut
 **Root cause:** `enabler/src/dropin/dropin-embedded.ts` — no dedicated "processing" result state; `pending` reuses `isSuccess: false`.
 **Rule:** Preventing premature fulfillment takes priority (satisfied). A dedicated processing/pending result state on `PaymentResult` is the proper fix.
 **Implementation note:** Not on the crypto path — crypto is redirect-based and webhook-driven, so the synchronous gate/enabler branch is not hit (verified via E2E). Becomes a real UX requirement for non-redirect async methods (ACH, bank transfers), which DO confirm synchronously through the gate.
+
+---
+
+## KI-028: recurring `checkoutTransactionItemId` is caller-supplied and not bound to a cart transaction item
+
+**Problem:** In `handleTransaction` (recurring `POST /operations/transactions`), `draft.checkoutTransactionItemId` is only UUID-format-validated, never verified to reference a real transaction item on the resolved cart. It is used as the CT `Payment.key` (the unique cross-window dedup anchor) and the native `checkoutTransactionItemId` linkage field. A caller with `manage_checkout_transactions` could pass a guessed/seeded uuid.
+**Root cause:** `processor/src/services/stripe-payment.service.ts` — the anchor is validated for format (`UUID_RE`) only; there is no binding to a cart-side transaction item.
+**Rule:** Bounded today by OAuth2/JWT auth + the customer-bound cart + the IDOR resolver (`resolveSavedPaymentMethodForCharge`) + the reuse-not-recreate design (a pre-seeded empty payment is just driven with the legitimate, IDOR-verified charge; an attacker cannot cheaply seed a *resolved* one). Residual severity: LOW. Proper fix: resolve `checkoutTransactionItemId` against a real transaction item on the cart before use.
+**Implementation note:** Deferred follow-up — queued as a FEATURE in `workspace/2026-09-21-recurring-dedup-key/tasks-queue.json` (security MEDIUM-2 from the key-based dedup session). The ownership guard applied symmetrically across the short-circuit / reuse / duplicate-winner paths partially mitigates it. Introduced with the b3 `Payment.key` dedup (ADR-011).

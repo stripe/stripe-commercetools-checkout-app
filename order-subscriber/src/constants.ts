@@ -1,13 +1,18 @@
 /**
- * The commercetools message this app subscribes to.
+ * The commercetools messages this app subscribes to.
  *
- * `OrderCreated` is the whole point of this module. Verified 2026-08-19 against two real orders that
+ * `OrderCreated` covers browser checkout. Verified 2026-08-19 against two real orders that
  * commercetools Checkout created: the message exists and is emitted 17–19 ms after the order itself.
  * That is what makes this trigger correct where the Stripe webhook path is not — `requires_action`
  * fires BEFORE the order exists, by construction, so no amount of retrying inside the webhook handler
  * can win. See `context/business-rules/order-payment-state.md` Rule 4.
+ *
+ * `OrderCreatedFromRecurringOrder` covers recurring cycles: commercetools emits THIS message (not
+ * `OrderCreated`) when an order is created from a Recurring Order schedule. It is an Order-domain
+ * message (`resource.typeId === 'order'`, confirmed against `@commercetools/platform-sdk@8.16.0`), so
+ * it flows through the same `resourceTypeId: 'order'` subscription and validator with no other change.
  */
-export const MESSAGE_TYPES = ['OrderCreated'] as const;
+export const MESSAGE_TYPES = ['OrderCreated', 'OrderCreatedFromRecurringOrder'] as const;
 
 /**
  * commercetools sends a test message when a Subscription is created, and it is NOT an order message:
