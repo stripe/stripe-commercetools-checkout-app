@@ -153,7 +153,7 @@ deployAs:
           description: commercetools client secret.
           required: true
         - key: CTP_CLIENT_ID
-          description: commercetools client ID with manage_payments, manage_orders, view_sessions, view_api_clients, manage_checkout_payment_intents, introspect_oauth_tokens, manage_types and view_types scopes
+          description: commercetools client ID with manage_payments, manage_orders, manage_payment_methods, manage_recurring_payment_jobs, view_sessions, view_api_clients, manage_checkout_payment_intents, manage_checkout_transactions, introspect_oauth_tokens, manage_types and view_types scopes
           required: true
         - key: STRIPE_SECRET_KEY
           description: Stripe secret key (example - sk_*****).

@@ -3,6 +3,7 @@ import {
   Address,
   Cart,
   ErrorInvalidOperation,
+  ErrorRequiredField,
   ErrorResourceNotFound,
   healthCheckCommercetoolsPermissions,
   PaymentMethod,
@@ -21,6 +22,7 @@ import {
 
 import { SupportedPaymentComponentsSchemaDTO } from '../dtos/operations/payment-componets.dto';
 import { PaymentModificationStatus, PaymentTransactions } from '../dtos/operations/payment-intents.dto';
+import { TransactionDraftDTO, TransactionResponseDTO } from '../dtos/operations/transaction.dto';
 import packageJSON from '../../package.json';
 
 import { AbstractPaymentService } from './abstract-payment.service';
@@ -153,6 +155,38 @@ const isConcurrentModification = (error: unknown): boolean => {
   );
 };
 
+/**
+ * Shape of a Stripe off-session decline. Off-session confirms surface a declined card as a THROWN
+ * `StripeCardError` (not a returned status), so the recurring-charge handler narrows to this to book
+ * an Authorization/Failure and answer 201 with `state: 'Failed'` rather than letting it become a 500.
+ */
+type StripeCardLikeError = {
+  type?: string;
+  code?: string;
+  decline_code?: string;
+  payment_intent?: { id?: string };
+  raw?: { type?: string; payment_intent?: { id?: string } };
+};
+
+/**
+ * Outcome of resolving the CT Payment for a recurring installment charge (handleTransaction steps 5-7):
+ * either the installment already carries a resolved outcome (or a concurrent winner does) — short-circuit
+ * and return that response WITHOUT charging — or a CT Payment plus its IDOR-verified saved method are ready
+ * to be charged off-session.
+ */
+type RecurringChargeTarget =
+  | { kind: 'resolved'; response: TransactionResponseDTO }
+  | { kind: 'charge'; ctPayment: Payment; token: string; stripeCustomerId: string };
+
+/**
+ * Outcome of obtaining the CT Payment for a recurring installment (handleTransaction step 7): either a
+ * concurrent DuplicateField winner already resolved the installment ({ kind: 'resolved' }) or a CT Payment
+ * — freshly created or a reused stuck one — is ready to charge ({ kind: 'payment' }).
+ */
+type RecurringPaymentResolution =
+  | { kind: 'resolved'; response: TransactionResponseDTO }
+  | { kind: 'payment'; ctPayment: Payment };
+
 export class StripePaymentService extends AbstractPaymentService {
   private stripeEventConverter: StripeEventConverter;
 
@@ -210,6 +244,7 @@ export class StripePaymentService extends AbstractPaymentService {
             'manage_types',
             'manage_payment_methods',
             'manage_recurring_payment_jobs',
+            'manage_checkout_transactions',
           ],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
@@ -2427,6 +2462,632 @@ export class StripePaymentService extends AbstractPaymentService {
         country: getField('country'),
       },
     });
+  }
+
+  /**
+   * Handles POST /operations/transactions — a server-to-server, off-session recurring charge against
+   * a saved Stripe payment method, for commercetools recurring orders.
+   *
+   * Trust model (Phase 3 security review): OAuth2 authenticates a MACHINE client and checks scopes
+   * only — never a customer. So identity is resolved from unforgeable commercetools entities, never
+   * from the caller body, and every decision fails closed. The saved method is resolved strictly from
+   * CT and its Stripe ownership is asserted before charging (IDOR guard). The payment is linked to the
+   * recurring transaction item via the native checkoutTransactionItemId field (SDK 1.2.x), and idempotency
+   * is anchored to that same stable installment id (not a freshly minted payment id), so a re-trigger can
+   * never double-charge: the cross-window dedupe short-circuits a resolved installment and the stable
+   * Stripe idempotency key covers the concurrent window.
+   *
+   * @param draft - the recurring transaction request body
+   * @returns Promise with the transaction status (Completed | Pending | Failed) and the CT payment id
+   */
+  public async handleTransaction(draft: TransactionDraftDTO): Promise<TransactionResponseDTO> {
+    // 1. Type guard — a hard contract violation (framework 4xx), not a booked decline.
+    if (draft.type !== 'Recurring') {
+      throw new ErrorInvalidOperation(`Unsupported transaction type: ${draft.type}`);
+    }
+
+    // 2. Installment identity — the SOLE idempotency anchor. checkoutTransactionItemId is a required
+    //    uuid on the DTO; asserted again here (defense-in-depth, fail closed) so the anchor guarantee
+    //    holds even if the DTO changes. Anchoring on anything else — e.g. falling back to
+    //    futureOrderNumber — could shift the Stripe idempotency key AND the CT checkoutTransactionItemId
+    //    dedupe across retries and double-charge. futureOrderNumber is deliberately NOT an anchor.
+    //    Presence AND uuid format are both asserted in-service: the value is interpolated into a CT query
+    //    predicate in step 5, so the format guarantee must not rely solely on the route's schema layer.
+    const installmentKey = draft.checkoutTransactionItemId;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!installmentKey || !UUID_RE.test(installmentKey)) {
+      throw new ErrorInvalidOperation(
+        'Recurring transaction requires a uuid checkoutTransactionItemId to anchor idempotency',
+      );
+    }
+
+    // 3. Cart + customer — the identity the charge is bound to, resolved from CT, never the caller.
+    const ctCart = await this.ctCartService.getCart({ id: draft.cartId });
+    if (!ctCart.customerId) {
+      throw new ErrorInvalidOperation('Recurring transaction requires a customer-bound cart');
+    }
+
+    // 4. Amount from commercetools (source of truth).
+    const amountPlanned = await this.resolveRecurringChargeAmount(draft, ctCart);
+
+    // 5-7. Dedupe on the unique Payment.key, resolve the saved method (IDOR guard), and obtain the CT
+    //      Payment to charge — short-circuiting BEFORE any charge if this installment (or a concurrent
+    //      DuplicateField winner) already carries a resolved outcome.
+    const target = await this.resolveRecurringChargeTarget({ draft, ctCart, installmentKey, amountPlanned });
+    if (target.kind === 'resolved') {
+      return target.response;
+    }
+
+    // 8-10. Charge off-session and map the outcome.
+    return this.chargeRecurringPaymentOffSession({
+      ctPayment: target.ctPayment,
+      token: target.token,
+      stripeCustomerId: target.stripeCustomerId,
+      amountPlanned,
+      installmentKey,
+      ctCartId: ctCart.id,
+    });
+  }
+
+  /**
+   * Step 4 — Amount from commercetools (source of truth). A caller-supplied amount may only narrow, never
+   * exceed, the cart amount; the charged value is always CT's, asserted a positive integer.
+   */
+  private async resolveRecurringChargeAmount(
+    draft: TransactionDraftDTO,
+    ctCart: Cart,
+  ): Promise<{ centAmount: number; currencyCode: string }> {
+    const cartAmount = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+    if (draft.amount) {
+      if (draft.amount.currencyCode !== cartAmount.currencyCode) {
+        throw new ErrorInvalidOperation('Requested currency does not match the cart');
+      }
+      if (draft.amount.centAmount > cartAmount.centAmount) {
+        throw new ErrorInvalidOperation('Requested amount exceeds the cart amount');
+      }
+    }
+    const amountPlanned = { centAmount: cartAmount.centAmount, currencyCode: cartAmount.currencyCode };
+    if (!Number.isInteger(amountPlanned.centAmount) || amountPlanned.centAmount <= 0) {
+      throw new ErrorInvalidOperation('Invalid recurring charge amount');
+    }
+    return amountPlanned;
+  }
+
+  /**
+   * Steps 5-7 — resolve the CT Payment to charge for a recurring installment.
+   *
+   * 5. Installment dedupe — short-circuit BEFORE charging if this installment already has a payment carrying
+   *    a RESOLVED outcome. Keyed on the unique CT Payment.key (= checkoutTransactionItemId): Payment.key is a
+   *    queryable, project-unique field — unlike the native checkoutTransactionItemId field, which the deployed
+   *    CT API does NOT accept as a `where` predicate (returns 400 InvalidInput). This is the cross-window
+   *    (>24h / cross-restart) defense; the deterministic idempotency key covers the concurrent TOCTOU window.
+   *    Ownership guard (symmetric with the DuplicateField winner branch): the key is caller-supplied, so a
+   *    payment found by key must belong to this cart's customer before we surface OR reuse it.
+   * 6. Resolve the saved payment method strictly from CT and assert Stripe ownership (IDOR guard) — required
+   *    for BOTH the reuse and the create branch.
+   * 7. Obtain the CT Payment (reuse a stuck one or create a new one) — see obtainRecurringCtPayment.
+   *
+   * @returns `{ kind: 'resolved' }` when the installment already resolved (return the response, do NOT charge)
+   *          or `{ kind: 'charge' }` with the payment + IDOR-verified saved method ready to charge.
+   */
+  private async resolveRecurringChargeTarget(input: {
+    draft: TransactionDraftDTO;
+    ctCart: Cart;
+    installmentKey: string;
+    amountPlanned: { centAmount: number; currencyCode: string };
+  }): Promise<RecurringChargeTarget> {
+    const { draft, ctCart, installmentKey, amountPlanned } = input;
+
+    // 5. Installment dedupe.
+    const existing = await this.findPaymentByKey(installmentKey);
+    if (existing) {
+      this.assertRecurringPaymentOwnership(existing, ctCart);
+    }
+    if (existing && this.hasResolvedRecurringOutcome(existing)) {
+      log.info('Recurring transaction already processed for installment; returning existing result', {
+        installmentId: installmentKey,
+        ctPaymentId: existing.id,
+      });
+      return { kind: 'resolved', response: this.mapExistingPaymentToTransactionResponse(existing) };
+    }
+
+    // 6. Resolve the saved payment method strictly from CT and assert Stripe ownership (IDOR guard).
+    const { token, stripeCustomerId } = await this.resolveSavedPaymentMethodForCharge(ctCart, draft);
+
+    // 7. Obtain the CT Payment to charge.
+    const resolution = await this.obtainRecurringCtPayment({ draft, ctCart, installmentKey, amountPlanned, existing });
+    if (resolution.kind === 'resolved') {
+      return resolution;
+    }
+
+    return { kind: 'charge', ctPayment: resolution.ctPayment, token, stripeCustomerId };
+  }
+
+  /**
+   * Step 7 — obtain the CT Payment to charge: reuse a stuck-Authorization/Initial payment or create a fresh
+   * one. A prior attempt that died before Stripe ever created the PaymentIntent (e.g. a pre-flight network
+   * error) leaves a payment stuck at Authorization/Initial with no money moved — that is NOT terminal, so it
+   * must be retried rather than frozen as Pending forever. Under the unique Payment.key a fresh createPayment
+   * would hard-fail (DuplicateField); instead REUSE the stuck payment and drive the charge through steps 8-10.
+   * This preserves the "retry rather than freeze" invariant (see hasResolvedRecurringOutcome) without minting
+   * a duplicate and without under-charging the installment.
+   *
+   * @returns `{ kind: 'payment' }` with the payment to charge, or `{ kind: 'resolved' }` when a concurrent
+   *          DuplicateField winner already resolved the installment.
+   */
+  private async obtainRecurringCtPayment(input: {
+    draft: TransactionDraftDTO;
+    ctCart: Cart;
+    installmentKey: string;
+    amountPlanned: { centAmount: number; currencyCode: string };
+    existing: Payment | undefined;
+  }): Promise<RecurringPaymentResolution> {
+    const { draft, ctCart, installmentKey, amountPlanned, existing } = input;
+
+    if (existing) {
+      const ctPayment = existing;
+      // Narrow-window safety: if the prior attempt died BETWEEN createPayment and addPayment, the payment
+      // exists (found by key) but is not linked to the cart. Link it idempotently so the order-subscriber can
+      // recognize the eventual Charge/Success. In the common stuck case it is already linked (no-op).
+      const alreadyLinked = ctCart.paymentInfo?.payments?.some((ref) => ref.id === ctPayment.id);
+      if (!alreadyLinked) {
+        await this.ctCartService.addPayment({
+          resource: { id: ctCart.id, version: ctCart.version },
+          paymentId: ctPayment.id,
+        });
+      }
+      log.info('Reusing stuck recurring installment payment; driving the charge', {
+        installmentId: installmentKey,
+        ctPaymentId: ctPayment.id,
+      });
+      return { kind: 'payment', ctPayment };
+    }
+
+    // Create the CT Payment BEFORE the PaymentIntent. `key` AND the native `checkoutTransactionItemId` both
+    // carry the installment identity: `key` is the unique dedupe handle (queryable, project-unique),
+    // `checkoutTransactionItemId` is the native SDK 1.2.x payment<->transaction-item link. interfaceId is
+    // deliberately NOT set here — it is stamped with the real Stripe PaymentIntent id after the charge
+    // (like the normal checkout flow), never the installment key.
+    const paymentInterface = draft.paymentInterface ?? getConfig().paymentInterface;
+    let ctPayment: Payment;
+    try {
+      ctPayment = await this.ctPaymentService.createPayment({
+        amountPlanned,
+        key: installmentKey,
+        checkoutTransactionItemId: installmentKey,
+        ...({
+          paymentMethodInfo: {
+            paymentInterface,
+          },
+        } as any),
+        ...this.resolveInitialPaymentCustomerFields(ctCart),
+        transactions: [
+          {
+            type: PaymentTransactions.AUTHORIZATION,
+            amount: amountPlanned,
+            state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
+          },
+        ],
+      });
+    } catch (e) {
+      // Concurrent race: another trigger for this installment created the payment between our step-5 read
+      // and here. CT's unique-key constraint is the DB-level mutex — the loser gets DuplicateField and
+      // must return the winner's outcome idempotently, NEVER a second create/charge (the shared Stripe
+      // idempotency key `charge-${installmentKey}` is the backstop even if a charge did slip through).
+      if (this.isCtDuplicateKeyError(e)) {
+        const winner = await this.resolveRecurringDuplicateWinner(installmentKey, ctCart);
+        if (winner) {
+          return { kind: 'resolved', response: winner };
+        }
+      }
+      throw wrapStripeError(e);
+    }
+
+    await this.ctCartService.addPayment({
+      resource: {
+        id: ctCart.id,
+        version: ctCart.version,
+      },
+      paymentId: ctPayment.id,
+    });
+    return { kind: 'payment', ctPayment };
+  }
+
+  /**
+   * DuplicateField-winner resolution for a concurrent recurring create race (step 7 catch). Re-fetches the
+   * winner by the unique key, re-checks ownership (same guard as step 5 — only ever surface a payment bound
+   * to this customer), and returns its idempotent outcome. Returns undefined when no winner is found (the
+   * caller then rethrows the original error).
+   */
+  private async resolveRecurringDuplicateWinner(
+    installmentKey: string,
+    ctCart: Cart,
+  ): Promise<TransactionResponseDTO | undefined> {
+    const winner = await this.findPaymentByKey(installmentKey);
+    if (!winner) {
+      return undefined;
+    }
+    this.assertRecurringPaymentOwnership(winner, ctCart);
+    if (this.hasResolvedRecurringOutcome(winner)) {
+      return this.mapExistingPaymentToTransactionResponse(winner);
+    }
+    // Winner is still charging; do not duplicate. Return Pending referencing the winner.
+    return { transactionStatus: { state: 'Pending', errors: [] }, paymentId: winner.id };
+  }
+
+  /**
+   * Steps 8-10 — charge the recurring installment off-session and map the outcome.
+   *
+   * 8. Idempotency key — ALWAYS server-derived from the installment identity, never caller-varied. Inside the
+   *    dedupe TOCTOU window (two concurrent triggers both read zero and both create) this deterministic key is
+   *    the ONLY defense against a double charge, so the caller must not be able to change it. Namespaced so it
+   *    cannot collide with a refund-/capture key (hub Rule 4); never crypto.randomUUID (KI-007).
+   *    draft.idempotencyKey is intentionally NOT used.
+   * 9. Dedicated off-session PaymentIntent params — deliberately NOT buildPaymentIntentCreateParams, which
+   *    powers the live browser checkout and must not change. metadata.ct_payment_id is set inline in create()
+   *    so the succeeded webhook (fires immediately on confirm) can reconcile.
+   * 10. Charge and map the outcome.
+   */
+  private async chargeRecurringPaymentOffSession(input: {
+    ctPayment: Payment;
+    token: string;
+    stripeCustomerId: string;
+    amountPlanned: { centAmount: number; currencyCode: string };
+    installmentKey: string;
+    ctCartId: string;
+  }): Promise<TransactionResponseDTO> {
+    const { ctPayment, token, stripeCustomerId, amountPlanned, installmentKey, ctCartId } = input;
+
+    const idempotencyKey = `charge-${installmentKey}`;
+    const params = this.buildOffSessionPaymentIntentCreateParams({
+      amountPlanned,
+      stripeCustomerId,
+      paymentMethodToken: token,
+      ctPaymentId: ctPayment.id,
+      ctCartId,
+      installmentKey,
+    });
+
+    try {
+      const paymentIntent = await stripeApi().paymentIntents.create(params, { idempotencyKey });
+      const state = this.mapPaymentIntentStatusToTransactionState(paymentIntent.status);
+      if (state === 'Failed') {
+        // A returned non-terminal status (requires_action / requires_payment_method) is treated as
+        // Failed for off-session. Route it through the SAME dedup guard as a thrown decline so a
+        // payment_intent.payment_failed webhook cannot double-write the Authorization/Failure.
+        await this.bookAuthorizationFailureIfAbsent(ctPayment, amountPlanned, paymentIntent.id);
+        return {
+          transactionStatus: {
+            state: 'Failed',
+            errors: [{ code: 'PaymentRejected', message: `unexpected_payment_intent_status_${paymentIntent.status}` }],
+          },
+          paymentId: ctPayment.id,
+        };
+      }
+      if (state === 'Completed') {
+        // Synchronous capture (capture_method automatic): the money IS captured, so Charge/Success is
+        // the honest booking AND the transaction the order-subscriber recognizes as Paid (guard.ts:73).
+        // Dedup-guarded against the payment_intent.succeeded webhook, which books the same Charge/Success
+        // (stripeEventConverter.ts). Mirrors bookAuthorizationFailureIfAbsent.
+        await this.bookChargeSuccessIfAbsent(ctPayment, amountPlanned, paymentIntent.id);
+      } else {
+        // Pending — async settlement rail (e.g. bank transfer). UNCHANGED: book Authorization/Pending
+        // now; the webhook settles it to Charge/Success later. This path must not be broken.
+        await this.ctPaymentService.updatePayment({
+          id: ctPayment.id,
+          // Stamp interfaceId with the real PaymentIntent id (SDK maps pspReference -> setInterfaceId,
+          // only if unset — never clobbers a value the succeeded/failed webhook may have written).
+          pspReference: paymentIntent.id,
+          transaction: {
+            type: PaymentTransactions.AUTHORIZATION,
+            amount: amountPlanned,
+            state: PaymentStatus.PENDING,
+            interactionId: paymentIntent.id,
+          },
+        });
+      }
+      return { transactionStatus: { state, errors: [] }, paymentId: ctPayment.id };
+    } catch (e) {
+      if (this.isStripeCardError(e)) {
+        const declined = e as StripeCardLikeError;
+        const paymentIntentId = declined.raw?.payment_intent?.id ?? declined.payment_intent?.id;
+
+        // Dedup guard: a payment_intent.payment_failed webhook may write the same Authorization/Failure.
+        await this.bookAuthorizationFailureIfAbsent(ctPayment, amountPlanned, paymentIntentId);
+
+        // Log only non-sensitive fields — never the raw Stripe error or payment method (may carry PII).
+        log.warn('Off-session recurring charge declined', {
+          code: declined.code,
+          declineCode: declined.decline_code,
+          paymentIntentId,
+          ctPaymentId: ctPayment.id,
+        });
+
+        return {
+          transactionStatus: {
+            state: 'Failed',
+            errors: [{ code: 'PaymentRejected', message: declined.code ?? 'card_declined' }],
+          },
+          paymentId: ctPayment.id,
+        };
+      }
+      // Non-card errors (network, config, CT) are NOT masked as a 201 — surface them.
+      throw wrapStripeError(e);
+    }
+  }
+
+  /**
+   * Books an Authorization/Failure transaction for a declined recurring charge, but only if one is
+   * not already present — the synchronous decline write can race a payment_intent.payment_failed
+   * webhook writing the same transaction. Mirrors the hasTransactionInState dedup pattern used by the
+   * async-pending path. Used by BOTH the thrown-decline and the returned-Failed status branches.
+   */
+  private async bookAuthorizationFailureIfAbsent(
+    ctPayment: Payment,
+    amountPlanned: { centAmount: number; currencyCode: string },
+    interactionId?: string,
+  ): Promise<void> {
+    const alreadyFailed = this.ctPaymentService.hasTransactionInState({
+      payment: ctPayment,
+      transactionType: PaymentTransactions.AUTHORIZATION,
+      states: [PaymentStatus.FAILURE],
+    });
+    if (alreadyFailed) {
+      return;
+    }
+    await this.ctPaymentService.updatePayment({
+      id: ctPayment.id,
+      // Stamp interfaceId with the real PaymentIntent id (SDK maps pspReference -> setInterfaceId, only
+      // if unset — never clobbers a webhook-written value). Absent when the charge failed pre-PI-create.
+      ...(interactionId ? { pspReference: interactionId } : {}),
+      transaction: {
+        type: PaymentTransactions.AUTHORIZATION,
+        amount: amountPlanned,
+        state: PaymentStatus.FAILURE,
+        ...(interactionId ? { interactionId } : {}),
+      },
+    });
+  }
+
+  /**
+   * Books a Charge/Success for a synchronously-captured recurring charge, but only if one is not
+   * already present — the synchronous write can race the payment_intent.succeeded webhook, which books
+   * the same Charge/Success (see stripeEventConverter). Mirrors bookAuthorizationFailureIfAbsent so the
+   * two writers converge on a single Charge/Success instead of duplicating it.
+   */
+  private async bookChargeSuccessIfAbsent(
+    ctPayment: Payment,
+    amountPlanned: { centAmount: number; currencyCode: string },
+    interactionId?: string,
+  ): Promise<void> {
+    const alreadyCharged = this.ctPaymentService.hasTransactionInState({
+      payment: ctPayment,
+      transactionType: PaymentTransactions.CHARGE,
+      states: [PaymentStatus.SUCCESS],
+    });
+    if (alreadyCharged) {
+      return;
+    }
+    await this.ctPaymentService.updatePayment({
+      id: ctPayment.id,
+      // Stamp interfaceId with the real PaymentIntent id (SDK maps pspReference -> setInterfaceId, only
+      // if unset — never clobbers a webhook-written value).
+      ...(interactionId ? { pspReference: interactionId } : {}),
+      transaction: {
+        type: PaymentTransactions.CHARGE,
+        amount: amountPlanned,
+        state: PaymentStatus.SUCCESS,
+        ...(interactionId ? { interactionId } : {}),
+      },
+    });
+  }
+
+  /**
+   * True when an installment's existing payment carries a RESOLVED outcome — any Authorization or
+   * Charge transaction in Success, Failure, or Pending. A payment whose only transaction is
+   * Authorization/Initial (a prior attempt that never reached Stripe) is deliberately NOT resolved, so
+   * the dedupe in step 5 lets it be retried rather than short-circuiting it to Pending forever.
+   */
+  private hasResolvedRecurringOutcome(payment: Payment): boolean {
+    const resolvedStates: string[] = [PaymentStatus.SUCCESS, PaymentStatus.FAILURE, PaymentStatus.PENDING];
+    return (payment.transactions ?? []).some(
+      (t) =>
+        (t.type === PaymentTransactions.AUTHORIZATION || t.type === PaymentTransactions.CHARGE) &&
+        resolvedStates.includes(t.state),
+    );
+  }
+
+  /**
+   * Finds the CT Payment for a recurring installment by its unique CT Payment.key (= checkoutTransactionItemId).
+   * `key` is a queryable, project-unique CT field, so this returns at most one payment. Uses the raw CT
+   * payments query via paymentSDK.ctAPI.client with a `where=key="..."` predicate — the exact pattern the
+   * connector already uses for type lookups (see commerce-tools/customTypeClient.ts). The value is a uuid
+   * asserted by UUID_RE in handleTransaction before it reaches this predicate, so it cannot inject.
+   *
+   * This is the recurring path's cross-window (>24h / cross-restart) dedupe layer; the stable Stripe
+   * idempotency key `charge-${checkoutTransactionItemId}` covers only the concurrent TOCTOU window.
+   * FAIL-CLOSED: if the deployed CT API rejects the predicate it throws (a 400), which surfaces immediately
+   * — it never returns a false-empty result that could permit a silent double charge.
+   */
+  private async findPaymentByKey(key: string): Promise<Payment | undefined> {
+    const res = await paymentSDK.ctAPI.client
+      .payments()
+      .get({ queryArgs: { where: `key="${key}"`, limit: 1 } })
+      .execute();
+    return res.body.results[0];
+  }
+
+  /**
+   * Narrowly identifies CT's unique-key violation (thrown by createPayment when a payment with the same
+   * `key` already exists). Matches ONLY statusCode 400 + an errors entry with code 'DuplicateField' on the
+   * `key` field — never a bare 400 — so an unrelated validation failure or a duplicate on a different field
+   * is not masked as an installment race.
+   */
+  private isCtDuplicateKeyError(e: unknown): boolean {
+    const err = e as { statusCode?: number; body?: { errors?: Array<{ code?: string; field?: string }> } };
+    return (
+      err?.statusCode === 400 &&
+      (err?.body?.errors ?? []).some((x) => x?.code === 'DuplicateField' && x?.field === 'key')
+    );
+  }
+
+  /**
+   * Fail-closed ownership guard for a recurring installment payment resolved by its (caller-supplied) key.
+   * A payment found via `key = checkoutTransactionItemId` must belong to the customer of the resolved cart
+   * before it is ever surfaced (dedupe short-circuit), reused (stuck-Initial retry), or returned after a
+   * concurrent DuplicateField. Prevents a caller pairing their own cart with another installment's key from
+   * reading or driving a payment that is not theirs.
+   */
+  private assertRecurringPaymentOwnership(payment: Payment, ctCart: Cart): void {
+    if (payment.customer?.id && payment.customer.id !== ctCart.customerId) {
+      throw new ErrorInvalidOperation('Installment payment does not belong to the resolved customer');
+    }
+  }
+
+  /**
+   * Resolves the saved payment method to charge and asserts it belongs to the resolved customer.
+   *
+   * IDOR guard: the token is fetched from commercetools scoped to the cart's customerId (the SDK
+   * enforces the payment-method belongs to that customer), and the resolved Stripe payment method's
+   * `customer` must equal the resolved Stripe customer id. A caller-supplied `pm_...` or customer id is
+   * never forwarded to Stripe. The saved method id is REQUIRED — read from the platform's nested
+   * `paymentMethod.id` (or the flat `paymentMethodId` alias); when neither is present the resolver fails
+   * closed with `ErrorRequiredField`. There is deliberately NO "first saved method" fallback: it could
+   * charge an arbitrary same-customer instrument and mask a request-shape mismatch.
+   */
+  private async resolveSavedPaymentMethodForCharge(
+    ctCart: Cart,
+    draft: TransactionDraftDTO,
+  ): Promise<{ token: string; stripeCustomerId: string }> {
+    const customerId = ctCart.customerId as string;
+    const paymentInterface = draft.paymentInterface ?? getConfig().paymentInterface;
+
+    // The platform sends the saved method NESTED as `paymentMethod: { id }`; `paymentMethodId` is kept
+    // as a flat, reference-compatible alias. Exactly one is required — fail closed with no "first saved
+    // method" fallback (which could charge an arbitrary same-customer instrument and mask a shape
+    // mismatch). Mirrors the reference recurring handler (mock-payment.service.ts).
+    const paymentMethodId = draft.paymentMethod?.id ?? draft.paymentMethodId;
+    if (!paymentMethodId) {
+      throw new ErrorRequiredField('paymentMethodId', {
+        privateMessage: 'neither paymentMethod.id nor paymentMethodId is set on the recurring transaction draft',
+        privateFields: { cart: { id: ctCart.id }, checkoutTransactionItemId: draft.checkoutTransactionItemId },
+      });
+    }
+    const ctPaymentMethod: PaymentMethod = await this.ctPaymentMethodService.get({
+      customerId,
+      id: paymentMethodId,
+      paymentInterface,
+    });
+
+    const token = ctPaymentMethod.token?.value;
+    if (!token) {
+      throw new ErrorInvalidOperation('Saved payment method has no usable token');
+    }
+
+    const ctCustomer = await this.getCtCustomer(customerId);
+    if (!ctCustomer) {
+      throw new ErrorInvalidOperation('Customer not found for recurring charge');
+    }
+    const stripeCustomerId = await this.retrieveOrCreateStripeCustomerId(ctCart, ctCustomer);
+    if (!stripeCustomerId) {
+      throw new ErrorInvalidOperation('Unable to resolve Stripe customer for recurring charge');
+    }
+
+    // IDOR guard: the stored token must belong to the resolved Stripe customer.
+    const stripePaymentMethod = await stripeApi().paymentMethods.retrieve(token);
+    if (stripePaymentMethod.customer !== stripeCustomerId) {
+      throw new ErrorInvalidOperation('Payment method does not belong to the resolved customer');
+    }
+
+    return { token, stripeCustomerId };
+  }
+
+  /**
+   * Builds the PaymentIntent params for a server-to-server off-session recurring charge.
+   *
+   * Intentionally separate from buildPaymentIntentCreateParams (which powers the live browser
+   * checkout flow — changing it is a market-wide regression risk). Confirms immediately against the
+   * saved method, disallows redirect-based methods (no shopper present), and stamps ct_payment_id in
+   * metadata so the succeeded webhook can reconcile the Pending/Completed result.
+   */
+  private buildOffSessionPaymentIntentCreateParams(input: {
+    amountPlanned: { centAmount: number; currencyCode: string };
+    stripeCustomerId: string;
+    paymentMethodToken: string;
+    ctPaymentId: string;
+    ctCartId: string;
+    installmentKey: string;
+  }): Stripe.PaymentIntentCreateParams {
+    return {
+      amount: input.amountPlanned.centAmount,
+      currency: input.amountPlanned.currencyCode.toLowerCase(),
+      customer: input.stripeCustomerId,
+      payment_method: input.paymentMethodToken,
+      off_session: true,
+      confirm: true,
+      capture_method: 'automatic',
+      automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
+      metadata: {
+        ct_payment_id: input.ctPaymentId,
+        cart_id: input.ctCartId,
+        ct_project_key: getConfig().projectKey,
+        installment_id: input.installmentKey,
+      },
+    };
+  }
+
+  /**
+   * Maps a PaymentIntent status to the transaction API state. `authentication_required` for an
+   * off-session charge arrives as a thrown StripeCardError, so it never reaches here; a returned
+   * requires_action/requires_payment_method is treated as Failed for now (open question with
+   * commercetools — see order-payment-state open questions).
+   */
+  private mapPaymentIntentStatusToTransactionState(
+    status: Stripe.PaymentIntent.Status,
+  ): 'Completed' | 'Pending' | 'Failed' {
+    switch (status) {
+      case 'succeeded':
+        return 'Completed';
+      case 'processing':
+        return 'Pending';
+      default:
+        return 'Failed';
+    }
+  }
+
+  /**
+   * Narrows a thrown value to a Stripe card decline (including off-session authentication_required).
+   */
+  private isStripeCardError(e: unknown): e is StripeCardLikeError {
+    const err = e as StripeCardLikeError;
+    return (
+      err?.type === 'StripeCardError' ||
+      err?.raw?.type === 'card_error' ||
+      err?.code === 'card_declined' ||
+      err?.code === 'authentication_required'
+    );
+  }
+
+  /**
+   * Maps an already-existing installment payment (dedupe short-circuit) to a transaction response,
+   * so a re-trigger returns the prior outcome instead of charging again.
+   */
+  private mapExistingPaymentToTransactionResponse(payment: Payment): TransactionResponseDTO {
+    const authTx = payment.transactions?.find((t) => t.type === PaymentTransactions.AUTHORIZATION);
+    const chargeTx = payment.transactions?.find((t) => t.type === PaymentTransactions.CHARGE);
+    const state: 'Completed' | 'Pending' | 'Failed' =
+      chargeTx?.state === 'Success' || authTx?.state === 'Success'
+        ? 'Completed'
+        : authTx?.state === 'Failure'
+          ? 'Failed'
+          : 'Pending';
+    return {
+      transactionStatus: {
+        state,
+        errors: state === 'Failed' ? [{ code: 'PaymentRejected', message: 'card_declined' }] : [],
+      },
+      paymentId: payment.id,
+    };
   }
 
   /**

@@ -12,7 +12,7 @@ To support saved payment methods, the connector manages a bidirectional mapping 
 1. Read saved ID from CT customer custom field (`CT_CUSTOM_TYPE_STRIPE_CUSTOMER_KEY`)
 2. If found, validate it still exists in Stripe (`customers.retrieve`), is not deleted, and that `metadata.ct_customer_id` matches the CT customer ID
 3. If not found or invalid, search Stripe by `metadata.ct_customer_id` using `customers.search({ query: "metadata['ct_customer_id']:'<id>'" })` — the CT customer ID must be a valid UUID or the search is skipped
-4. If still not found, create a new Stripe customer with email, name, phone, and address; `ct_customer_id` is stored in Stripe metadata. Email priority: `cart.customerEmail` → `customer.email` → `cart.shippingAddress?.email` → empty string
+4. If still not found, create a new Stripe customer with email, name, phone, and address; `ct_customer_id` is stored in Stripe metadata. Email priority: `cart.customerEmail` → `customer.email` → `cart.shippingAddress?.email` → `undefined` (there is no empty-string fallback — `const email = cart.customerEmail || customer.email || cart.shippingAddress?.email` at `stripe-payment.service.ts:2307`; if all three are absent, `email` is left `undefined`)
 
 **Why:** CT customers can exist before any Stripe interaction. Stripe customers may be deleted externally. The search-by-metadata fallback recovers from edge cases where the custom field was lost. UUID validation before search prevents Stripe from receiving malformed queries.
 

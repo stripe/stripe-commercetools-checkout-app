@@ -4,6 +4,7 @@ import { paymentSDK } from '../../src/payment-sdk';
 import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service';
 import { DefaultCartService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-cart.service';
 import { DefaultOrderService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-order.service';
+import { DefaultPaymentMethodService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment-method.service';
 import { ErrorResourceNotFound } from '@commercetools/connect-payments-sdk';
 import {
   mockGetPaymentAmount,
@@ -4398,8 +4399,9 @@ describe('stripe-payment.service', () => {
       }) as unknown as Stripe.Event;
 
     const resolve = (event: Stripe.Event): Promise<string | undefined> =>
-      (stripePaymentService as unknown as { resolvePaymentMethodType(e: Stripe.Event): Promise<string | undefined> })
-        .resolvePaymentMethodType(event);
+      (
+        stripePaymentService as unknown as { resolvePaymentMethodType(e: Stripe.Event): Promise<string | undefined> }
+      ).resolvePaymentMethodType(event);
 
     test('retrieves the PaymentMethod and returns its type', async () => {
       Stripe.prototype.paymentMethods = {
@@ -4468,6 +4470,377 @@ describe('stripe-payment.service', () => {
 
       await expect(resolve(chargeEvent)).resolves.toBeUndefined();
       expect(retrieve).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('method handleTransaction (off-session recurring charge)', () => {
+    const draft = {
+      cartId: '11111111-1111-1111-1111-111111111111',
+      checkoutTransactionItemId: '33333333-3333-3333-3333-333333333333',
+      // Present but NOT the idempotency anchor — the anchor is checkoutTransactionItemId only.
+      futureOrderNumber: 'order-42',
+      // Platform sends the saved method NESTED (Option C accepts this + the flat alias).
+      paymentMethod: { id: '22222222-2222-2222-2222-222222222222' },
+      type: 'Recurring' as const,
+    };
+
+    // Wires every collaborator to the happy path; individual tests override what they exercise.
+    const arrangeHappyPath = (overrides?: {
+      createResolves?: unknown;
+      createThrows?: unknown;
+      existingPayments?: unknown[];
+      stripePmCustomer?: string | null;
+      hasFailure?: boolean;
+      existingTransaction?: boolean;
+    }) => {
+      setupMockConfig({ paymentInterface: 'checkout-stripe', projectKey: 'test-project' });
+
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      // Dedupe now queries the unique CT Payment.key (raw where=key CT query). `existingPayments` remains an
+      // array override for compatibility; the helper returns the single first match (or undefined).
+      const dedupe = jest
+        .spyOn(
+          stripePaymentService as unknown as { findPaymentByKey: () => Promise<unknown> },
+          'findPaymentByKey',
+        )
+        .mockResolvedValue((overrides?.existingPayments?.[0]) as never);
+      const createPayment = jest
+        .spyOn(DefaultPaymentService.prototype, 'createPayment')
+        .mockResolvedValue({ id: 'ct-payment-1', transactions: [] } as never);
+      const updatePayment = jest
+        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
+        .mockResolvedValue({ id: 'ct-payment-1' } as never);
+      jest
+        .spyOn(DefaultPaymentService.prototype, 'hasTransactionInState')
+        .mockReturnValue(Boolean(overrides?.hasFailure) || Boolean(overrides?.existingTransaction));
+
+      const get = jest
+        .spyOn(DefaultPaymentMethodService.prototype, 'get')
+        .mockResolvedValue({ id: 'pm-ct-1', token: { value: 'pm_saved_1' } } as never);
+      const find = jest
+        .spyOn(DefaultPaymentMethodService.prototype, 'find')
+        .mockResolvedValue({ results: [{ id: 'pm-ct-1', token: { value: 'pm_saved_1' } }] } as never);
+
+      jest.spyOn(stripePaymentService, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(stripePaymentService, 'retrieveOrCreateStripeCustomerId').mockResolvedValue(mockStripeCustomerId);
+
+      const retrieve = jest.fn<() => Promise<Stripe.PaymentMethod>>().mockResolvedValue({
+        id: 'pm_saved_1',
+        customer: overrides?.stripePmCustomer === undefined ? mockStripeCustomerId : overrides.stripePmCustomer,
+      } as unknown as Stripe.PaymentMethod);
+      Stripe.prototype.paymentMethods = { retrieve } as unknown as Stripe.PaymentMethodsResource;
+
+      const create = jest.fn<() => Promise<Stripe.PaymentIntent>>();
+      if (overrides?.createThrows) {
+        create.mockRejectedValue(overrides.createThrows);
+      } else {
+        create.mockResolvedValue(
+          (overrides?.createResolves ?? { id: 'pi_1', status: 'succeeded' }) as unknown as Stripe.PaymentIntent,
+        );
+      }
+      Stripe.prototype.paymentIntents = {
+        create,
+        update: jest.fn(),
+        cancel: jest.fn(),
+        capture: jest.fn(),
+      } as unknown as Stripe.PaymentIntentsResource;
+
+      return { create, retrieve, updatePayment, get, find, createPayment, dedupe };
+    };
+
+    test('succeeded PaymentIntent → Completed, books Charge/Success, resolves the nested paymentMethod.id, key anchored on checkoutTransactionItemId', async () => {
+      const { create, updatePayment, get, createPayment } = arrangeHappyPath();
+
+      const result = await stripePaymentService.handleTransaction(draft);
+
+      expect(result.transactionStatus.state).toStrictEqual('Completed');
+      expect(result.transactionStatus.errors).toStrictEqual([]);
+      expect(result.paymentId).toStrictEqual('ct-payment-1');
+      // metadata.ct_payment_id inline in create; off-session confirm params; installment-anchored key.
+      const [params, options] = create.mock.calls[0] as [Stripe.PaymentIntentCreateParams, { idempotencyKey: string }];
+      expect(params.off_session).toBe(true);
+      expect(params.confirm).toBe(true);
+      expect(params.capture_method).toStrictEqual('automatic');
+      expect(params.automatic_payment_methods).toStrictEqual({ enabled: true, allow_redirects: 'never' });
+      expect(params.metadata?.ct_payment_id).toStrictEqual('ct-payment-1');
+      // Sole anchor: checkoutTransactionItemId (NOT futureOrderNumber, which is also present on the draft).
+      expect(options.idempotencyKey).toStrictEqual('charge-33333333-3333-3333-3333-333333333333');
+      // Nested paymentMethod.id resolved via ctPaymentMethodService.get (no find fallback).
+      expect(get).toHaveBeenCalledWith(
+        expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }),
+      );
+      // Native SDK 1.2.x linkage (checkoutTransactionItemId) PLUS the unique dedupe handle (key), both set to
+      // the installment id; interfaceId is NOT set here (stamped with the real PI id after the charge).
+      expect(createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: '33333333-3333-3333-3333-333333333333',
+          checkoutTransactionItemId: '33333333-3333-3333-3333-333333333333',
+        }),
+      );
+      expect(createPayment).toHaveBeenCalledWith(expect.not.objectContaining({ interfaceId: expect.anything() }));
+      // Synchronous capture books Charge/Success so the order-subscriber recognizes it as Paid, and stamps
+      // interfaceId with the REAL PaymentIntent id (pspReference), never the installment key.
+      expect(updatePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pspReference: 'pi_1',
+          transaction: expect.objectContaining({ type: PaymentTransactions.CHARGE, state: PaymentStatus.SUCCESS }),
+        }),
+      );
+    });
+
+    test('processing PaymentIntent → Pending, books Authorization/Pending (async path unchanged)', async () => {
+      const { updatePayment } = arrangeHappyPath({ createResolves: { id: 'pi_1', status: 'processing' } });
+      const result = await stripePaymentService.handleTransaction(draft);
+      expect(result.transactionStatus.state).toStrictEqual('Pending');
+      expect(updatePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pspReference: 'pi_1',
+          transaction: expect.objectContaining({ type: PaymentTransactions.AUTHORIZATION, state: PaymentStatus.PENDING }),
+        }),
+      );
+    });
+
+    test('StripeCardError decline → 201-shaped Failed result, books Authorization/Failure once, never throws', async () => {
+      const cardError = Object.assign(new Error('Your card was declined.'), {
+        type: 'StripeCardError',
+        code: 'card_declined',
+        decline_code: 'insufficient_funds',
+        raw: { payment_intent: { id: 'pi_declined' } },
+      });
+      const { updatePayment } = arrangeHappyPath({ createThrows: cardError });
+
+      const result = await stripePaymentService.handleTransaction(draft);
+
+      expect(result.transactionStatus.state).toStrictEqual('Failed');
+      expect(result.transactionStatus.errors).toStrictEqual([{ code: 'PaymentRejected', message: 'card_declined' }]);
+      expect(updatePayment).toHaveBeenCalledWith(
+        expect.objectContaining({ transaction: expect.objectContaining({ state: PaymentStatus.FAILURE }) }),
+      );
+    });
+
+    test('decline dedup guard: skips the Failure write when one already exists (webhook collision)', async () => {
+      const cardError = Object.assign(new Error('declined'), { type: 'StripeCardError', code: 'card_declined' });
+      const { updatePayment } = arrangeHappyPath({ createThrows: cardError, hasFailure: true });
+
+      const result = await stripePaymentService.handleTransaction(draft);
+
+      expect(result.transactionStatus.state).toStrictEqual('Failed');
+      expect(updatePayment).not.toHaveBeenCalled();
+    });
+
+    test('IDOR guard: rejects when the Stripe payment method belongs to a different customer, no charge', async () => {
+      const { create } = arrangeHappyPath({ stripePmCustomer: 'cus_someone_else' });
+
+      await expect(stripePaymentService.handleTransaction(draft)).rejects.toThrow();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    test('installment dedupe: short-circuits when a payment already exists for the installment', async () => {
+      const { create, dedupe } = arrangeHappyPath({
+        existingPayments: [
+          { id: 'ct-existing', transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }] },
+        ],
+      });
+
+      const result = await stripePaymentService.handleTransaction(draft);
+
+      expect(result.paymentId).toStrictEqual('ct-existing');
+      expect(result.transactionStatus.state).toStrictEqual('Completed');
+      expect(create).not.toHaveBeenCalled();
+      // Dedupe is keyed on the installment's unique CT Payment.key (= checkoutTransactionItemId), not interfaceId.
+      expect(dedupe).toHaveBeenCalledWith('33333333-3333-3333-3333-333333333333');
+    });
+
+    test('fails closed when no installment identity is provided', async () => {
+      arrangeHappyPath();
+      await expect(
+        stripePaymentService.handleTransaction({ cartId: draft.cartId, type: 'Recurring' } as never),
+      ).rejects.toThrow();
+    });
+
+    test('rejects a currency mismatch between the requested amount and the cart', async () => {
+      const { create } = arrangeHappyPath();
+      await expect(
+        stripePaymentService.handleTransaction({
+          ...draft,
+          amount: { centAmount: 100, currencyCode: 'EUR' },
+        }),
+      ).rejects.toThrow();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    test('ignores a caller-supplied idempotencyKey; the Stripe key stays installment-anchored', async () => {
+      const { create } = arrangeHappyPath();
+      await stripePaymentService.handleTransaction({ ...draft, idempotencyKey: 'attacker-supplied' });
+      const [, options] = create.mock.calls[0] as [unknown, { idempotencyKey: string }];
+      expect(options.idempotencyKey).toStrictEqual('charge-33333333-3333-3333-3333-333333333333');
+    });
+
+    test('returned requires_action status → Failed, routed through the dedup guard (skips write when already failed)', async () => {
+      const { updatePayment } = arrangeHappyPath({
+        createResolves: { id: 'pi_ra', status: 'requires_action' },
+        hasFailure: true,
+      });
+      const result = await stripePaymentService.handleTransaction(draft);
+      expect(result.transactionStatus.state).toStrictEqual('Failed');
+      expect(updatePayment).not.toHaveBeenCalled();
+    });
+
+    test('reuses an installment payment stuck at Authorization/Initial and drives the charge (never re-creates → no under-charge, no DuplicateField)', async () => {
+      const { create, createPayment } = arrangeHappyPath({
+        existingPayments: [
+          { id: 'ct-orphan', transactions: [{ type: PaymentTransactions.AUTHORIZATION, state: 'Initial' }] },
+        ],
+      });
+      const result = await stripePaymentService.handleTransaction(draft);
+      // Not short-circuited (Initial is unresolved) but NOT re-created either: under the unique key a fresh
+      // create would DuplicateField. The stuck payment is reused and the charge is driven to completion.
+      expect(createPayment).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(result.paymentId).toStrictEqual('ct-orphan');
+      expect(result.transactionStatus.state).toStrictEqual('Completed');
+    });
+
+    test('concurrent duplicate-key create → returns the winner outcome idempotently, no 2nd Stripe charge', async () => {
+      const { create, createPayment, dedupe } = arrangeHappyPath();
+      // step 5 sees nothing; the concurrent winner surfaces only on the post-DuplicateField re-fetch.
+      dedupe.mockReset();
+      dedupe
+        .mockResolvedValueOnce(undefined as never)
+        .mockResolvedValueOnce({
+          id: 'ct-winner',
+          customer: { typeId: 'customer', id: mockCtCustomerId },
+          transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
+        } as never);
+      // CT's ts-client throws an Error carrying statusCode + body (mirror it, not a plain object).
+      createPayment.mockRejectedValue(
+        Object.assign(new Error('A duplicate value exists for field key.'), {
+          statusCode: 400,
+          body: { errors: [{ code: 'DuplicateField', field: 'key' }] },
+        }) as never,
+      );
+
+      const result = await stripePaymentService.handleTransaction(draft);
+
+      expect(result.paymentId).toStrictEqual('ct-winner');
+      expect(result.transactionStatus.state).toStrictEqual('Completed');
+      // The loser never charges — the winner owns the charge (and the shared Stripe idempotency key).
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    test('duplicate-key winner belonging to a different customer → rethrows, never returns another customer payment', async () => {
+      const { createPayment, dedupe } = arrangeHappyPath();
+      dedupe.mockReset();
+      dedupe
+        .mockResolvedValueOnce(undefined as never)
+        .mockResolvedValueOnce({
+          id: 'ct-other',
+          customer: { typeId: 'customer', id: 'someone-else' },
+          transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
+        } as never);
+      createPayment.mockRejectedValue(
+        Object.assign(new Error('A duplicate value exists for field key.'), {
+          statusCode: 400,
+          body: { errors: [{ code: 'DuplicateField', field: 'key' }] },
+        }) as never,
+      );
+
+      await expect(stripePaymentService.handleTransaction(draft)).rejects.toThrow();
+    });
+
+    test('a non-duplicate CT create error is NOT masked as an installment race (rethrows)', async () => {
+      const { createPayment } = arrangeHappyPath();
+      createPayment.mockRejectedValue(
+        Object.assign(new Error('InvalidField amountPlanned'), {
+          statusCode: 400,
+          body: { errors: [{ code: 'InvalidField', field: 'amountPlanned' }] },
+        }) as never,
+      );
+      await expect(stripePaymentService.handleTransaction(draft)).rejects.toThrow();
+    });
+
+    test('accepts the flat paymentMethodId alias (reference-compatible shape)', async () => {
+      const { get } = arrangeHappyPath();
+      await stripePaymentService.handleTransaction({
+        cartId: draft.cartId,
+        checkoutTransactionItemId: draft.checkoutTransactionItemId,
+        paymentMethodId: '22222222-2222-2222-2222-222222222222',
+        type: 'Recurring',
+      } as never);
+      expect(get).toHaveBeenCalledWith(
+        expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }),
+      );
+    });
+
+    test('fails closed when neither paymentMethod.id nor paymentMethodId is present, never falls back to find()', async () => {
+      const { create, find } = arrangeHappyPath();
+      await expect(
+        stripePaymentService.handleTransaction({
+          cartId: draft.cartId,
+          checkoutTransactionItemId: draft.checkoutTransactionItemId,
+          type: 'Recurring',
+        } as never),
+      ).rejects.toThrow();
+      expect(find).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    test('sync-success Charge/Success dedup: skips the Charge write when one already exists (webhook collision)', async () => {
+      const { updatePayment } = arrangeHappyPath({ existingTransaction: true });
+      const result = await stripePaymentService.handleTransaction(draft);
+      expect(result.transactionStatus.state).toStrictEqual('Completed');
+      expect(updatePayment).not.toHaveBeenCalled();
+    });
+
+    test('fails closed when checkoutTransactionItemId is not a uuid (no CT query, no charge)', async () => {
+      const { create, dedupe } = arrangeHappyPath();
+      await expect(
+        stripePaymentService.handleTransaction({ ...draft, checkoutTransactionItemId: 'not-a-uuid" or 1=1' }),
+      ).rejects.toThrow();
+      expect(dedupe).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    describe('findPaymentByKey (unique-key dedupe query)', () => {
+      type ClientStub = { payments: () => { get: (args: unknown) => { execute: () => Promise<unknown> } } };
+      type Svc = { findPaymentByKey: (id: string) => Promise<unknown> };
+      const id = '33333333-3333-3333-3333-333333333333';
+
+      test('issues the exact key predicate and returns the single match', async () => {
+        const execute = jest.fn<() => Promise<unknown>>().mockResolvedValue({ body: { results: [{ id: 'ct-x' }] } });
+        const get = jest.fn().mockReturnValue({ execute });
+        const payments = jest.fn().mockReturnValue({ get });
+        (paymentSDK.ctAPI.client as unknown as ClientStub).payments = payments as never;
+
+        const res = await (stripePaymentService as unknown as Svc).findPaymentByKey(id);
+
+        expect(get).toHaveBeenCalledWith({
+          queryArgs: { where: `key="${id}"`, limit: 1 },
+        });
+        expect(res).toStrictEqual({ id: 'ct-x' });
+      });
+
+      test('returns undefined when no payment carries the key', async () => {
+        const execute = jest.fn<() => Promise<unknown>>().mockResolvedValue({ body: { results: [] } });
+        const get = jest.fn().mockReturnValue({ execute });
+        const payments = jest.fn().mockReturnValue({ get });
+        (paymentSDK.ctAPI.client as unknown as ClientStub).payments = payments as never;
+
+        const res = await (stripePaymentService as unknown as Svc).findPaymentByKey(id);
+        expect(res).toBeUndefined();
+      });
+
+      test('fails closed: a CT query error propagates (never a false-empty result)', async () => {
+        const execute = jest.fn<() => Promise<unknown>>().mockRejectedValue(new Error('InvalidInput'));
+        const get = jest.fn().mockReturnValue({ execute });
+        const payments = jest.fn().mockReturnValue({ get });
+        (paymentSDK.ctAPI.client as unknown as ClientStub).payments = payments as never;
+
+        await expect((stripePaymentService as unknown as Svc).findPaymentByKey(id)).rejects.toThrow();
+      });
     });
   });
 });

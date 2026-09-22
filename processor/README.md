@@ -131,7 +131,7 @@ Authorization: Bearer <oauth token with manage_sessions scope>
 }
 ```
 
-Afterwards, session ID can be obtained from response, which is necessary to be put as `x-session-id` inside request header when sending request to endpoints such as `/operations/config` and `/operations/payments`.
+Afterwards, session ID can be obtained from response, which is necessary to be put as `x-session-id` inside request header when sending request to endpoints such as `/operations/config` and `/payments`.
 
 ### JSON web token (JWT)
 
@@ -317,7 +317,7 @@ This endpoint update the initial payment transaction in commercetools. It is cal
 - **id**: The payment reference of the current process.
 
 #### Response Parameters
-- **outcome:"approved|rejected"**: The response of the updated confirmation in commercetools payment transaction.
+- **outcome:"approved|rejected|pending"**: The response of the updated confirmation in the commercetools payment transaction. Synchronous card outcomes return `approved`/`rejected` with HTTP 200; an async-settlement rail whose PaymentIntent is still `processing` (e.g. crypto/ACH) returns `pending` with HTTP 202 (see the async-settlement section).
 
 ### Webhook Listener
 The webhook listener receives events from your Stripe account as they occur, allowing your integration to automatically execute actions accordingly. By registering webhook endpoints in your Stripe account, you enable Stripe to send [Event objects](https://docs.stripe.com/api/events) as part of POST requests to the registered webhook endpoint hosted by your application. 

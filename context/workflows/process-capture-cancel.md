@@ -2,7 +2,7 @@
 
 **Trigger:** Merchant calls `POST /payment-intents/:id` with action `capturePayment` or `cancelPayment`. Only relevant when `STRIPE_CAPTURE_METHOD=manual`.
 **Actors:** Merchant backend / CT dashboard, Processor, Stripe API, CT API.
-**Outcome:** CT Payment updated with CHARGE (capture) or CANCEL_AUTHORIZATION (cancel).
+**Outcome:** The handler calls Stripe and returns `{ outcome: APPROVED }` synchronously. The CT transaction (CHARGE on capture; AUTHORIZATION:FAILURE + CANCEL_AUTHORIZATION on cancel) is written **asynchronously by the corresponding Stripe webhook**, not by this call.
 
 ---
 
@@ -36,11 +36,11 @@ Merchant                  Processor                        Stripe          CT
   |                           |     final_capture: false })    |              |
   |                           |-------------------------------->|              |
   |                           |                                |              |
-  |                           | updatePayment(                 |              |
-  |                           |   CHARGE: SUCCESS,             |              |
-  |                           |   amount)                      |              |
-  |                           |---------------------------------------------->|
-  |   { outcome: RECEIVED }   |                                |              |
+  |                           | (no synchronous CT write —     |              |
+  |                           |  CHARGE:SUCCESS is written by  |              |
+  |                           |  the payment_intent.succeeded  |              |
+  |                           |  webhook, not here)            |              |
+  |   { outcome: APPROVED }   |                                |              |
   |<--------------------------|                                |              |
 ```
 
@@ -60,11 +60,13 @@ Merchant                  Processor                        Stripe          CT
   |                           | paymentIntents.cancel(piId)    |              |
   |                           |-------------------------------->|              |
   |                           |                                |              |
-  |                           | updatePayment(                 |              |
-  |                           |   AUTHORIZATION: FAILURE,      |              |
-  |                           |   CANCEL_AUTHORIZATION: SUCCESS)|             |
-  |                           |---------------------------------------------->|
-  |   { outcome: SUCCESS }    |                                |              |
+  |                           | (no synchronous CT write —     |              |
+  |                           |  AUTHORIZATION:FAILURE +       |              |
+  |                           |  CANCEL_AUTHORIZATION:SUCCESS  |              |
+  |                           |  come from the                 |              |
+  |                           |  payment_intent.canceled       |              |
+  |                           |  webhook, not here)            |              |
+  |   { outcome: APPROVED }   |                                |              |
   |<--------------------------|                                |              |
 ```
 
@@ -77,16 +79,18 @@ When `STRIPE_ENABLE_MULTI_OPERATIONS=true` and the merchant wants to capture in 
 ```
 1. POST /payment-intents/:id { action: capturePayment, amount: 5000 }
    → paymentIntents.capture(piId, { amount_to_capture: 5000, final_capture: false })
-   → CT: CHARGE SUCCESS, amount: 5000
+   → returns { outcome: APPROVED } (no synchronous CT write)
+   → payment_intent.succeeded / charge webhook → CT: CHARGE SUCCESS, amount: 5000
 
 2. (later) POST /payment-intents/:id { action: capturePayment, amount: 3000 }
    → paymentIntents.capture(piId, { amount_to_capture: 3000, final_capture: false })
-   → CT: CHARGE SUCCESS, amount: 3000
-   → charge.updated webhook arrives → processStripeEventMultipleCaptured() → CT updated with delta
+   → returns { outcome: APPROVED } (no synchronous CT write)
+   → charge.updated webhook arrives → processStripeEventMultipleCaptured() → CT: CHARGE SUCCESS delta, amount: 3000
 
 3. (final) POST /payment-intents/:id { action: capturePayment, amount: 2000 }
    → paymentIntents.capture(piId, { amount_to_capture: 2000 })  ← no final_capture: false
-   → CT: CHARGE SUCCESS, amount: 2000
+   → returns { outcome: APPROVED } (no synchronous CT write)
+   → webhook → CT: CHARGE SUCCESS, amount: 2000
 ```
 
 ---

@@ -47,12 +47,13 @@ Browser                    Enabler                 Processor               Strip
   |                          |                         |---------------------------------------------->|
   |                          |                         | paymentIntents.create()               |       |
   |                          |                         |---------------------->|               |       |
-  |                          |                         | paymentIntents.update() (metadata)    |       |
-  |                          |                         |---------------------->|               |       |
   |                          |                         | createPayment()       |               |       |
   |                          |                         |---------------------------------------------->|
   |                          |                         | addPayment(cart)      |               |       |
   |                          |                         |---------------------------------------------->|
+  |                          |                         | paymentIntents.update() (metadata:    |       |
+  |                          |                         |   ct_payment_id = ctPayment.id)       |       |
+  |                          |                         |---------------------->|               |       |
   |                          |  {clientSecret}         |                      |              |
   |                          |<------------------------|                      |              |
   |                          | stripe.confirmPayment() |                      |              |
@@ -86,9 +87,9 @@ Browser                    Enabler                 Processor               Strip
 
 - Processor reads cart from CT to get amount and currency
 - Creates Stripe PI with: amount, currency, capture method, customer (if any), setup_future_usage (if configured), tax hooks (if applicable)
-- Makes a **second Stripe call** (`paymentIntents.update()`) to write `ct_payment_id` into the PI's metadata — the PI is created first, then the metadata is patched separately. If this second call fails, the CT Payment exists but the PI has no `ct_payment_id` in metadata; webhook events for that PI will be silently skipped
-- Creates CT Payment object with PENDING AUTHORIZATION transaction
-- Associates CT Payment to cart via `addPayment()`
+- Creates CT Payment object with PENDING AUTHORIZATION transaction (`createPayment()`, `stripe-payment.service.ts:849`)
+- Associates CT Payment to cart via `addPayment()` (`:877`)
+- **Then** makes a **second Stripe call** (`paymentIntents.update()`, `:892`) to write `ct_payment_id` into the PI's metadata. This patch happens *after* `createPayment` because it writes `ct_payment_id = ctPayment.id`, which does not exist until the CT Payment is created. Full order: `paymentIntents.create` (`:832`) → `createPayment` (`:849`) → `addPayment` (`:877`) → `updatePaymentIntentMetadata` (`:892`). If this last call fails, the CT Payment exists but the PI has no `ct_payment_id` in metadata; webhook events for that PI will be silently skipped
 - Returns `clientSecret` to enabler
 
 ### 3. Stripe Confirmation (`stripe.confirmPayment()`)
@@ -103,7 +104,7 @@ Browser                    Enabler                 Processor               Strip
 - Enabler sends PI ID to processor
 - Processor retrieves PI from Stripe
 - Runs 4-point validation (see `business-rules/payment-lifecycle.md` Rule 2)
-- Updates CT Payment: AUTHORIZATION → SUCCESS (or CHARGE → SUCCESS for automatic capture)
+- Updates CT Payment: AUTHORIZATION → SUCCESS — **always** an AUTHORIZATION transaction, regardless of capture method (`stripe-payment.service.ts:1203-1214`); there is no branch that writes CHARGE here. The `CHARGE → SUCCESS` transaction is written later by the `payment_intent.succeeded` webhook (step 5), not by this confirm call
 - Returns success to enabler
 
 ### 5. Async Webhook (parallel path)
