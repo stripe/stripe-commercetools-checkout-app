@@ -610,5 +610,45 @@ describe('StripeExpressComponent', () => {
       const payload = (expressOptions.onPaymentSubmit as jest.Mock).mock.calls[0][0];
       expect(payload).toEqual({ customerEmail: 'only@email.test' });
     });
+
+    // SB3-231 — a duplicate wallet `confirm` must not run the payment chain twice (double charge).
+    test('ignores a duplicate confirm: runs the payment chain only once', async () => {
+      const { expressOptions, confirmHandler, mockConfirmPayment } = await mountWithConfirmHandler();
+      const event = {
+        billingDetails: { email: 'buyer@example.com', address: { country: 'US', line1: '1 Main St' } },
+      };
+
+      // The wallet (or a double mount) emits `confirm` twice for the same express attempt.
+      await confirmHandler(event);
+      await confirmHandler(event);
+      await new Promise<void>((r) => setImmediate(r));
+
+      const fetchMock = global.fetch as jest.Mock;
+      const paymentsCalls = fetchMock.mock.calls.filter(
+        ([url]) => String(url).includes('/payments') && !String(url).includes('confirmPayments'),
+      );
+      // Only one PaymentIntent is created, confirmed and reported — the second confirm is ignored.
+      expect(paymentsCalls).toHaveLength(1);
+      expect(mockConfirmPayment).toHaveBeenCalledTimes(1);
+      expect(expressOptions.onComplete).toHaveBeenCalledTimes(1);
+      expect(expressOptions.onComplete).toHaveBeenCalledWith(expect.objectContaining({ isSuccess: true }));
+    });
+
+    // SB3-231 review #5 — on failure, signal the wallet via event.paymentFailed so the Apple/Google Pay /
+    // Link sheet shows the error and closes instead of hanging.
+    test('signals the wallet via event.paymentFailed when the confirm fails', async () => {
+      const { confirmHandler, mockSubmit } = await mountWithConfirmHandler();
+      // Force a failure before Stripe confirm: elements.submit returns an error.
+      mockSubmit.mockResolvedValueOnce({ error: { message: 'boom' } });
+      const paymentFailed = jest.fn();
+
+      await confirmHandler({
+        paymentFailed,
+        billingDetails: { email: 'buyer@example.com', address: { country: 'US', line1: '1 Main St' } },
+      });
+      await new Promise<void>((r) => setImmediate(r));
+
+      expect(paymentFailed).toHaveBeenCalledWith({ reason: 'fail' });
+    });
   });
 });

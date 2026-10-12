@@ -83,6 +83,13 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
   private sessionInitGeneration = 0;
   private expressListenersBound = false;
   private expressMounted = false;
+  /**
+   * SB3-231 — guards {@link handlePaymentConfirm} against a duplicate wallet `confirm`. `confirmInFlight`
+   * blocks a re-entrant confirm while one is running; `confirmCompleted` blocks a repeat after one
+   * succeeded. Without them each emitted `confirm` creates another Payment + PaymentIntent (double charge).
+   */
+  private confirmInFlight = false;
+  private confirmCompleted = false;
 
   constructor(opts: { baseOptions: BaseOptions; expressOptions: ExpressOptions }) {
     super({ expressOptions: opts.expressOptions });
@@ -396,6 +403,16 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
    * create PaymentIntent on the processor → confirm with Stripe → persist in commercetools → `onComplete`.
    */
   private async handlePaymentConfirm(event: StripeExpressCheckoutElementConfirmEvent): Promise<void> {
+    // SB3-231 — Ignore a duplicate confirm on THIS component. The wallet can emit `confirm` more than
+    // once (or a re-entrant call arrives); without this guard each emit re-runs the full create-PI ->
+    // confirm -> persist chain and the shopper is charged twice. These flags are per-instance, so a
+    // second component *instance* (a re-mount) starts fresh and is NOT covered here — that case is
+    // handled by the processor's reuse guard. Reject re-entry while a confirm is in flight or after one
+    // has completed.
+    if (this.confirmInFlight || this.confirmCompleted) {
+      return;
+    }
+    this.confirmInFlight = true;
     try {
       await this.ensureSessionId();
 
@@ -445,15 +462,23 @@ export class StripeExpressComponent extends DefaultExpressComponent implements E
       });
 
       // Step 7: Notify host checkout of success.
+      this.confirmCompleted = true;
       this.expressOptions.onComplete?.({
         isSuccess: true,
         paymentReference: paymentRes.paymentReference,
       });
     } catch (error) {
+      // No in-flight lock is kept (see finally) so a genuine failure can be retried; the processor's reuse
+      // guard + unique Payment.key keep that retry from creating a second Payment (the create path uses a
+      // per-call random idempotency key, not a stable one). Signal the failure to the wallet so the Apple
+      // Pay / Google Pay / Link sheet shows the error and closes instead of hanging, then settle the host.
+      event.paymentFailed({ reason: 'fail' });
       this.baseOptions.onError?.(new Error('Error during payment confirmation.'));
       this.expressOptions.onComplete?.({
         isSuccess: false,
       });
+    } finally {
+      this.confirmInFlight = false;
     }
   }
 

@@ -661,10 +661,22 @@ describe('stripe-payment.service', () => {
   });
 
   describe('method updatePaymentIntentStripeSuccessful', () => {
+    // A legitimate confirm satisfies BOTH binding checks: (a) the session cart references the payment
+    // (pre-retrieve `cartReferencesPayment`), and (b) the PI's `metadata.cart_id` — stamped at creation
+    // with the ORIGIN cart — equals the session cart (post-retrieve, P2). The shared `mockGetCartResult()`
+    // gives a random id and references 'paymentId'; here the cart is pinned to a fixed id and re-pointed
+    // at 'paymentReference', and every PI fixture below carries `cart_id: SESSION_CART_ID` to match.
+    const SESSION_CART_ID = 'cart-session-11111';
+    const boundCart = () => ({
+      ...mockGetCartResult(),
+      id: SESSION_CART_ID,
+      paymentInfo: { payments: [{ id: 'paymentReference', typeId: 'payment' as const }] },
+    });
+
     test('should update the commercetools payment "Authorization" from "Initial" to "Success"', async () => {
       const getCartMock = jest
         .spyOn(DefaultCartService.prototype, 'getCart')
-        .mockReturnValue(Promise.resolve(mockGetCartResult()));
+        .mockReturnValue(Promise.resolve(boundCart()));
       const getPaymentMock = jest
         .spyOn(DefaultPaymentService.prototype, 'getPayment')
         .mockReturnValue(Promise.resolve(mockGetPaymentResult));
@@ -677,7 +689,7 @@ describe('stripe-payment.service', () => {
         status: 'succeeded' as const,
         amount: mockGetPaymentResult.amountPlanned.centAmount,
         currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
-        metadata: { ct_payment_id: 'paymentReference' },
+        metadata: { ct_payment_id: 'paymentReference', cart_id: SESSION_CART_ID },
       };
       const stripeApiMock = jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentIntents: {
@@ -695,14 +707,14 @@ describe('stripe-payment.service', () => {
     });
 
     const mockGate = (status: 'succeeded' | 'requires_capture' | 'processing' | 'canceled') => {
-      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(boundCart());
       jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
       const retrieveResult = {
         ...mockStripeRetrievePaymentResult,
         status,
         amount: mockGetPaymentResult.amountPlanned.centAmount,
         currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
-        metadata: { ct_payment_id: 'paymentReference' },
+        metadata: { ct_payment_id: 'paymentReference', cart_id: SESSION_CART_ID },
       };
       jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentIntents: { retrieve: jest.fn().mockResolvedValue(retrieveResult) },
@@ -765,7 +777,7 @@ describe('stripe-payment.service', () => {
     // nothing and the gate must keep rejecting.
     // -----------------------------------------------------------------------
     const mockGateRequiresAction = (nextAction: unknown) => {
-      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(boundCart());
       jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
       const retrieveResult = {
         ...mockStripeRetrievePaymentResult,
@@ -773,7 +785,7 @@ describe('stripe-payment.service', () => {
         next_action: nextAction,
         amount: mockGetPaymentResult.amountPlanned.centAmount,
         currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
-        metadata: { ct_payment_id: 'paymentReference' },
+        metadata: { ct_payment_id: 'paymentReference', cart_id: SESSION_CART_ID },
       };
       jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentIntents: { retrieve: jest.fn().mockResolvedValue(retrieveResult) },
@@ -870,7 +882,7 @@ describe('stripe-payment.service', () => {
     });
 
     test('metadata.ct_payment_id mismatch -> throws', async () => {
-      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(boundCart());
       jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
       jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentIntents: {
@@ -890,7 +902,7 @@ describe('stripe-payment.service', () => {
     });
 
     test('amount mismatch -> throws', async () => {
-      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(mockGetCartResult());
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(boundCart());
       jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
       jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
         paymentIntents: {
@@ -899,7 +911,7 @@ describe('stripe-payment.service', () => {
             status: 'processing',
             amount: mockGetPaymentResult.amountPlanned.centAmount + 100,
             currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
-            metadata: { ct_payment_id: 'paymentReference' },
+            metadata: { ct_payment_id: 'paymentReference', cart_id: SESSION_CART_ID },
           }),
         },
       } as unknown as Stripe);
@@ -907,6 +919,136 @@ describe('stripe-payment.service', () => {
       await expect(
         stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference'),
       ).rejects.toThrow('amount/currency mismatch');
+    });
+
+    // -----------------------------------------------------------------------
+    // Payment↔Cart binding — cross-cart binding exploit (fix/checkout-XX)
+    //
+    // A shopper can create a PaymentIntent + Payment on one cart and re-point that Payment at another
+    // cart via /me/carts before confirming. The confirm is authorized against the SESSION cart, so if
+    // that cart no longer references the payment, the two have been decoupled and the confirm must be
+    // rejected — at the interactive boundary, BEFORE any status handling.
+    // -----------------------------------------------------------------------
+
+    // ***** RELEASE GATE *****
+    test('RELEASE GATE: a payment not referenced by the session cart -> throws, before the Stripe read', async () => {
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        paymentInfo: { payments: [{ id: 'some-other-payment', typeId: 'payment' as const }] },
+      });
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
+      const retrieve = jest.fn();
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({ paymentIntents: { retrieve } } as unknown as Stripe);
+
+      await expect(
+        stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference'),
+      ).rejects.toThrow('not attached to the current cart');
+      // The binding check is cheap and early: it rejects before the PaymentIntent is ever retrieved,
+      // which is what makes it safe to run ahead of the async-settlement branch.
+      expect(retrieve).not.toHaveBeenCalled();
+    });
+
+    test('a session cart with no paymentInfo at all -> throws (binding cannot be established)', async () => {
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockResolvedValue({ ...mockGetCartResult(), paymentInfo: undefined });
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
+
+      await expect(
+        stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference'),
+      ).rejects.toThrow('not attached to the current cart');
+    });
+
+    // ***** MIRROR *****
+    // The gate above passes just as happily if the binding check rejected EVERYTHING. This asserts a
+    // legitimately-bound async confirm (crypto `processing`) still flows through untouched — the
+    // regression guard for placing the check before the async-settlement branch.
+    test('MIRROR: an async processing confirm still succeeds when the payment IS bound to the cart', async () => {
+      mockGate('processing');
+      jest.spyOn(DefaultPaymentService.prototype, 'hasTransactionInState').mockReturnValue(false);
+      jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockResolvedValue(mockGetPaymentResult);
+
+      const outcome = await stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference');
+
+      expect(outcome).toBe(PaymentModificationStatus.PENDING);
+    });
+
+    // A bank-transfer requires_action confirm is the other async rail; it must also survive the
+    // binding gate when the payment is bound. This is the no-regression half of point 3.
+    test('bank transfer requires_action confirm still succeeds when the payment IS bound to the cart', async () => {
+      mockGateRequiresAction(bankTransferNextAction);
+      jest.spyOn(DefaultPaymentService.prototype, 'hasTransactionInState').mockReturnValue(false);
+      jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockResolvedValue(mockGetPaymentResult);
+
+      const outcome = await stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference');
+
+      expect(outcome).toBe(PaymentModificationStatus.PENDING);
+    });
+
+    // -----------------------------------------------------------------------
+    // P2 — Payment↔ORIGIN-cart binding (metadata.cart_id). The pre-retrieve cartReferencesPayment
+    // check only proves the SESSION cart references the payment; it does NOT catch the attacker who
+    // confirms from the DESTINATION cart's session (Cart B, which legitimately references P after the
+    // re-point). metadata.cart_id, stamped at creation = the ORIGIN cart, is the robust anchor.
+    // -----------------------------------------------------------------------
+
+    // ***** RELEASE GATE — the P2 exploit *****
+    test('RELEASE GATE: confirm from a different cart than the PI origin cart -> throws (metadata.cart_id)', async () => {
+      // Cart B (the destination) legitimately references P, so the pre-retrieve binding passes...
+      const cartB = {
+        ...mockGetCartResult(),
+        id: 'cart-B',
+        paymentInfo: { payments: [{ id: 'paymentReference', typeId: 'payment' as const }] },
+      };
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(cartB);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentIntents: {
+          retrieve: jest.fn().mockResolvedValue({
+            ...mockStripeRetrievePaymentResult,
+            status: 'succeeded',
+            amount: mockGetPaymentResult.amountPlanned.centAmount,
+            currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
+            // ...but the PI was created for Cart A — origin-cart anchor catches the mismatch.
+            metadata: { ct_payment_id: 'paymentReference', cart_id: 'cart-A' },
+          }),
+        },
+      } as unknown as Stripe);
+
+      await expect(
+        stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference'),
+      ).rejects.toThrow('created for a different cart');
+    });
+
+    // Fails CLOSED: a PI with no cart_id stamp cannot have its origin verified against the session cart.
+    test('a PaymentIntent with no cart_id metadata -> throws (origin cart cannot be verified)', async () => {
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(boundCart());
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(StripeClient, 'stripeApi').mockReturnValue({
+        paymentIntents: {
+          retrieve: jest.fn().mockResolvedValue({
+            ...mockStripeRetrievePaymentResult,
+            status: 'succeeded',
+            amount: mockGetPaymentResult.amountPlanned.centAmount,
+            currency: (mockGetPaymentResult.amountPlanned.currencyCode ?? '').toLowerCase(),
+            metadata: { ct_payment_id: 'paymentReference' }, // no cart_id
+          }),
+        },
+      } as unknown as Stripe);
+
+      await expect(
+        stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference'),
+      ).rejects.toThrow('created for a different cart');
+    });
+
+    // ***** MIRROR ***** — matching origin cart (session === metadata.cart_id) passes the whole confirm.
+    test('MIRROR: confirm from the PI origin cart (metadata.cart_id === session cart) succeeds', async () => {
+      mockGate('succeeded');
+      jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockResolvedValue(mockGetPaymentResult);
+
+      const outcome = await stripePaymentService.updatePaymentIntentStripeSuccessful('paymentId', 'paymentReference');
+
+      expect(outcome).toBe(PaymentModificationStatus.APPROVED);
     });
   });
 
@@ -943,6 +1085,452 @@ describe('stripe-payment.service', () => {
       expect(stripeApiMock).toHaveBeenCalled();
       expect(createPaymentMock).toHaveBeenCalled();
       expect(addPaymentMock).toHaveBeenCalled();
+    });
+
+    // SB3-231 — a repeated GET /payments on a cart that already has an active payment must reuse it,
+    // not create a second PaymentIntent + Payment (which is the double-charge the duplicate express
+    // confirm caused in production). These three tests cover: reuse on a full match, NO reuse when the
+    // PI config drifts, and NO reuse (fresh create) when the PI is no longer in a reusable status.
+    const SB3231_CAPTURE = 'manual';
+    function setupSB3231Config() {
+      setupMockConfig({
+        paymentInterface: 'checkout-stripe',
+        stripeCaptureMethod: SB3231_CAPTURE,
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        stripeCollectBillingAddress: 'never',
+      });
+    }
+    function sb3231ExistingPayment() {
+      return {
+        ...mockGetPaymentResult,
+        id: 'reuse-pay',
+        amountPlanned: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+        paymentMethodInfo: { paymentInterface: 'checkout-stripe' },
+        transactions: [
+          {
+            id: 't-auth',
+            type: 'Authorization',
+            state: 'Initial',
+            interactionId: 'pi_reuse',
+            amount: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+          },
+        ],
+      };
+    }
+    function sb3231ReuseCart() {
+      return {
+        ...mockGetCartResult(),
+        paymentInfo: { payments: [{ id: 'reuse-pay', typeId: 'payment' as const, obj: undefined }] },
+      };
+    }
+
+    test('reuses the active payment already on the cart instead of creating a duplicate', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      // The existing PI matches amount+currency, is open, and its capture_method + setup_future_usage
+      // match what this request resolves → reusable.
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'requires_payment_method',
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+      const createMock = jest.spyOn(Stripe.prototype.paymentIntents, 'create');
+      const createPaymentMock = jest.spyOn(DefaultPaymentService.prototype, 'createPayment');
+      const addPaymentMock = jest.spyOn(DefaultCartService.prototype, 'addPayment');
+
+      const result = await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      expect(result.sClientSecret).toBe('cs_reuse');
+      expect(result.paymentReference).toBe('reuse-pay');
+      // The duplicate was prevented: nothing new was created or attached to the cart.
+      expect(createMock).not.toHaveBeenCalled();
+      expect(createPaymentMock).not.toHaveBeenCalled();
+      expect(addPaymentMock).not.toHaveBeenCalled();
+    });
+
+    test('does NOT reuse a PI whose capture_method differs — creates a fresh one', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      // Same cart+amount, open PI — but a DIFFERENT capture method than this request resolves.
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'requires_payment_method',
+        client_secret: 'cs_reuse',
+        capture_method: 'automatic',
+        setup_future_usage: null,
+      }) as never;
+      const createMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockResolvedValue(mockStripeCreatePaymentResult);
+      const createPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'createPayment')
+        .mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      // Config drift → a new PI + Payment are created rather than reusing the mismatched one.
+      expect(createMock).toHaveBeenCalled();
+      expect(createPaymentMock).toHaveBeenCalled();
+    });
+
+    test('does NOT reuse a canceled PI — creates a fresh one (no 24h stranding)', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      // The attached PI is no longer confirmable (canceled/expired) → must fall through to a fresh create.
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'canceled',
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+      const createMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockResolvedValue(mockStripeCreatePaymentResult);
+      const createPaymentMock = jest
+        .spyOn(DefaultPaymentService.prototype, 'createPayment')
+        .mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      expect(createMock).toHaveBeenCalled();
+      expect(createPaymentMock).toHaveBeenCalled();
+    });
+
+    test('express-without-customer + configured setup_future_usage still reuses (no false-skip)', async () => {
+      // SFU is configured globally, but an express-without-customer cart creates the PI WITHOUT it
+      // (gated by (!express || expressWithCustomer) && stripeCustomerId). The reuse must compare against
+      // the APPLIED value (undefined), not the raw configured one, or it would false-skip and double charge.
+      setupMockConfig({
+        paymentInterface: 'checkout-stripe',
+        stripeCaptureMethod: SB3231_CAPTURE,
+        merchantReturnUrl: 'https://merchant.example.com/return',
+        stripeCollectBillingAddress: 'never',
+        stripePaymentIntentSetupFutureUsage: 'off_session',
+      });
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      // No Stripe customer resolved → express-without-customer path, so no SFU is applied to the PI.
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(undefined as never);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      // The PI already on the cart was created without setup_future_usage (null) — matches the applied value.
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'requires_payment_method',
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+      const createMock = jest.spyOn(Stripe.prototype.paymentIntents, 'create');
+
+      const result = await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      // Reuse happened despite the configured SFU — the applied value (undefined) matched the PI's null.
+      expect(result.paymentReference).toBe('reuse-pay');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    // SB3-231 review #1 — the P&M window: a PI already settled/in-progress while the CT Authorization is
+    // still Initial must be rejected, not duplicated.
+    test('rejects (no 2nd PI) when an attached PI is already settled but the CT Authorization is Initial', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'succeeded', // charged in Stripe; CT Authorization not yet written
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+      const createMock = jest.spyOn(Stripe.prototype.paymentIntents, 'create');
+
+      await expect(stripePaymentService.createPaymentIntentStripe(true, false)).rejects.toThrow('already in progress');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    // SB3-231 review #2 — reuse must match the configuration the create path would apply; an
+    // express-without-customer PI (no customer/shipping) must NOT be handed to a drop-in call.
+    test('does NOT reuse an express-without-customer PI for a drop-in call — creates fresh', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'requires_payment_method',
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+        customer: null, // express-without-customer PI
+        shipping: null,
+      }) as never;
+      const createMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockResolvedValue(mockStripeCreatePaymentResult);
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockResolvedValue(mockGetPaymentResult);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue(mockGetCartResult());
+
+      await stripePaymentService.createPaymentIntentStripe(false, false); // drop-in path
+
+      // Drop-in expects customer + shipping bound; the express PI has neither → mismatch → fresh create.
+      expect(createMock).toHaveBeenCalled();
+    });
+
+    // SB3-231 review #3 — concurrent-create race bounded by the unique Payment.key: the loser gets
+    // DuplicateField and reuses the winner, so the cart ends up with ONE Payment (not the SDK 409 claim).
+    test('concurrent create race: DuplicateField on the cart key reuses the winner (one Payment)', async () => {
+      setupSB3231Config();
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockResolvedValue({ ...mockGetCartResult(), paymentInfo: { payments: [] } } as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      const createMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'create')
+        .mockResolvedValue(mockStripeCreatePaymentResult);
+      // Loser loses CT's unique-key constraint.
+      const dupErr = { statusCode: 400, body: { errors: [{ code: 'DuplicateField', field: 'key' }] } };
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockRejectedValue(dupErr as never);
+      const addPaymentMock = jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue({} as never);
+      const updateMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'update')
+        .mockResolvedValue({ id: 'pi_winner' } as never);
+      const winner = {
+        ...mockGetPaymentResult,
+        id: 'winner-pay',
+        transactions: [
+          {
+            id: 'w',
+            type: 'Authorization',
+            state: 'Initial',
+            interactionId: 'pi_winner',
+            amount: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+          },
+        ],
+      };
+      jest.spyOn(StripePaymentService.prototype as never, 'findPaymentByKey').mockResolvedValue(winner as never);
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_winner',
+        status: 'requires_payment_method',
+        client_secret: 'cs_winner',
+        amount: 150000,
+        // config the create path would apply for createPaymentIntentStripe(true, false): manual capture, no
+        // customer/shipping/SFU — so the winner path's reusePiConfigMatches guard (Finding #2) passes.
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+
+      const result = await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      expect(result.sClientSecret).toBe('cs_winner');
+      expect(result.paymentReference).toBe('winner-pay');
+      expect(createMock).toHaveBeenCalled(); // the loser still minted a Stripe PI (orphan)
+      // The winner was created but not yet referenced by the cart (paymentInfo.payments = []), so the winner
+      // path attaches it — without this a retry after a failed addPayment would keep the cart locked on the
+      // same key, minting an orphan PI every time (the regression this fix closes). Still exactly ONE Payment.
+      expect(addPaymentMock).toHaveBeenCalledTimes(1);
+      expect(addPaymentMock).toHaveBeenCalledWith(expect.objectContaining({ paymentId: 'winner-pay' }));
+      // The winner PI carried no ct_payment_id (the create path failed before stamping) → self-heal re-stamps
+      // it before reuse, so confirm/webhook accept the charge instead of rejecting it.
+      expect(updateMock).toHaveBeenCalledWith(
+        'pi_winner',
+        expect.objectContaining({ metadata: { ct_payment_id: 'winner-pay' } }),
+        expect.anything(),
+      );
+    });
+
+    test('recognizes the SDK-wrapped CommercetoolsAPIError (not only the raw shape) and reuses the winner', async () => {
+      setupSB3231Config();
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockResolvedValue({ ...mockGetCartResult(), paymentInfo: { payments: [] } } as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(Stripe.prototype.paymentIntents, 'create').mockResolvedValue(mockStripeCreatePaymentResult);
+      // The real connect-payments-sdk wraps the ts-client BadRequest in a CommercetoolsAPIError:
+      // httpErrorStatus + fields (+ the raw error on cause), NO top-level statusCode/body. The original
+      // detector read statusCode/body and silently missed this — the first review's test mocked the raw
+      // shape, masking the bug. This asserts the wrapped shape is recognized.
+      const wrappedDupErr = {
+        name: 'CommercetoolsAPIError',
+        code: 'DuplicateField',
+        httpErrorStatus: 400,
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+        cause: { statusCode: 400, body: { errors: [{ code: 'DuplicateField', field: 'key' }] } },
+      };
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockRejectedValue(wrappedDupErr as never);
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue({} as never);
+      jest.spyOn(Stripe.prototype.paymentIntents, 'update').mockResolvedValue({ id: 'pi_winner' } as never);
+      const winner = {
+        ...mockGetPaymentResult,
+        id: 'winner-pay',
+        transactions: [
+          {
+            id: 'w',
+            type: 'Authorization',
+            state: 'Initial',
+            interactionId: 'pi_winner',
+            amount: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+          },
+        ],
+      };
+      jest.spyOn(StripePaymentService.prototype as never, 'findPaymentByKey').mockResolvedValue(winner as never);
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_winner',
+        status: 'requires_payment_method',
+        client_secret: 'cs_winner',
+        amount: 150000,
+        // config the create path would apply for createPaymentIntentStripe(true, false): manual capture, no
+        // customer/shipping/SFU — so the winner path's reusePiConfigMatches guard (Finding #2) passes.
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+
+      const result = await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      // Reused the winner → the wrapped DuplicateField WAS recognized (old detector would have rethrown).
+      expect(result.sClientSecret).toBe('cs_winner');
+      expect(result.paymentReference).toBe('winner-pay');
+    });
+
+    test('rethrows (no PI handed out) when the winner attach fails twice and the cart still does not reference it', async () => {
+      // 2nd review, Finding #1: the catch must NOT swallow a second attach failure and return an unattached,
+      // payable winner (charge-without-order). After a failed attach it re-reads the cart; if the winner is
+      // still not referenced, it rethrows — restoring the pre-#388 safe outcome (error, no PI).
+      setupSB3231Config();
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockResolvedValue({ ...mockGetCartResult(), paymentInfo: { payments: [] } } as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(Stripe.prototype.paymentIntents, 'create').mockResolvedValue(mockStripeCreatePaymentResult);
+      const dupErr = { statusCode: 400, body: { errors: [{ code: 'DuplicateField', field: 'key' }] } };
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockRejectedValue(dupErr as never);
+      // The winner attach fails, and the re-read cart STILL does not reference the winner (genuine failure,
+      // not a concurrent-winner race).
+      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockRejectedValue(new Error('addPayment failed') as never);
+      const winner = {
+        ...mockGetPaymentResult,
+        id: 'winner-pay',
+        transactions: [
+          {
+            id: 'w',
+            type: 'Authorization',
+            state: 'Initial',
+            interactionId: 'pi_winner',
+            amount: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+          },
+        ],
+      };
+      jest.spyOn(StripePaymentService.prototype as never, 'findPaymentByKey').mockResolvedValue(winner as never);
+      const updateMock = jest.spyOn(Stripe.prototype.paymentIntents, 'update');
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_winner',
+        status: 'requires_payment_method',
+        client_secret: 'cs_winner',
+        amount: 150000,
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+      }) as never;
+
+      // The create path must reject (no PI handed out) rather than return the unattached winner.
+      await expect(stripePaymentService.createPaymentIntentStripe(true, false)).rejects.toBeDefined();
+      // And it never stamps/returns the winner PI.
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    test('rethrows when the winner PI config does not match (flow switch on retry) — winner path config guard', async () => {
+      // 2nd review, Finding #2: the winner path must apply the same config match as evaluateReuseCandidate.
+      // Here the winner PI was minted for a DIFFERENT flow (has a customer bound) than this drop-in request
+      // expects → must rethrow, not hand back a mismatched PI.
+      setupSB3231Config();
+      jest
+        .spyOn(DefaultCartService.prototype, 'getCart')
+        .mockResolvedValue({ ...mockGetCartResult(), paymentInfo: { payments: [] } } as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(Stripe.prototype.paymentIntents, 'create').mockResolvedValue(mockStripeCreatePaymentResult);
+      const dupErr = { statusCode: 400, body: { errors: [{ code: 'DuplicateField', field: 'key' }] } };
+      jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockRejectedValue(dupErr as never);
+      const addPaymentMock = jest.spyOn(DefaultCartService.prototype, 'addPayment').mockResolvedValue({} as never);
+      const winner = {
+        ...mockGetPaymentResult,
+        id: 'winner-pay',
+        transactions: [
+          {
+            id: 'w',
+            type: 'Authorization',
+            state: 'Initial',
+            interactionId: 'pi_winner',
+            amount: { type: 'centPrecision', currencyCode: 'USD', centAmount: 150000, fractionDigits: 2 },
+          },
+        ],
+      };
+      jest.spyOn(StripePaymentService.prototype as never, 'findPaymentByKey').mockResolvedValue(winner as never);
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_winner',
+        status: 'requires_payment_method',
+        client_secret: 'cs_winner',
+        amount: 150000,
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+        customer: 'cus_OTHER', // bound to a customer — does NOT match this express(true,false) request (expectCustomer=false)
+      }) as never;
+
+      await expect(stripePaymentService.createPaymentIntentStripe(true, false)).rejects.toBeDefined();
+      // Never attached a mismatched winner to the cart.
+      expect(addPaymentMock).not.toHaveBeenCalled();
+    });
+
+    test('self-heals a reusable PI missing its ct_payment_id stamp before reusing it', async () => {
+      setupSB3231Config();
+      jest.spyOn(DefaultCartService.prototype, 'getCart').mockResolvedValue(sb3231ReuseCart() as never);
+      jest.spyOn(StripePaymentService.prototype, 'getCtCustomer').mockResolvedValue(mockCtCustomerData);
+      jest.spyOn(DefaultCartService.prototype, 'getPaymentAmount').mockResolvedValue(mockGetPaymentAmount);
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(sb3231ExistingPayment() as never);
+      // Open, config-matching PI but WITHOUT ct_payment_id (create path's stamp failed after addPayment).
+      Stripe.prototype.paymentIntents.retrieve = jest.fn().mockResolvedValue({
+        id: 'pi_reuse',
+        status: 'requires_payment_method',
+        client_secret: 'cs_reuse',
+        capture_method: SB3231_CAPTURE,
+        setup_future_usage: null,
+        metadata: {},
+      }) as never;
+      const updateMock = jest
+        .spyOn(Stripe.prototype.paymentIntents, 'update')
+        .mockResolvedValue({ id: 'pi_reuse' } as never);
+      const createMock = jest.spyOn(Stripe.prototype.paymentIntents, 'create');
+
+      const result = await stripePaymentService.createPaymentIntentStripe(true, false);
+
+      expect(result.sClientSecret).toBe('cs_reuse');
+      expect(result.paymentReference).toBe('reuse-pay');
+      // Re-stamped before reuse — otherwise confirm (assertPaymentIntentIdentity) rejects and the webhook
+      // skips the charge: money taken, no CT record. Reused, never recreated.
+      expect(updateMock).toHaveBeenCalledWith(
+        'pi_reuse',
+        expect.objectContaining({ metadata: { ct_payment_id: 'reuse-pay' } }),
+        expect.anything(),
+      );
+      expect(createMock).not.toHaveBeenCalled();
     });
 
     test('should createPaymentIntent with billing information successful', async () => {
@@ -4074,8 +4662,31 @@ describe('stripe-payment.service', () => {
       ).toBeUndefined();
     });
 
+    // The order's tax-inclusive gross the coverage guard (fix/checkout-XX) measures the settled amount
+    // against. Denominated in MXN 132.00 to match `mockEvent__paymentIntent_succeeded_*`'s
+    // `amount_received: 13200, currency: 'mxn'`, so the default succeeded fixture covers it exactly.
+    // `totalPrice` is additive — tests that do not exercise the PAID coverage path are unaffected.
+    const GROSS = { type: 'centPrecision', currencyCode: 'MXN', centAmount: 13200, fractionDigits: 2 };
     const anOrder = (paymentState?: string, overrides: Record<string, unknown> = {}) =>
-      ({ id: 'order_11111', version: 7, paymentState, ...overrides }) as unknown as Order;
+      ({ id: 'order_11111', version: 7, paymentState, totalPrice: GROSS, ...overrides }) as unknown as Order;
+
+    /**
+     * A `payment_intent.succeeded` event whose PaymentIntent carries a specific `amount_received` and
+     * `currency` — the SOURCE the async-rail coverage guard reads (the settling Charge is not yet
+     * persisted when this method runs, so the guard must not sum transactions). Metadata stamp is
+     * inherited from the fixture, so ownership/lookup still resolve.
+     */
+    const succeededEvent = (amountReceived: number, currency: string): Stripe.Event =>
+      ({
+        ...mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
+        data: {
+          object: {
+            ...(mockEvent__paymentIntent_succeeded_captureMethodAutomatic.data.object as Record<string, unknown>),
+            amount_received: amountReceived,
+            currency,
+          },
+        },
+      }) as unknown as Stripe.Event;
 
     /** Mocks the raw ctAPI orders() write chain and returns the spy on `.post`. */
     const arrangeOrderWrite = (postImpl?: () => Promise<unknown>) => {
@@ -4135,6 +4746,7 @@ describe('stripe-payment.service', () => {
         .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
       const post = arrangeOrderWrite();
 
+      // The default fixture settles amount_received 13200 / mxn, which covers GROSS (13200 / MXN).
       await stripePaymentService.reflectOrderPaymentStateBestEffort(
         mockEvent__paymentIntent_succeeded_captureMethodAutomatic,
       );
@@ -4142,7 +4754,8 @@ describe('stripe-payment.service', () => {
       expect(post).toHaveBeenCalledWith({
         body: { version: 7, actions: [{ action: 'changePaymentState', paymentState: OrderPaymentState.PAID }] },
       });
-      // Ownership was settled by the order's own state, so the payment lookup is not needed.
+      // Ownership was settled by the order's own state, and the coverage guard reads the settled amount
+      // from the event (not persisted transactions), so no payment lookup is needed.
       expect(getPayment).not.toHaveBeenCalled();
     });
 
@@ -4152,6 +4765,8 @@ describe('stripe-payment.service', () => {
     // settlement write get skipped too, turning a cosmetic miss into a permanent one.
     test('writes Paid on an unset order when the payment carries an Authorization/Pending', async () => {
       jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(anOrder(undefined));
+      // Ownership signal 2: the payment lookup + Authorization/Pending. Coverage reads the event, so the
+      // payment content is irrelevant to it. The default fixture (13200 / mxn) covers GROSS.
       jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue(mockGetPaymentResult);
       jest.spyOn(DefaultPaymentService.prototype, 'hasTransactionInState').mockReturnValue(true);
       const post = arrangeOrderWrite();
@@ -4382,6 +4997,224 @@ describe('stripe-payment.service', () => {
         expect.objectContaining({ errorMessage: 'boom', errorStatus: 500, eventType: 'payment_intent.succeeded' }),
       );
     });
+
+    // =========================================================================
+    // Coverage guard — the cross-cart binding exploit (fix/checkout-XX), ASYNC RAIL.
+    //
+    // A Payment created on a cheap cart, re-pointed at an expensive order before settlement, settles
+    // for the cheap amount. On the async rail the settling Charge/Success is written by
+    // `processStripeEvent`, which the route dispatches AFTER this method — so the guard must read the
+    // settled amount from the event's PaymentIntent (`amount_received`), NOT from the not-yet-written
+    // transactions. Only the PAID write is gated (PENDING can never over-claim), and the method stays
+    // best-effort: undercoverage SKIPS the write and warns, never throws.
+    // =========================================================================
+
+    // ***** RELEASE GATE — the exploit itself *****
+    // amount_received $5.00 (500 mxn) on an order whose gross is 132.00 MXN. Before the guard this
+    // stamped the order Paid; it must now SKIP the write and warn.
+    test('RELEASE GATE: does NOT write Paid when the settled amount_received undercovers the order gross total', async () => {
+      jest
+        .spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId')
+        .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(500, 'mxn'));
+
+      expect(post).not.toHaveBeenCalled();
+      expect(Logger.log.warn).toHaveBeenCalledWith(
+        'Order paymentState not written to Paid: the settled amount does not cover the order gross total',
+        expect.objectContaining({
+          settledCentAmount: 500,
+          settledCurrency: 'mxn',
+          orderGrossCentAmount: 13200,
+          orderCurrency: 'MXN',
+        }),
+      );
+    });
+
+    // ***** RELEASE GATE — the exact reported scenario *****
+    // Cart A $500 → order B $1000, pays $500. amount_received 50000 vs order gross 100000, same
+    // currency → SKIP. Guards the connector's own report end-to-end at the async boundary.
+    test('RELEASE GATE: cross-cart $500 settlement on a $1000 order is NOT marked Paid', async () => {
+      jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(
+        anOrder(OrderPaymentState.PENDING, {
+          totalPrice: { type: 'centPrecision', currencyCode: 'USD', centAmount: 100000, fractionDigits: 2 },
+        }),
+      );
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(50000, 'usd'));
+
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    // ***** RELEASE GATE — currency safety *****
+    // A settlement in another currency never covers, no matter how large its number.
+    test('RELEASE GATE: a settlement in a different currency does not cover, so no Paid is written', async () => {
+      jest
+        .spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId')
+        .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(999999, 'jpy'));
+
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    // ***** MIRROR *****
+    // The gates above pass for a method that never writes Paid. A legitimate async settlement whose
+    // amount_received covers the gross MUST reach Paid (Issue-1 regression: this was broken while the
+    // guard summed the not-yet-written transactions), and overpayment must too.
+    test('MIRROR: exact coverage from amount_received writes Paid', async () => {
+      jest
+        .spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId')
+        .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(13200, 'mxn'));
+
+      expect(post).toHaveBeenCalledWith({
+        body: { version: 7, actions: [{ action: 'changePaymentState', paymentState: OrderPaymentState.PAID }] },
+      });
+    });
+
+    test('overpayment (amount_received exceeds the gross) still writes Paid', async () => {
+      jest
+        .spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId')
+        .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(13201, 'mxn'));
+
+      expect(post).toHaveBeenCalledTimes(1);
+    });
+
+    // Issue-1 regression guard, stated as its own case: a legitimate bank-transfer / crypto settlement
+    // whose funded amount_received covers the gross reaches Paid on the ONLY delivery. The old
+    // transaction-summing guard read 0 here (the Charge is written later, by processStripeEvent) and
+    // wrongly skipped this write — the capability this fix restores.
+    test('a legitimate async settlement covered by amount_received reaches Paid on the settlement event', async () => {
+      jest
+        .spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId')
+        .mockResolvedValue(anOrder(OrderPaymentState.PENDING));
+      const post = arrangeOrderWrite();
+
+      // The persisted payment still carries only Authorization/Pending at this point — the coverage
+      // guard must NOT depend on it. amount_received on the event is the full funded amount.
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(13200, 'mxn'));
+
+      expect(post).toHaveBeenCalledWith({
+        body: { version: 7, actions: [{ action: 'changePaymentState', paymentState: OrderPaymentState.PAID }] },
+      });
+    });
+
+    // ***** RELEASE GATE — split tender (P1 regression fix), async rail *****
+    // Coverage is over ALL the order's payments: our amount_received ($100) plus a gift card charged
+    // through another connector ($32) cover the $132 gross. Our own payment is EXCLUDED from the
+    // sibling sum (our leg is already counted via amount_received) — otherwise we'd double-count it.
+    test('split tender: amount_received + a sibling connector charge together cover the gross -> Paid', async () => {
+      jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(
+        anOrder(OrderPaymentState.PENDING, {
+          paymentInfo: {
+            payments: [
+              { id: 'pi_11111', typeId: 'payment' }, // ours (metadata.ct_payment_id) — excluded from the sum
+              { id: 'sibling-pay', typeId: 'payment' },
+            ],
+          },
+        }),
+      );
+      // Only the sibling is fetched; it carries a Charge/Success of 3200 MXN.
+      const getPayment = jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue({
+        ...mockGetPaymentResult,
+        transactions: [
+          {
+            type: 'Charge',
+            state: 'Success',
+            amount: { type: 'centPrecision', centAmount: 3200, currencyCode: 'MXN', fractionDigits: 2 },
+          },
+        ],
+      } as unknown as typeof mockGetPaymentResult);
+      const post = arrangeOrderWrite();
+
+      // amount_received 10000 mxn alone < 13200 gross; + sibling 3200 = 13200 -> covers.
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(10000, 'mxn'));
+
+      expect(post).toHaveBeenCalledWith({
+        body: { version: 7, actions: [{ action: 'changePaymentState', paymentState: OrderPaymentState.PAID }] },
+      });
+      // Our own payment (pi_11111) is EXCLUDED — only the sibling is fetched — so our charge is never
+      // double-counted against amount_received.
+      expect(getPayment).toHaveBeenCalledTimes(1);
+      expect(getPayment).toHaveBeenCalledWith({ id: 'sibling-pay' });
+    });
+
+    // ...and the exploit stays closed under split-tender coverage: amount_received + every real
+    // sibling charge still short of the gross -> skip.
+    test('split tender: amount_received + sibling charges still undercovering -> no Paid', async () => {
+      jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(
+        anOrder(OrderPaymentState.PENDING, {
+          paymentInfo: {
+            payments: [
+              { id: 'pi_11111', typeId: 'payment' },
+              { id: 'sibling-pay', typeId: 'payment' },
+            ],
+          },
+        }),
+      );
+      jest.spyOn(DefaultPaymentService.prototype, 'getPayment').mockResolvedValue({
+        ...mockGetPaymentResult,
+        transactions: [
+          {
+            type: 'Charge',
+            state: 'Success',
+            amount: { type: 'centPrecision', centAmount: 1000, currencyCode: 'MXN', fractionDigits: 2 },
+          },
+        ],
+      } as unknown as typeof mockGetPaymentResult);
+      const post = arrangeOrderWrite();
+
+      // 500 + 1000 = 1500 < 13200.
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(500, 'mxn'));
+
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    // The coverage guard is PAID-only: a PENDING write is the weakest state and must never be gated by
+    // it (that would reintroduce the bank-transfer "stuck unset" failure this whole change removed).
+    test('the coverage guard never gates a PENDING write', async () => {
+      stubDelay();
+      const getPayment = jest.spyOn(DefaultPaymentService.prototype, 'getPayment');
+      jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(anOrder(undefined));
+      const post = arrangeOrderWrite();
+
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(
+        mockEvent__paymentIntent_requiresAction_bankTransfer,
+      );
+
+      expect(post).toHaveBeenCalledWith({
+        body: { version: 7, actions: [{ action: 'changePaymentState', paymentState: OrderPaymentState.PENDING }] },
+      });
+      // No coverage lookup happens for a PENDING target.
+      expect(getPayment).not.toHaveBeenCalled();
+    });
+
+    // The gross is TAX-INCLUSIVE: `taxedPrice.totalGross` is preferred over the pre-tax `totalPrice`,
+    // so a settlement that covers only the net (pre-tax) amount does NOT cover the order.
+    test('uses the tax-inclusive gross (taxedPrice.totalGross), not the pre-tax totalPrice', async () => {
+      const taxedOrder = anOrder(OrderPaymentState.PENDING, {
+        totalPrice: { type: 'centPrecision', currencyCode: 'MXN', centAmount: 10000, fractionDigits: 2 },
+        taxedPrice: {
+          totalGross: { type: 'centPrecision', currencyCode: 'MXN', centAmount: 12000, fractionDigits: 2 },
+        },
+      });
+      jest.spyOn(DefaultOrderService.prototype, 'getOrderByPaymentId').mockResolvedValue(taxedOrder);
+      const post = arrangeOrderWrite();
+
+      // Covers the pre-tax total (10000) but NOT the tax-inclusive gross (12000).
+      await stripePaymentService.reflectOrderPaymentStateBestEffort(succeededEvent(10000, 'mxn'));
+
+      expect(post).not.toHaveBeenCalled();
+    });
   });
   /**
    * resolvePaymentMethodType — the one Stripe read that fills the payment method for asynchronous
@@ -4502,11 +5335,8 @@ describe('stripe-payment.service', () => {
       // Dedupe now queries the unique CT Payment.key (raw where=key CT query). `existingPayments` remains an
       // array override for compatibility; the helper returns the single first match (or undefined).
       const dedupe = jest
-        .spyOn(
-          stripePaymentService as unknown as { findPaymentByKey: () => Promise<unknown> },
-          'findPaymentByKey',
-        )
-        .mockResolvedValue((overrides?.existingPayments?.[0]) as never);
+        .spyOn(stripePaymentService as unknown as { findPaymentByKey: () => Promise<unknown> }, 'findPaymentByKey')
+        .mockResolvedValue(overrides?.existingPayments?.[0] as never);
       const createPayment = jest
         .spyOn(DefaultPaymentService.prototype, 'createPayment')
         .mockResolvedValue({ id: 'ct-payment-1', transactions: [] } as never);
@@ -4569,9 +5399,7 @@ describe('stripe-payment.service', () => {
       // Sole anchor: checkoutTransactionItemId (NOT futureOrderNumber, which is also present on the draft).
       expect(options.idempotencyKey).toStrictEqual('charge-33333333-3333-3333-3333-333333333333');
       // Nested paymentMethod.id resolved via ctPaymentMethodService.get (no find fallback).
-      expect(get).toHaveBeenCalledWith(
-        expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }),
-      );
+      expect(get).toHaveBeenCalledWith(expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }));
       // Native SDK 1.2.x linkage (checkoutTransactionItemId) PLUS the unique dedupe handle (key), both set to
       // the installment id; interfaceId is NOT set here (stamped with the real PI id after the charge).
       expect(createPayment).toHaveBeenCalledWith(
@@ -4598,7 +5426,10 @@ describe('stripe-payment.service', () => {
       expect(updatePayment).toHaveBeenCalledWith(
         expect.objectContaining({
           pspReference: 'pi_1',
-          transaction: expect.objectContaining({ type: PaymentTransactions.AUTHORIZATION, state: PaymentStatus.PENDING }),
+          transaction: expect.objectContaining({
+            type: PaymentTransactions.AUTHORIZATION,
+            state: PaymentStatus.PENDING,
+          }),
         }),
       );
     });
@@ -4708,13 +5539,11 @@ describe('stripe-payment.service', () => {
       const { create, createPayment, dedupe } = arrangeHappyPath();
       // step 5 sees nothing; the concurrent winner surfaces only on the post-DuplicateField re-fetch.
       dedupe.mockReset();
-      dedupe
-        .mockResolvedValueOnce(undefined as never)
-        .mockResolvedValueOnce({
-          id: 'ct-winner',
-          customer: { typeId: 'customer', id: mockCtCustomerId },
-          transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
-        } as never);
+      dedupe.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce({
+        id: 'ct-winner',
+        customer: { typeId: 'customer', id: mockCtCustomerId },
+        transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
+      } as never);
       // CT's ts-client throws an Error carrying statusCode + body (mirror it, not a plain object).
       createPayment.mockRejectedValue(
         Object.assign(new Error('A duplicate value exists for field key.'), {
@@ -4734,13 +5563,11 @@ describe('stripe-payment.service', () => {
     test('duplicate-key winner belonging to a different customer → rethrows, never returns another customer payment', async () => {
       const { createPayment, dedupe } = arrangeHappyPath();
       dedupe.mockReset();
-      dedupe
-        .mockResolvedValueOnce(undefined as never)
-        .mockResolvedValueOnce({
-          id: 'ct-other',
-          customer: { typeId: 'customer', id: 'someone-else' },
-          transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
-        } as never);
+      dedupe.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce({
+        id: 'ct-other',
+        customer: { typeId: 'customer', id: 'someone-else' },
+        transactions: [{ type: PaymentTransactions.CHARGE, state: 'Success' }],
+      } as never);
       createPayment.mockRejectedValue(
         Object.assign(new Error('A duplicate value exists for field key.'), {
           statusCode: 400,
@@ -4770,9 +5597,7 @@ describe('stripe-payment.service', () => {
         paymentMethodId: '22222222-2222-2222-2222-222222222222',
         type: 'Recurring',
       } as never);
-      expect(get).toHaveBeenCalledWith(
-        expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }),
-      );
+      expect(get).toHaveBeenCalledWith(expect.objectContaining({ id: '22222222-2222-2222-2222-222222222222' }));
     });
 
     test('fails closed when neither paymentMethod.id nor paymentMethodId is present, never falls back to find()', async () => {

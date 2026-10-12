@@ -56,6 +56,7 @@ import { StripeEventConverter } from './converters/stripeEventConverter';
 import { stripeCustomerIdCustomType, stripeCustomerIdFieldName } from '../custom-types/custom-types';
 import { getCustomFieldUpdateActions } from '../services/commerce-tools/customTypeHelper';
 import {
+  amountCoversOrderTotal,
   isBankTransferNextAction,
   isValidUUID,
   ORDER_PAYMENT_STATE_BY_EVENT,
@@ -769,22 +770,7 @@ export class StripePaymentService extends AbstractPaymentService {
     );
     const euBankTransferCountry = behaviorRule?.euBankTransferCountry;
 
-    if (behaviorRule || steeredFields.length > 0) {
-      log.info('Resolved per-cart payment behavior rule.', {
-        cartId: ctCart.id,
-        // FIELD NAMES, not the rule object. A whole-object spread silently logs every field later
-        // added to PaymentBehaviorRule, which is what 2026-08-07-013 was raised for.
-        ruleFields: Object.keys(behaviorRule ?? {}),
-        // The one VALUE that is safe to log: DE/FR/IE/NL, validated against EU_BANK_TRANSFER_COUNTRIES
-        // at startup, and merchant configuration rather than shopper data.
-        trustedEuBankTransferCountry: euBankTransferCountry,
-        // What must NEVER be logged is the DISCRIMINATOR that selected a rule —
-        // cart.billingAddress.country and cart.shippingAddress.country are the shopper's own address,
-        // and this line already carries cartId, which resolves to an identified customer. Hence names
-        // only. See resolvePaymentBehaviorWithSteeringCheck for why this signal is one-directional.
-        steeredFields,
-      });
-    }
+    this.logResolvedBehaviorRule(ctCart, behaviorRule, steeredFields, euBankTransferCountry);
 
     const customer = await this.getCtCustomer(ctCart.customerId!);
     const shippingAddress = this.getStripeCustomerAddress(ctCart.shippingAddress, customer?.addresses[0]);
@@ -794,6 +780,7 @@ export class StripePaymentService extends AbstractPaymentService {
     const setupFutureUsage = this.getPaymentIntentSetupFutureUsage(ctCart, behaviorRule?.setupFutureUsage);
     const effectiveFlowType = behaviorRule?.flowType ?? config.stripePaymentFlow;
     const effectiveSetupFutureUsage = this.applyPiFirstOverride(effectiveFlowType, setupFutureUsage);
+
     // Runtime half of the bank-transfer rail-suppression warning. Fires ONLY when it actually bites:
     // this cart resolved an IBAN country, the currency qualifies, and the PaymentIntent's own
     // effective configuration guarantees Stripe will drop customer_balance anyway. Because it is
@@ -814,23 +801,13 @@ export class StripePaymentService extends AbstractPaymentService {
     // carries cartId, which resolves to an identified customer. Booleans and field names only, the
     // same stance the adjacent behavior-rule log takes. config.ts may name it because it iterates
     // the merchant's own configuration map, where no shopper data exists.
-    const railSuppression = euBankTransferCountry
-      ? resolveRailSuppression({
-          setupFutureUsage: effectiveSetupFutureUsage,
-          captureMethod: captureMethodConfig,
-        })
-      : [];
-    if (railSuppression.length > 0 && amountPlanned.currencyCode.toLowerCase() === 'eur') {
-      log.warn(
-        'Bank transfer options were sent but Stripe will suppress the rail for this PaymentIntent. ' +
-          'The customer_balance tab will not render. See STRIPE_PAYMENT_BEHAVIOR_RULES for this market.',
-        {
-          cartId: ctCart.id,
-          suppressedBySetupFutureUsage: railSuppression.includes('setupFutureUsage'),
-          suppressedByCaptureMethod: railSuppression.includes('captureMethod'),
-        },
-      );
-    }
+    this.warnIfRailSuppressed(
+      ctCart,
+      euBankTransferCountry,
+      effectiveSetupFutureUsage,
+      captureMethodConfig,
+      amountPlanned,
+    );
 
     const stripeCustomerId = customer?.custom?.fields?.[stripeCustomerIdFieldName];
     const expressWithCustomer = this.resolveExpressWithCustomer(
@@ -839,15 +816,46 @@ export class StripePaymentService extends AbstractPaymentService {
       expressCustomerSession,
     );
 
+    // SB3-231 — Reuse, don't recreate. A duplicate express-checkout confirm (or any repeated
+    // GET /payments on the same cart) must not stack a second PaymentIntent + Payment and double-charge
+    // the shopper. commercetools accepts multiple payments per cart by design, so the guard lives here.
+    // Placed after stripeCustomerId + expressWithCustomer are resolved so the setup_future_usage we match
+    // against is the one the create path would ACTUALLY apply: the PI only carries setup_future_usage when
+    // `(!expressCheckout || expressWithCustomer) && stripeCustomerId` (see buildPaymentIntentCreateParams),
+    // so a guest / express-without-customer cart creates the PI without it even when a value is configured.
+    // Matching against the raw effectiveSetupFutureUsage there would false-skip the reuse and re-open the
+    // double charge.
+    // What the create path WOULD apply for THIS request (mirror buildPaymentIntentCreateParams): customer
+    // is bound on (!express || expressWithCustomer) && stripeCustomerId; shipping only on the non-express
+    // path. setup_future_usage only rides along when the customer is bound.
+    const expectCustomer = Boolean((!expressCheckout || expressWithCustomer) && stripeCustomerId);
+    const expectShipping = Boolean(!expressCheckout && shippingAddress != null);
+    const appliedSetupFutureUsage = expectCustomer ? effectiveSetupFutureUsage : undefined;
+    const requestedConfig = {
+      captureMethod: captureMethodConfig as CaptureMethod,
+      setupFutureUsage: appliedSetupFutureUsage,
+      expectCustomer,
+      expectShipping,
+    };
+    const reusable = await this.findReusablePayment(ctCart, amountPlanned, requestedConfig);
+    const reuseResponse = this.buildReuseResponse(reusable, ctCart, merchantReturnUrl, behaviorRule);
+    if (reuseResponse) {
+      return reuseResponse;
+    }
+
     // Tax calculation integration
-    const taxCalculationReferences = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
-    const taxCalculationCount = taxCalculationReferences?.length ?? 0;
-    const hasSingleTaxCalculation = taxCalculationCount === 1;
-    const hasTaxCalculations = taxCalculationCount > 0;
+    const { hasSingleTaxCalculation, hasTaxCalculations, taxCalculationCount, taxCalculationReference } =
+      this.resolveTaxCalculation(ctCart);
 
     let paymentIntent!: Stripe.PaymentIntent;
 
     try {
+      // SB3-231 — Per-call random idempotency key for the Stripe create. A stable cart+amount key was
+      // rejected: Stripe replays the cached CREATE response for 24h, so once the original PI is
+      // canceled/expired the reuse check above falls through and a stable key would replay the dead PI,
+      // stranding the cart. Duplicate prevention lives in commercetools instead: the sequential case is
+      // findReusablePayment above, and the concurrent case is the unique Payment.key below — CT's unique-key
+      // constraint is the real mutex (the addPayment 409 is NOT: the SDK retries it, maxRetries 6).
       const idempotencyKey = crypto.randomUUID();
       const createParams = this.buildPaymentIntentCreateParams({
         ctCart,
@@ -861,7 +869,7 @@ export class StripePaymentService extends AbstractPaymentService {
         projectKey: config.projectKey,
         stripeEnableMultiOperations: config.stripeEnableMultiOperations,
         hasSingleTaxCalculation,
-        taxCalculationReference: hasSingleTaxCalculation ? taxCalculationReferences![0] : undefined,
+        taxCalculationReference,
         euBankTransferCountry,
       });
       paymentIntent = await stripeApi().paymentIntents.create(createParams, {
@@ -881,33 +889,49 @@ export class StripePaymentService extends AbstractPaymentService {
       }),
     });
 
-    const ctPayment = await this.ctPaymentService.createPayment({
-      amountPlanned,
-      ...(getCheckoutTransactionItemIdFromContext() && {
-        checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
-      }),
-      ...({
-        paymentMethodInfo: {
-          paymentInterface: config.paymentInterface,
-          /*name: { // Currently unused fields
-            en: 'Stripe Payment Connector',
-          },*/
-        },
-      } as any),
-      /*paymentStatus: { // Currently unused fields
-        interfaceCode: paymentIntent.id, //This is translated to PSP Status Code on the Order->Payment page
-        interfaceText: paymentIntent.description || '', //This is translated to Description on the Order->Payment page
-      },*/
-      ...this.resolveInitialPaymentCustomerFields(ctCart),
-      transactions: [
-        {
-          type: PaymentTransactions.AUTHORIZATION,
-          amount: amountPlanned,
-          state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
-          interactionId: paymentIntent.id,
-        },
-      ],
-    });
+    // SB3-231 — Unique Payment.key = the concurrent-create mutex (KI-028 pattern). Two GET /payments that
+    // both passed the reuse check (same cart + same version) reach here; CT's unique-key constraint lets
+    // only one createPayment win — the loser gets DuplicateField and reuses the winner below, so the cart
+    // never ends up with two Payments. Keyed on cart id + version so a later legitimate create (the version
+    // moves once addPayment attaches the winner) gets a fresh key.
+    const createPaymentKey = `pi-create-${ctCart.id}-${ctCart.version}`;
+    let ctPayment: Payment;
+    try {
+      ctPayment = await this.ctPaymentService.createPayment({
+        amountPlanned,
+        key: createPaymentKey,
+        ...(getCheckoutTransactionItemIdFromContext() && {
+          checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
+        }),
+        ...({
+          paymentMethodInfo: {
+            paymentInterface: config.paymentInterface,
+          },
+        } as any),
+        ...this.resolveInitialPaymentCustomerFields(ctCart),
+        transactions: [
+          {
+            type: PaymentTransactions.AUTHORIZATION,
+            amount: amountPlanned,
+            state: this.convertPaymentResultCode(PaymentOutcome.INITIAL as PaymentOutcome),
+            interactionId: paymentIntent.id,
+          },
+        ],
+      });
+    } catch (e) {
+      // Concurrent winner already created the Payment for this cart+version → reuse its PI, never a second
+      // Payment. The PI we just created (random key) is left as an unconfirmed orphan; the winner's PI is what
+      // both callers confirm, so Stripe charges once. A non-duplicate error (or an unusable winner) rethrows.
+      return await this.reuseWinnerOnDuplicateKey(
+        e,
+        createPaymentKey,
+        amountPlanned,
+        merchantReturnUrl,
+        behaviorRule,
+        ctCart,
+        requestedConfig,
+      );
+    }
 
     await this.ctCartService.addPayment({
       resource: {
@@ -935,6 +959,396 @@ export class StripePaymentService extends AbstractPaymentService {
       cartId: ctCart.id,
       ...this.resolveBillingAddressFields(behaviorRule, ctCart),
     };
+  }
+
+  /**
+   * Logs the resolved per-cart payment behavior rule by FIELD NAMES only (never the rule object or the
+   * discriminator country, which is shopper-supplied). Extracted from createPaymentIntentStripe to keep its
+   * cognitive complexity low. No-op when no rule resolved and nothing was steered.
+   */
+  private logResolvedBehaviorRule(
+    ctCart: Cart,
+    behaviorRule: PaymentBehaviorRule | undefined,
+    steeredFields: string[],
+    euBankTransferCountry: EuBankTransferCountry | undefined,
+  ): void {
+    if (!behaviorRule && steeredFields.length === 0) {
+      return;
+    }
+    log.info('Resolved per-cart payment behavior rule.', {
+      cartId: ctCart.id,
+      // FIELD NAMES, not the rule object. A whole-object spread silently logs every field later
+      // added to PaymentBehaviorRule, which is what 2026-08-07-013 was raised for.
+      ruleFields: Object.keys(behaviorRule ?? {}),
+      // The one VALUE that is safe to log: DE/FR/IE/NL, validated against EU_BANK_TRANSFER_COUNTRIES
+      // at startup, and merchant configuration rather than shopper data.
+      trustedEuBankTransferCountry: euBankTransferCountry,
+      // What must NEVER be logged is the DISCRIMINATOR that selected a rule —
+      // cart.billingAddress.country and cart.shippingAddress.country are the shopper's own address,
+      // and this line already carries cartId, which resolves to an identified customer. Hence names
+      // only. See resolvePaymentBehaviorWithSteeringCheck for why this signal is one-directional.
+      steeredFields,
+    });
+  }
+
+  /**
+   * Warns when bank-transfer options were sent but Stripe will suppress the customer_balance rail for this
+   * PaymentIntent (EUR carts only). Booleans and field names only — never the market. Extracted from
+   * createPaymentIntentStripe to keep its cognitive complexity low.
+   */
+  private warnIfRailSuppressed(
+    ctCart: Cart,
+    euBankTransferCountry: EuBankTransferCountry | undefined,
+    setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined,
+    captureMethod: string,
+    amountPlanned: { currencyCode: string },
+  ): void {
+    const railSuppression = euBankTransferCountry ? resolveRailSuppression({ setupFutureUsage, captureMethod }) : [];
+    if (railSuppression.length === 0 || amountPlanned.currencyCode.toLowerCase() !== 'eur') {
+      return;
+    }
+    log.warn(
+      'Bank transfer options were sent but Stripe will suppress the rail for this PaymentIntent. ' +
+        'The customer_balance tab will not render. See STRIPE_PAYMENT_BEHAVIOR_RULES for this market.',
+      {
+        cartId: ctCart.id,
+        suppressedBySetupFutureUsage: railSuppression.includes('setupFutureUsage'),
+        suppressedByCaptureMethod: railSuppression.includes('captureMethod'),
+      },
+    );
+  }
+
+  /**
+   * Resolves the cart's Stripe Tax calculation reference. Only a SINGLE reference is forwarded to the
+   * PaymentIntent — zero or multiple are treated as "no tax data" (never guessed). Extracted from
+   * createPaymentIntentStripe to keep its cognitive complexity low.
+   */
+  private resolveTaxCalculation(ctCart: Cart): {
+    hasSingleTaxCalculation: boolean;
+    hasTaxCalculations: boolean;
+    taxCalculationCount: number;
+    taxCalculationReference: string | undefined;
+  } {
+    const refs = ctCart.custom?.fields?.[CT_CUSTOM_FIELD_TAX_CALCULATIONS] as string[] | undefined;
+    const count = refs?.length ?? 0;
+    const hasSingleTaxCalculation = count === 1;
+    return {
+      hasSingleTaxCalculation,
+      hasTaxCalculations: count > 0,
+      taxCalculationCount: count,
+      taxCalculationReference: hasSingleTaxCalculation ? refs![0] : undefined,
+    };
+  }
+
+  /**
+   * SB3-231 — Turns a {@link findReusablePayment} result into the create-path response. Returns the reuse
+   * DTO (and logs it) when a PI is being reused, throws when a payment is already in progress for the cart
+   * (a second PI would double-charge), or returns `undefined` so the caller creates a fresh PaymentIntent.
+   */
+  private buildReuseResponse(
+    reusable: Awaited<ReturnType<StripePaymentService['findReusablePayment']>>,
+    ctCart: Cart,
+    merchantReturnUrl: string,
+    behaviorRule: PaymentBehaviorRule | undefined,
+  ): PaymentResponseSchemaDTO | undefined {
+    if (reusable.kind === 'in_progress') {
+      // A PaymentIntent for this cart is already settled / in progress (its CT Authorization just hasn't
+      // been written yet). Creating another would double-charge the shopper, so reject the request.
+      log.warn('A payment is already in progress for this cart; refusing to create a duplicate.', {
+        ctCartId: ctCart.id,
+        ctPayment: reusable.paymentReference,
+        stripePaymentIntentId: reusable.stripePaymentIntentId,
+      });
+      throw new Error('A payment is already in progress for this cart');
+    }
+    if (reusable.kind === 'reuse') {
+      log.info('Reusing the active payment already attached to the cart; skipped creating a duplicate.', {
+        ctCartId: ctCart.id,
+        ctPayment: reusable.paymentReference,
+        stripePaymentIntentId: reusable.stripePaymentIntentId,
+      });
+      return {
+        sClientSecret: reusable.clientSecret,
+        paymentReference: reusable.paymentReference,
+        merchantReturnUrl,
+        cartId: ctCart.id,
+        ...this.resolveBillingAddressFields(behaviorRule, ctCart),
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * SB3-231 — Handles a commercetools DuplicateField on the unique create-Payment key (the concurrent-create
+   * mutex): reuses the winning Payment's PaymentIntent so the cart never ends up with two Payments. Rethrows
+   * the original error when it is not a duplicate-key error or the winner cannot be reused.
+   */
+  private async reuseWinnerOnDuplicateKey(
+    e: unknown,
+    createPaymentKey: string,
+    amountPlanned: { centAmount: number; currencyCode: string },
+    merchantReturnUrl: string,
+    behaviorRule: PaymentBehaviorRule | undefined,
+    ctCart: Cart,
+    requested: {
+      captureMethod: CaptureMethod;
+      setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+      expectCustomer: boolean;
+      expectShipping: boolean;
+    },
+  ): Promise<PaymentResponseSchemaDTO> {
+    if (!this.isCtDuplicateKeyError(e)) {
+      throw e;
+    }
+    const winner = await this.findPaymentByKey(createPaymentKey);
+    const winnerAuth = (winner?.transactions ?? []).find(
+      (t) => t.type === PaymentTransactions.AUTHORIZATION && t.state === 'Initial',
+    );
+    if (!winner || !winnerAuth?.interactionId) {
+      throw e;
+    }
+    const winnerPi = await stripeApi().paymentIntents.retrieve(winnerAuth.interactionId);
+    const openPiStatuses: Stripe.PaymentIntent.Status[] = [
+      'requires_payment_method',
+      'requires_confirmation',
+      'requires_action',
+    ];
+    // The winner must be genuinely reusable: an open, confirmable PI matching this request's amount AND the
+    // same configuration the create path would apply (capture method, applied setup_future_usage, customer
+    // binding, shipping presence — Finding #2). If not (settled/canceled/amount drift/flow switch), rethrow so
+    // the caller surfaces the original error rather than hand back a PI that confirm would reject.
+    if (
+      !openPiStatuses.includes(winnerPi.status) ||
+      !winnerPi.client_secret ||
+      winnerPi.amount !== amountPlanned.centAmount ||
+      !this.reusePiConfigMatches(winnerPi, requested)
+    ) {
+      throw e;
+    }
+    // The winner MUST end up referenced by the cart before we hand back a payable PI (Finding #1). Attach it if
+    // needed and VERIFY. If it still isn't referenced — the attach genuinely failed and no concurrent winner
+    // attached it either — rethrow so the caller errors WITHOUT handing out a PI, rather than returning a
+    // payment the cart does not reference (which the shopper could pay and confirm would then reject, leaving
+    // a charge with no order). This restores the pre-#388 safe outcome for that failure.
+    if (!(await this.ensureCartReferencesWinner(ctCart, winner.id))) {
+      throw e;
+    }
+    // Self-heal the ct_payment_id stamp (see evaluateReuseCandidate): the original create path may have
+    // failed before stamping. Never hand back an unstamped PI — confirm would reject it after a charge.
+    if (winnerPi.metadata?.ct_payment_id !== winner.id) {
+      await this.updatePaymentIntentMetadata(winnerPi.id, winner.id);
+    }
+    log.info('Concurrent create race: reusing the winner payment (DuplicateField on cart key).', {
+      ctCartId: ctCart.id,
+      ctPayment: winner.id,
+      stripePaymentIntentId: winnerPi.id,
+    });
+    return {
+      sClientSecret: winnerPi.client_secret,
+      paymentReference: winner.id,
+      merchantReturnUrl,
+      cartId: ctCart.id,
+      ...this.resolveBillingAddressFields(behaviorRule, ctCart),
+    };
+  }
+
+  /**
+   * SB3-231 (2nd review, Finding #1) — Ensures the cart references the winner payment, returning whether it
+   * does by the end. If already referenced → true. Otherwise attach it: on success → true. On attach failure,
+   * re-read the cart: if a concurrent winner attached it meanwhile → true (the legitimate race); if it still
+   * does not reference the winner → false, so the caller rethrows instead of handing back an unattached,
+   * payable PI (charge-without-order). Tolerates a concurrent attach landing between our read and here.
+   */
+  private async ensureCartReferencesWinner(ctCart: Cart, winnerId: string): Promise<boolean> {
+    if ((ctCart.paymentInfo?.payments ?? []).some((p) => p.id === winnerId)) {
+      return true;
+    }
+    try {
+      await this.ctCartService.addPayment({
+        resource: { id: ctCart.id, version: ctCart.version },
+        paymentId: winnerId,
+      });
+      return true;
+    } catch (attachErr) {
+      log.warn('Winner attach failed; re-reading the cart to confirm whether it is already attached.', {
+        ctCartId: ctCart.id,
+        ctPayment: winnerId,
+        errorMessage: (attachErr as Error)?.message,
+      });
+      try {
+        const fresh = await this.ctCartService.getCart({ id: ctCart.id });
+        return (fresh.paymentInfo?.payments ?? []).some((p) => p.id === winnerId);
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  /**
+   * SB3-231 — Finds an existing, still-active Stripe payment already attached to the cart so a repeated
+   * `GET /payments` (e.g. a duplicate express-checkout confirm) reuses it instead of creating a second
+   * PaymentIntent + Payment — which commercetools would accept and the shopper would be charged for twice.
+   *
+   * A candidate qualifies only when it is this connector's payment (`paymentInterface`), still unresolved
+   * (an Authorization in `Initial` state — not charged, failed or cancelled), matches the current planned
+   * amount + currency, whose Stripe PaymentIntent is still in an open, confirmable status, AND whose PI
+   * configuration (`capture_method`, `setup_future_usage`) still matches what this request resolved —
+   * otherwise a PI minted for a different flow (e.g. without a `setup_future_usage` mandate, or a
+   * different capture method) would be returned for a request that needs a different one. Anything else
+   * (amount/config changed, PI already succeeded/canceled, ref no longer resolvable) falls through so a
+   * fresh PaymentIntent is created as before.
+   *
+   * @returns The reusable payment's CT id, Stripe client secret and PaymentIntent id, or `null` when none qualifies.
+   */
+  private async findReusablePayment(
+    ctCart: Cart,
+    amountPlanned: { centAmount: number; currencyCode: string },
+    requested: {
+      captureMethod: CaptureMethod;
+      setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+      expectCustomer: boolean;
+      expectShipping: boolean;
+    },
+  ): Promise<
+    | { kind: 'reuse'; paymentReference: string; clientSecret: string; stripePaymentIntentId: string }
+    | { kind: 'in_progress'; paymentReference: string; stripePaymentIntentId: string }
+    | { kind: 'none' }
+  > {
+    const paymentRefs = ctCart.paymentInfo?.payments ?? [];
+    for (const ref of paymentRefs) {
+      const candidate = await this.evaluateReuseCandidate(ref.id, amountPlanned, requested);
+      if (candidate.kind !== 'skip') {
+        return candidate;
+      }
+    }
+    return { kind: 'none' };
+  }
+
+  /**
+   * SB3-231 — Evaluates ONE cart payment ref as a reuse candidate for {@link findReusablePayment}.
+   * Returns `reuse` / `in_progress` exactly as that method would, or `skip` when the ref does not qualify
+   * (unresolvable, not this connector's, amount/config drift, PI no longer open) so the caller moves on.
+   * Extracted so the loop body stays flat and both methods keep a low cognitive complexity.
+   */
+  private async evaluateReuseCandidate(
+    refId: string,
+    amountPlanned: { centAmount: number; currencyCode: string },
+    requested: {
+      captureMethod: CaptureMethod;
+      setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+      expectCustomer: boolean;
+      expectShipping: boolean;
+    },
+  ): Promise<
+    | { kind: 'reuse'; paymentReference: string; clientSecret: string; stripePaymentIntentId: string }
+    | { kind: 'in_progress'; paymentReference: string; stripePaymentIntentId: string }
+    | { kind: 'skip' }
+  > {
+    let ctPayment: Payment | undefined;
+    try {
+      ctPayment = await this.ctPaymentService.getPayment({ id: refId });
+    } catch {
+      // Ref no longer resolvable — skip it, but do not block creating a fresh payment.
+      return { kind: 'skip' };
+    }
+    if (!ctPayment || ctPayment.paymentMethodInfo?.paymentInterface !== getConfig().paymentInterface) {
+      return { kind: 'skip' };
+    }
+    if (
+      ctPayment.amountPlanned.centAmount !== amountPlanned.centAmount ||
+      ctPayment.amountPlanned.currencyCode !== amountPlanned.currencyCode
+    ) {
+      return { kind: 'skip' };
+    }
+
+    const authInitial = (ctPayment.transactions ?? []).find(
+      (t) => t.type === PaymentTransactions.AUTHORIZATION && t.state === 'Initial',
+    );
+    if (!authInitial?.interactionId) {
+      return { kind: 'skip' };
+    }
+
+    let paymentIntent: Stripe.PaymentIntent;
+    try {
+      paymentIntent = await stripeApi().paymentIntents.retrieve(authInitial.interactionId);
+    } catch {
+      return { kind: 'skip' };
+    }
+
+    // Settled / in-progress PI while the CT Authorization is still Initial (confirm or webhook in flight —
+    // the Pooch & Mutt window: second GET /payments ~2s before the first PI's charge landed in CT). A
+    // second PI here is always a double charge, so reject rather than create.
+    const settledPiStatuses: Stripe.PaymentIntent.Status[] = ['succeeded', 'requires_capture', 'processing'];
+    if (settledPiStatuses.includes(paymentIntent.status)) {
+      return { kind: 'in_progress', paymentReference: ctPayment.id, stripePaymentIntentId: paymentIntent.id };
+    }
+
+    const openPiStatuses: Stripe.PaymentIntent.Status[] = [
+      'requires_payment_method',
+      'requires_confirmation',
+      'requires_action',
+    ];
+    if (!openPiStatuses.includes(paymentIntent.status) || !paymentIntent.client_secret) {
+      return { kind: 'skip' };
+    }
+
+    if (!this.reusePiConfigMatches(paymentIntent, requested)) {
+      return { kind: 'skip' };
+    }
+
+    return this.finalizeReuseCandidate(paymentIntent, ctPayment.id);
+  }
+
+  /**
+   * SB3-231 — Final gate before a reuse candidate is handed back: self-heal the ct_payment_id stamp. If the
+   * create path's updatePaymentIntentMetadata failed AFTER addPayment, the cart carries a Payment whose open
+   * PI has no (or a stale) ct_payment_id; reusing it as-is would charge the shopper and then be rejected at
+   * confirm (assertPaymentIntentIdentity) and skipped by the webhook — money taken, no CT record. Re-stamp
+   * before reusing; if the stamp still cannot be set, fail closed (skip) so a fresh, correctly-stamped PI is
+   * created. Extracted from evaluateReuseCandidate to keep its cognitive complexity under the ceiling.
+   */
+  private async finalizeReuseCandidate(
+    paymentIntent: Stripe.PaymentIntent,
+    ctPaymentId: string,
+  ): Promise<
+    { kind: 'reuse'; paymentReference: string; clientSecret: string; stripePaymentIntentId: string } | { kind: 'skip' }
+  > {
+    if (paymentIntent.metadata?.ct_payment_id !== ctPaymentId) {
+      try {
+        await this.updatePaymentIntentMetadata(paymentIntent.id, ctPaymentId);
+      } catch {
+        return { kind: 'skip' };
+      }
+    }
+    return {
+      kind: 'reuse',
+      paymentReference: ctPaymentId,
+      clientSecret: paymentIntent.client_secret as string,
+      stripePaymentIntentId: paymentIntent.id,
+    };
+  }
+
+  /**
+   * SB3-231 — True when an open PaymentIntent's configuration still matches what the create path WOULD apply
+   * for this request: capture method, applied setup_future_usage, customer binding and shipping presence. A
+   * PI minted for a different flow (e.g. an express-without-customer PI with no customer/shipping) must NOT be
+   * handed to a drop-in call that needs them bound. Normalizes Stripe `null` to `undefined`.
+   */
+  private reusePiConfigMatches(
+    paymentIntent: Stripe.PaymentIntent,
+    requested: {
+      captureMethod: CaptureMethod;
+      setupFutureUsage: Stripe.PaymentIntentCreateParams.SetupFutureUsage | undefined;
+      expectCustomer: boolean;
+      expectShipping: boolean;
+    },
+  ): boolean {
+    return (
+      paymentIntent.capture_method === requested.captureMethod &&
+      (paymentIntent.setup_future_usage ?? undefined) === requested.setupFutureUsage &&
+      Boolean(paymentIntent.customer) === requested.expectCustomer &&
+      Boolean(paymentIntent.shipping) === requested.expectShipping
+    );
   }
 
   /**
@@ -1143,6 +1557,20 @@ export class StripePaymentService extends AbstractPaymentService {
     });
     const amountPlanned = ctPayment.amountPlanned;
 
+    // SECURITY — Payment↔Cart binding (defense-in-depth against the cross-cart binding exploit).
+    // The confirm is authorized against the SESSION cart (`getCartIdFromContext`), but the payment
+    // being confirmed is named independently by `paymentReference`. A shopper can create a
+    // PaymentIntent + Payment on one cart and re-point that Payment at another cart via `/me/carts`
+    // before confirming, decoupling the two. If the session cart does not actually reference this
+    // payment, the binding is broken and the confirm must be rejected.
+    //
+    // This check is cheap and side-effect-free, so it runs HERE — right after the two fetches, at the
+    // interactive boundary — and NOT after the async-settlement branch below (~"status === processing
+    // || isBankTransferAwaitingFunds"). A throw placed after that branch would break legitimate
+    // crypto `processing` and bank-transfer `requires_action` confirmations; a throw placed here,
+    // before any status handling, rejects only the decoupled payment and leaves those flows intact.
+    this.assertCartReferencesPayment(ctCart, paymentReference);
+
     // (1) Retrieve the PaymentIntent from Stripe (source of truth)
     let stripePaymentIntent: Stripe.PaymentIntent;
     try {
@@ -1179,16 +1607,8 @@ export class StripePaymentService extends AbstractPaymentService {
       throw new Error(`Invalid PaymentIntent: status "${stripePaymentIntent.status}" is not allowed`);
     }
 
-    // (3) Validate metadata — require metadata.ct_payment_id === paymentReference
-    const metadataCtPaymentId = stripePaymentIntent.metadata?.ct_payment_id;
-    if (metadataCtPaymentId !== paymentReference) {
-      log.warn('updatePaymentIntentStripeSuccessful: metadata.ct_payment_id does not match paymentReference', {
-        paymentIntentId,
-        paymentReference,
-        metadataCtPaymentId: metadataCtPaymentId ?? null,
-      });
-      throw new Error(`Invalid PaymentIntent: metadata.ct_payment_id does not match this payment`);
-    }
+    // (3) Validate the PaymentIntent identity — metadata.ct_payment_id AND metadata.cart_id (origin cart).
+    this.assertPaymentIntentIdentity(stripePaymentIntent, paymentReference, ctCart, paymentIntentId);
 
     // (4) Validate amount/currency — must match ctPayment.amountPlanned
     const stripeAmount = stripePaymentIntent.amount;
@@ -1247,6 +1667,74 @@ export class StripePaymentService extends AbstractPaymentService {
     });
 
     return PaymentModificationStatus.APPROVED;
+  }
+
+  /**
+   * SECURITY — Payment↔Cart binding (defense-in-depth against the cross-cart binding exploit).
+   * The confirm is authorized against the SESSION cart (`getCartIdFromContext`), but the payment being
+   * confirmed is named independently by `paymentReference`. A shopper can create a PaymentIntent +
+   * Payment on one cart and re-point that Payment at another cart via `/me/carts` before confirming,
+   * decoupling the two. If the session cart does not actually reference this payment, the binding is
+   * broken and the confirm must be rejected.
+   *
+   * Runs BEFORE the Stripe retrieve — cheap, side-effect-free, and placed before any status handling so
+   * it rejects only the decoupled payment and leaves legitimate crypto/bank-transfer confirms intact.
+   *
+   * Extracted from `updatePaymentIntentStripeSuccessful` to keep that method under the cognitive
+   * complexity ceiling `connect validate` enforces. Behaviour is unchanged.
+   */
+  private assertCartReferencesPayment(ctCart: Cart, paymentReference: string): void {
+    const cartReferencesPayment = (ctCart.paymentInfo?.payments ?? []).some((ref) => ref.id === paymentReference);
+    if (!cartReferencesPayment) {
+      log.warn('updatePaymentIntentStripeSuccessful: the session cart does not reference this payment', {
+        ctCartId: ctCart.id,
+        paymentReference,
+      });
+      throw new Error(`Invalid payment: not attached to the current cart`);
+    }
+  }
+
+  /**
+   * Validates the retrieved PaymentIntent's identity against this payment and its originating cart.
+   *
+   * (a) `metadata.ct_payment_id` must equal `paymentReference` — the PI belongs to this CT payment.
+   * (b) `metadata.cart_id` must equal the session cart. The pre-retrieve `assertCartReferencesPayment`
+   *     only proves the SESSION cart references the payment; it does NOT catch the attacker who confirms
+   *     from the DESTINATION cart's session (Cart B, which — after re-pointing the payment via
+   *     `/me/carts` — legitimately references P). The robust anchor is `metadata.cart_id`, stamped at
+   *     CREATION (standard :~1050, express :~3080) = the ORIGINATING cart, immutable by the shopper.
+   *     Legit confirm: session cart === origin cart === metadata.cart_id → passes. Exploit (Cart B
+   *     session): B !== metadata(A) → rejected.
+   *
+   * Extracted from `updatePaymentIntentStripeSuccessful` to keep that method under the cognitive
+   * complexity ceiling `connect validate` enforces. Behaviour is unchanged.
+   */
+  private assertPaymentIntentIdentity(
+    stripePaymentIntent: Stripe.PaymentIntent,
+    paymentReference: string,
+    ctCart: Cart,
+    paymentIntentId: string,
+  ): void {
+    const metadataCtPaymentId = stripePaymentIntent.metadata?.ct_payment_id;
+    if (metadataCtPaymentId !== paymentReference) {
+      log.warn('updatePaymentIntentStripeSuccessful: metadata.ct_payment_id does not match paymentReference', {
+        paymentIntentId,
+        paymentReference,
+        metadataCtPaymentId: metadataCtPaymentId ?? null,
+      });
+      throw new Error(`Invalid PaymentIntent: metadata.ct_payment_id does not match this payment`);
+    }
+
+    const metadataCartId = stripePaymentIntent.metadata?.cart_id;
+    if (metadataCartId !== ctCart.id) {
+      log.warn('updatePaymentIntentStripeSuccessful: PaymentIntent was created for a different cart', {
+        paymentIntentId,
+        paymentReference,
+        ctCartId: ctCart.id,
+        metadataCartId: metadataCartId ?? null,
+      });
+      throw new Error(`Invalid payment: created for a different cart`);
+    }
   }
 
   /**
@@ -1833,6 +2321,53 @@ export class StripePaymentService extends AbstractPaymentService {
         return;
       }
 
+      // SECURITY — the settled amount must cover the order's gross total before we write Paid
+      // (cross-cart binding exploit). This is the async-rail half of the same guard the order-subscriber
+      // applies on the synchronous card path, and it uses the SAME pure rule (`amountCoversOrderTotal`,
+      // duplicated byte-identical in `processor/src/utils.ts` and `order-subscriber/src/guard.ts`
+      // because the two Connect apps cannot share code — separate deployAs, rootDir ./src).
+      //
+      // WHERE THE SETTLED AMOUNT COMES FROM, and why OURS is NOT the persisted transactions. The route
+      // dispatches this method BEFORE `processStripeEvent`, which is what writes OUR settling
+      // `Charge/Success` — so at this point our payment carries only `Authorization/Pending`, and
+      // summing our persisted charges would read 0 and wrongly skip EVERY legitimate async settlement.
+      // The settling PaymentIntent already carries OUR captured amount in `amount_received` (with
+      // `currency`), so that is the authoritative source for our leg — independent of write ordering,
+      // and it does not touch the `Authorization/Pending` read that ownership signal 2 depends on.
+      //
+      // COVERAGE IS OVER ALL THE ORDER'S PAYMENTS (split tender): a gift card charged through another
+      // connector counts toward the gross. We add the OTHER payments' already-persisted `Charge/Success`
+      // (in the order currency) to our `amount_received`, EXCLUDING our own payment (ctPaymentId) so our
+      // charge is never double-counted — it is already in `amount_received`, whether or not it is
+      // persisted yet. Only a PAID write can over-claim money — PENDING is the weakest state and is
+      // deliberately never gated. On undercoverage we SKIP the write and warn; this method is
+      // best-effort and must never throw, so any fetch error is caught below and degrades to "no order
+      // state" rather than an exception.
+      if (targetState === OrderPaymentState.PAID) {
+        const orderGrossTotal = order.taxedPrice?.totalGross ?? order.totalPrice;
+        const ourSettledCentAmount = paymentIntent.amount_received ?? 0;
+        const settledCurrency = paymentIntent.currency ?? '';
+        const otherChargesCentAmount = await this.sumOtherPaymentsCharges(
+          order,
+          ctPaymentId,
+          orderGrossTotal.currencyCode,
+        );
+        const settledCentAmount = ourSettledCentAmount + otherChargesCentAmount;
+        if (!amountCoversOrderTotal(settledCentAmount, settledCurrency, orderGrossTotal)) {
+          log.warn('Order paymentState not written to Paid: the settled amount does not cover the order gross total', {
+            orderId: order.id,
+            eventType: event.type,
+            ourSettledCentAmount,
+            otherChargesCentAmount,
+            settledCentAmount,
+            settledCurrency,
+            orderGrossCentAmount: orderGrossTotal.centAmount,
+            orderCurrency: orderGrossTotal.currencyCode,
+          });
+          return;
+        }
+      }
+
       await this.writeOrderPaymentState(order, ctPaymentId, targetState, event.type);
     } catch (orderStateError) {
       // Scalars only — never the error object. A CT/Stripe error carries `body`, `raw`,
@@ -1945,6 +2480,36 @@ export class StripePaymentService extends AbstractPaymentService {
       transactionType: 'Authorization',
       states: ['Pending'],
     });
+  }
+
+  /**
+   * Sums the settled `Charge/Success` of the order's OTHER payments (split tender), in `currencyCode`.
+   *
+   * Used by `reflectOrderPaymentStateBestEffort`'s coverage guard: our own leg's settled amount comes
+   * from the event's `amount_received`, so our payment (`excludePaymentId`) is EXCLUDED here to avoid
+   * double-counting it — its `Charge/Success` may or may not be persisted yet. Every other payment's
+   * already-persisted Success charges (e.g. a gift card charged through another connector) count toward
+   * coverage. Summing every connector's Success is safe: a shopper cannot forge one (`MyTransactionDraft`
+   * carries no `state`; only a `manage_payments` connector writes `Success`).
+   *
+   * `getOrderByPaymentId` does NOT expand `paymentInfo.payments`, so each referenced payment is fetched.
+   * Currency is matched case-insensitively (the gross code is upper-case `USD`, transaction codes too,
+   * but the caller passes the gross code so this stays robust). A rejected fetch propagates to the
+   * caller's outer try/catch, which logs and skips — the never-throw best-effort contract holds.
+   */
+  private async sumOtherPaymentsCharges(order: Order, excludePaymentId: string, currencyCode: string): Promise<number> {
+    const otherRefs = (order.paymentInfo?.payments ?? []).filter((ref) => ref.id !== excludePaymentId);
+    if (otherRefs.length === 0) {
+      return 0;
+    }
+    const payments = await Promise.all(otherRefs.map((ref) => this.ctPaymentService.getPayment({ id: ref.id })));
+    const wanted = currencyCode.toLowerCase();
+    return payments
+      .flatMap((p) => p.transactions ?? [])
+      .filter(
+        (t) => t.type === 'Charge' && t.state === 'Success' && (t.amount?.currencyCode ?? '').toLowerCase() === wanted,
+      )
+      .reduce((sum, t) => sum + (t.amount?.centAmount ?? 0), 0);
   }
 
   /**
@@ -2924,10 +3489,26 @@ export class StripePaymentService extends AbstractPaymentService {
    * is not masked as an installment race.
    */
   private isCtDuplicateKeyError(e: unknown): boolean {
-    const err = e as { statusCode?: number; body?: { errors?: Array<{ code?: string; field?: string }> } };
+    type CtError = { code?: string; field?: string };
+    const hasDuplicateKey = (errors: unknown): boolean =>
+      Array.isArray(errors) && (errors as CtError[]).some((x) => x?.code === 'DuplicateField' && x?.field === 'key');
+    // The connect-payments-sdk wraps the raw ts-client BadRequest in a CommercetoolsAPIError (an Errorx):
+    // `httpErrorStatus` instead of `statusCode`, `fields` (= the raw `body.errors` array) instead of `body`,
+    // and the untouched raw error on `cause`. Match the wrapped shape, the raw shape, AND the cause so the
+    // DuplicateField is recognized regardless of where in the call stack the throw is caught (SB3-227/SB3-231).
+    const err = e as {
+      statusCode?: number;
+      httpErrorStatus?: number;
+      body?: { errors?: unknown };
+      fields?: unknown;
+      cause?: { statusCode?: number; body?: { errors?: unknown } };
+    };
+    const status = err?.statusCode ?? err?.httpErrorStatus ?? err?.cause?.statusCode;
+    if (status !== 400) {
+      return false;
+    }
     return (
-      err?.statusCode === 400 &&
-      (err?.body?.errors ?? []).some((x) => x?.code === 'DuplicateField' && x?.field === 'key')
+      hasDuplicateKey(err?.body?.errors) || hasDuplicateKey(err?.fields) || hasDuplicateKey(err?.cause?.body?.errors)
     );
   }
 
