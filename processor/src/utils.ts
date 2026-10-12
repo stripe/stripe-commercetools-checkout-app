@@ -157,3 +157,50 @@ export const shouldTransitionOrderPaymentState = (current: string | undefined, t
   if (target === OrderPaymentState.PENDING) return !current;
   return true;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE COVERAGE INVARIANT — closes the cross-cart binding exploit.
+//
+// WHY IT EXISTS. A shopper can create a Stripe PaymentIntent + commercetools Payment on a cheap
+// cart, re-point that Payment at a more expensive cart via `/me/carts` before settlement, then pay
+// the cheap amount. Without comparing the settled amount against the order's gross total, the small
+// settlement is enough to stamp the big order `Paid`.
+//
+// TWO PARTS, ONE SHARED AND ONE CONTEXT-SPECIFIC:
+//
+//  1. `amountCoversOrderTotal` — the PURE comparison rule. DUPLICATED BYTE-IDENTICAL in
+//     `order-subscriber/src/guard.ts`. The two Connect apps genuinely cannot share code:
+//     commercetools Connect builds each `deployAs` entry as an independent unit and this app's
+//     tsconfig pins `rootDir: ./src`, so a relative import across the app boundary does not compile
+//     (a shared package would be the only way, and it is not worth it for one small pure function).
+//     The duplication is intentional; if you change one, change the other identically.
+//
+//  2. The SOURCE of the settled amount, which is context-specific and therefore NOT shared:
+//       • The order-subscriber (the synchronous card path) runs on `OrderCreated`, AFTER the
+//         settling `Charge/Success` is already persisted — so it sums those charges.
+//       • This module's async-rail guard (`reflectOrderPaymentStateBestEffort`) runs on the
+//         settlement webhook, which the route dispatches BEFORE `processStripeEvent` writes the
+//         `Charge/Success` (see `stripe-payment.route.ts` and `stripeEventConverter`). Summing the
+//         persisted transactions there would read a STALE, empty set and wrongly skip every
+//         legitimate async `Paid`. So it sources the settled amount from the settling PaymentIntent's
+//         `amount_received` instead — which is also independent of write ordering and leaves the
+//         `Authorization/Pending` transaction read (ownership signal 2) untouched.
+//     Both then feed the SAME pure rule below, so the accept/reject decision is identical.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The pure coverage rule — a settled amount covers the order's TAX-INCLUSIVE gross only when it is in
+ * the SAME currency (checked FIRST — a cross-currency comparison is meaningless) AND is at least the
+ * gross (`>=`, so legitimate overpayment still covers). Currency is compared case-insensitively so a
+ * Stripe lowercase code (`usd`) and a commercetools uppercase code (`USD`) match.
+ *
+ * DUPLICATED BYTE-IDENTICAL in `order-subscriber/src/guard.ts`. Only the SOURCE of `settledCentAmount`
+ * / `settledCurrencyCode` differs by context (see the block comment above); this rule does not.
+ */
+export const amountCoversOrderTotal = (
+  settledCentAmount: number,
+  settledCurrencyCode: string,
+  orderGrossTotal: { centAmount: number; currencyCode: string },
+): boolean =>
+  settledCurrencyCode.toLowerCase() === orderGrossTotal.currencyCode.toLowerCase() &&
+  settledCentAmount >= orderGrossTotal.centAmount;

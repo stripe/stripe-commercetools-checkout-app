@@ -73,23 +73,52 @@ export const resolveOrderForWrite = async (orderId: string): Promise<OrderForWri
     return undefined;
   }
 
-  // Only now, on OUR payments, ask what is true about the money. Asking before the interface filter
-  // would decide our write from a sibling connector's rail. See resolveTargetPaymentState.
-  const targetPaymentState = resolveTargetPaymentState(ours);
+  // The tax-INCLUSIVE gross the settled charges must cover before we write Paid. Stripe charges
+  // tax-inclusive, so `totalPrice` (pre-tax) would leave a tax-sized hole; prefer `taxedPrice.totalGross`.
+  const orderGrossTotal = order.taxedPrice?.totalGross ?? order.totalPrice;
+
+  // INVOLVEMENT is decided on OUR payments (we only write for an order we settled a charge on), but
+  // COVERAGE is measured across ALL the order's payments — a split-tendered order (our card plus, say,
+  // a gift card via another connector) is fully paid even though our charge alone does not reach the
+  // gross. See resolveTargetPaymentState / chargesCoverOrderTotal.
+  const all = allExpandedPayments(order);
+  const targetPaymentState = resolveTargetPaymentState(ours, orderGrossTotal, all);
   const transactionStates = ours.flatMap((p) => (p.transactions ?? []).map((t) => `${t.type}/${t.state}`));
 
   if (!targetPaymentState) {
-    // Reached by an authorization with no charge — manual capture, where the merchant is the actor
-    // and so the merchant's process is the honest owner. Logged with the states that produced the
-    // decision, because "wrote nothing" and "wrote nothing for a good reason" must not look alike.
-    log.info('No payment state follows from these transactions — leaving it to the merchant process', {
-      orderId,
-      transactionStates,
-    });
+    // Two distinct ways to land here, and a log that conflated them would hide the security-relevant
+    // one. A settled charge that does NOT cover the gross is undercoverage — the cross-cart binding
+    // exploit — and needs manual review; an authorization with no charge is ordinary manual capture,
+    // where the merchant is the actor. They are logged at DIFFERENT LEVELS on purpose: undercoverage
+    // is a security signal that must be alertable (WARN, matching the processor's async-rail half),
+    // manual capture is routine (INFO).
+    const hasSettledCharge = ours.some((p) =>
+      (p.transactions ?? []).some((t) => t.type === 'Charge' && t.state === 'Success'),
+    );
+    if (hasSettledCharge) {
+      log.warn('Order paymentState not written: settled charges do not cover the order gross total', {
+        orderId,
+        transactionStates,
+        reason: 'possible cross-cart binding, needs manual review',
+        orderGrossCentAmount: orderGrossTotal.centAmount,
+        orderCurrency: orderGrossTotal.currencyCode,
+      });
+    } else {
+      log.info('No payment state follows from these transactions — leaving it to the merchant process', {
+        orderId,
+        transactionStates,
+        reason: 'authorization without a charge — manual capture, owned by the merchant process',
+      });
+    }
     return undefined;
   }
 
-  return { id: order.id, version: order.version, paymentState: order.paymentState, targetPaymentState };
+  return {
+    id: order.id,
+    version: order.version,
+    paymentState: order.paymentState,
+    targetPaymentState,
+  };
 };
 
 /**
@@ -108,6 +137,18 @@ const ourPayments = (order: Order): Payment[] =>
   (order.paymentInfo?.payments ?? [])
     .map((ref) => ref.obj)
     .filter((p): p is Payment => p?.paymentMethodInfo?.paymentInterface === PAYMENT_INTERFACE);
+
+/**
+ * EVERY expanded payment on the order, ours and siblings' alike — the set coverage is summed over.
+ *
+ * Unlike `ourPayments` this does NOT filter by interface: a split-tendered order's other leg (e.g. a
+ * gift card charged through another connector) must count toward coverage. Summing every connector's
+ * `Charge/Success` is safe because a shopper cannot forge one — the public `/me` API's
+ * `MyTransactionDraft` has no `state` field, so only a `manage_payments` connector writes `Success`
+ * (see `guard.ts` `chargesCoverOrderTotal`). Unexpanded refs (no `obj`) are dropped, same as above.
+ */
+const allExpandedPayments = (order: Order): Payment[] =>
+  (order.paymentInfo?.payments ?? []).map((ref) => ref.obj).filter((p): p is Payment => !!p);
 
 const paymentInterfacesOf = (order: Order): string[] =>
   (order.paymentInfo?.payments ?? [])
@@ -135,21 +176,31 @@ export const writeOrderPaymentState = async (order: OrderForWrite): Promise<void
 
     const fresh = await resolveOrderForWrite(order.id);
     if (!fresh) {
-      log.info('Concurrent write resolved the order first — nothing to do', { orderId: order.id });
+      log.info('Concurrent write resolved the order first — nothing to do', {
+        orderId: order.id,
+      });
       return;
     }
     written = fresh.targetPaymentState;
     await post(fresh.id, fresh.version, fresh.targetPaymentState);
   }
 
-  log.info('Order paymentState written', { orderId: order.id, paymentState: written });
+  log.info('Order paymentState written', {
+    orderId: order.id,
+    paymentState: written,
+  });
 };
 
 const post = async (orderId: string, version: number, paymentState: TargetPaymentState): Promise<void> => {
   await apiRoot
     .orders()
     .withId({ ID: orderId })
-    .post({ body: { version, actions: [{ action: 'changePaymentState', paymentState }] } })
+    .post({
+      body: {
+        version,
+        actions: [{ action: 'changePaymentState', paymentState }],
+      },
+    })
     .execute();
 };
 
@@ -166,5 +217,8 @@ const isConcurrentModification = (error: unknown): boolean => {
     body?: { statusCode?: number; errors?: Array<{ code?: string }> };
   };
   if ((err?.statusCode ?? err?.body?.statusCode) === 409) return true;
-  return err?.code === 'ConcurrentModification' || (err?.body?.errors ?? []).some((e) => e?.code === 'ConcurrentModification');
+  return (
+    err?.code === 'ConcurrentModification' ||
+    (err?.body?.errors ?? []).some((e) => e?.code === 'ConcurrentModification')
+  );
 };

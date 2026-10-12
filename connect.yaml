@@ -73,9 +73,9 @@ deployAs:
         - key: STRIPE_APPEARANCE_PAYMENT_ELEMENT
           description: Stripe Appearance for Payment Element (example - {"theme":"night","labels":"floating"} ).
         - key: STRIPE_BEHAVIOR_PAYMENT_ELEMENT
-          description: JSON configuration for elements.create('payment', options) behavior (Elements Behavior). Supported fields - terms, wallets, defaultValues, fields, business, paymentMethodOrder, readOnly, layout (example - {"terms":{"card":"never"},"wallets":{"applePay":"auto"}}).
+          description: JSON options for the Payment Element (terms, wallets, defaultValues, fields, business, paymentMethodOrder, readOnly, layout). Example - {"terms":{"card":"never"},"wallets":{"applePay":"auto"}}.
         - key: STRIPE_EXPRESS_ELEMENT_OPTIONS
-          description: JSON configuration for the ExpressCheckoutElement options. Supported fields - buttonHeight, buttonTheme, buttonType, emailRequired, layout, paymentMethodOrder, phoneNumberRequired (example - {"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}).
+          description: JSON options for the Express Checkout Element (buttonHeight, buttonTheme, buttonType, emailRequired, layout, paymentMethodOrder, phoneNumberRequired). Example - {"buttonHeight":48,"emailRequired":true,"paymentMethodOrder":["apple_pay","google_pay"]}.
         - key: STRIPE_LAYOUT
           description: Stripe Layout for Payment Element (example - {"type":"accordion","defaultCollapsed":false,"radios":true,"spacedAccordionItems":false} ).
           default: '{"type":"tabs","defaultCollapsed":false}'
@@ -91,7 +91,7 @@ deployAs:
           description: Merchant return URL
           required: true
         - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an Origin header matching one of these values (example - https://example.com,https://checkout.example.com).
+          description: Comma-separated CORS allow-list; requests must send a matching Origin header (example - https://example.com,https://checkout.example.com).
           required: true
         - key: PAYMENT_INTERFACE
           description: The payment interface value used in the commercetools payment/payment methods. Default value is "checkout-stripe".
@@ -110,25 +110,11 @@ deployAs:
           default: 'deferred'
         - key: STRIPE_PAYMENT_BEHAVIOR_RULES
           description: >
-            JSON map of per-cart payment behavior rules keyed by store key or ISO country code.
-            Env vars are always the default — this map contains exceptions only. No wildcard key.
-            Discriminator per cart: cart.country (set at creation, not customer-editable), falling
-            back to store.key (merchant-defined). Nothing else selects a rule.
-            Each rule may override any combination of:
-            flowType ("deferred"|"pi_first"),
-            captureMethod ("automatic"|"automatic_async"|"manual"),
-            setupFutureUsage ("off_session"|"on_session"|""|"none"|"null"|"undefined"),
-            collectBillingAddress ("auto"|"never"|"if_required"),
-            euBankTransferCountry ("DE"|"FR"|"IE"|"NL" — which IBAN a EUR bank-transfer shopper sees;
-            validated at startup, so an invalid value aborts the deploy rather than reaching Stripe).
-            Only explicitly supplied fields override the corresponding flat env var; omitted fields
-            fall back to their individual env var.
-            Security note: billingAddress.country and shippingAddress.country are customer-supplied and
-            are deliberately NOT used to select a rule — the express enabler writes the shopper's own
-            shipping address onto the cart, so honouring them would let a shopper steer their own
-            capture method or IBAN. A shopper-supplied country that would have matched is logged as a
-            divergence signal and ignored.
-            Example: {"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"},"DE":{"euBankTransferCountry":"DE"}}
+            JSON map of per-cart behavior overrides (exceptions only) keyed by cart.country or store.key.
+            Each rule may set any of flowType, captureMethod, setupFutureUsage, collectBillingAddress,
+            euBankTransferCountry; omitted fields fall back to their flat env var. See
+            business-rules/payment-behavior-rules.md for selection and security rules.
+            Example - {"MX":{"captureMethod":"manual"},"store-ca":{"flowType":"pi_first"},"DE":{"euBankTransferCountry":"DE"}}
         - key: STRIPE_API_VERSION
           description: Stripe API version to use (example - 2025-12-15.clover).
           default: '2025-12-15.clover'
@@ -153,7 +139,7 @@ deployAs:
           description: commercetools client secret.
           required: true
         - key: CTP_CLIENT_ID
-          description: commercetools client ID with manage_payments, manage_orders, manage_payment_methods, manage_recurring_payment_jobs, view_sessions, view_api_clients, manage_checkout_payment_intents, manage_checkout_transactions, introspect_oauth_tokens, manage_types and view_types scopes
+          description: commercetools client ID with manage_payments, manage_orders, manage_payment_methods, manage_recurring_payment_jobs, view_sessions, view_api_clients, manage_checkout_payment_intents, manage_checkout_transactions, introspect_oauth_tokens, manage_types and view_types scopes.
           required: true
         - key: STRIPE_SECRET_KEY
           description: Stripe secret key (example - sk_*****).
