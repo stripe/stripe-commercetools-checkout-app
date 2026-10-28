@@ -81,7 +81,7 @@ Setup correct environment variables: check `processor/src/config/config.ts` for 
 | Variable | Description | Default |
 | -------- | ----------- | ------- |
 | `STRIPE_API_VERSION` | Stripe API version for API requests | `2025-12-15.clover` |
-| `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. **Must not be left empty or unset for security:** when empty, CORS validation is disabled and any origin can call the endpoint. | — |
+| `ALLOWED_ORIGINS` | Comma-separated list of allowed origins for CORS (e.g. POST /express-config). Requests must include an `Origin` header matching one of these values. Must not be left empty or unset. | — |
 | `STRIPE_EXPRESS_ELEMENT_OPTIONS` | Optional JSON configuration for the Express Checkout Element. Supported fields: `buttonHeight`, `buttonTheme`, `buttonType`, `emailRequired`, `layout`, `paymentMethodOrder`, `phoneNumberRequired`. Example: `{"buttonHeight":48,"emailRequired":true}` | — |
 
 Make sure commercetools client credential have at least the following permissions:
@@ -135,7 +135,7 @@ Afterwards, session ID can be obtained from response, which is necessary to be p
 
 ### JSON web token (JWT)
 
-`jwt` needs some workaround to be able to test locally as it depends on the merchant center forward-to proxy.
+`jwt` needs an additional local setup to be able to test locally as it depends on the merchant center forward-to proxy.
 
 In order to make easy running the application locally, following commands help to build up a jwt mock server:
 
@@ -209,10 +209,8 @@ Two related environment variables let the connector's payment behavior vary per 
 
 - **`STRIPE_PAYMENT_BEHAVIOR_RULES`**: a JSON map keyed by ISO country code or commercetools store key. Each matched rule can override `captureMethod`, `flowType`, `setupFutureUsage`, `collectBillingAddress`, and `euBankTransferCountry` for that cart only. Carts that match no key use the flat env vars (`STRIPE_CAPTURE_METHOD`, `STRIPE_PAYMENT_FLOW`, `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`, `STRIPE_COLLECT_BILLING_ADDRESS`) unchanged. Resolution happens in `resolvePaymentBehaviorWithSteeringCheck()` (`src/services/payment-behavior-resolver.ts`), called from both `initializeCartPayment()` and `createPaymentIntentStripe()`.
 
-  **The discriminator is `cart.country`, falling back to `cart.store.key` — and nothing else.** Both are merchant-controlled. `billingAddress.country` and `shippingAddress.country` are **not** used to select a rule: they are shopper-supplied, and inside this connector the express enabler writes the shopper's own shipping address onto the cart, so honouring them would let a shopper steer their own capture method or IBAN. A shopper-supplied country that *would* have matched a rule is reported as a divergence signal (`steeredFields`) and otherwise ignored, so the cart falls through to its store key or to the flat env vars. See [`business-rules/payment-behavior-rules.md`](../context/business-rules/payment-behavior-rules.md) Rule 1 and Rule 4.
+  **The discriminator is `cart.country`, falling back to `cart.store.key` — and nothing else.** Both are merchant-controlled. `billingAddress.country` and `shippingAddress.country` are **not** used to select a rule: they are shopper-supplied, and inside this connector the express enabler writes the shopper's own shipping address onto the cart. A shopper-supplied country that *would* have matched a rule is reported as a divergence signal (`steeredFields`) and otherwise ignored, so the cart falls through to its store key or to the flat env vars. See [`business-rules/payment-behavior-rules.md`](../context/business-rules/payment-behavior-rules.md) Rule 1 and Rule 4.
 - **`STRIPE_PAYMENT_FLOW`** (flat default) / **`flowType`** (per-cart override): selects between `deferred` (PaymentIntent created at submit time, compatible with all payment methods) and `pi_first` (PaymentIntent created eagerly so Stripe Elements can be initialized with `clientSecret` instead of `{ mode, amount, currency }`). `pi_first` is required for payment methods — e.g. **Blik** — that must bind to a PaymentIntent before the payment element renders, and suppresses `setupFutureUsage` on both the config-element response and the PaymentIntent.
-
-See [ADR-006](../context/decisions/adr-006-pi-first-blik-toctou.md) for the full rationale, the TOCTOU window `pi_first` closes, the orphan-PaymentIntent tradeoff, and the storefront contract for handling `requires_action`/Blik authorization.
 
 ### Setup Future Usage Override
 
@@ -277,7 +275,7 @@ Session header (`x-session-id`), same pattern as other payment endpoints backed 
 - **lineItems**: Array of objects with `name`, `amount` (same money object shape as above), and `type` (for example subtotal, shipping) for display in the Express flow.
 
 ### Express config (no session)
-Public configuration for rendering Express wallet buttons **before** a checkout session exists. Secured with **CORS only**: the request must include an `Origin` header that matches one of the comma-separated values in `ALLOWED_ORIGINS`. **Do not leave `ALLOWED_ORIGINS` empty or unset in production**, or any origin could call this endpoint.
+Public configuration for rendering Express wallet buttons **before** a checkout session exists. Secured with **CORS only**: the request must include an `Origin` header that matches one of the comma-separated values in `ALLOWED_ORIGINS`. **Do not leave `ALLOWED_ORIGINS` empty or unset in production**.
 
 Returns publishable configuration so the frontend can initialize Stripe.js and Elements without a session. The following environment variables are applied to the Express Checkout Elements via this endpoint:
 
@@ -570,7 +568,6 @@ The enhanced refund processing:
 4. Updates the payment transaction in commercetools with the correct refund details
 5. Handles cases where no refund is found gracefully
 6. Provides comprehensive logging for debugging and monitoring
-7. Warns if webhook-based tracking may not work properly without the feature enabled
 
 ## Crypto / Stablecoin Payments (async settlement)
 
@@ -592,9 +589,6 @@ will not render if either of these is set:
   `payment_method_save` / `payment_method_save_usage` request an `off_session` saved method,
   Stripe drops non-savable methods (crypto included) from the Payment Element.
 
-> This is the actual reason crypto did not show up in checkout while it was already enabled in the
-> Stripe Dashboard — the saved-payment-method config was requesting `off_session`.
-
 ### Payment lifecycle
 
 | Stripe event | commercetools transaction |
@@ -604,13 +598,10 @@ will not render if either of these is set:
 | `payment_intent.payment_failed` / `payment_intent.canceled` | `Authorization` / `Failure` (+ `CancelAuthorization` / `Success` on cancel) |
 | `payment_intent.requires_action` | no-op **on this rail** — crypto is redirect-based (`next_action.type = redirect_to_url`), a transient state the terminal event resolves. Not a global rule: a bank transfer's `requires_action` carries `display_bank_transfer_instructions` and *does* write `Authorization` / `Pending`. See [Bank Transfer](#bank-transfer-customer_balance) |
 
-> **Corrected 2026-08-24.** This section previously said the order is created on
-> `payment_intent.succeeded`. **This connector never creates orders.** commercetools Checkout owns the
-> cart and creates the order itself; the code that used to call `createOrderFromCart` was removed in
-> `0ab8d2c` precisely because it raced commercetools Checkout into `409 ConcurrentModification`. The
-> SDK's order service is read-only — it exposes `getOrderByPaymentId()` and no write. What the
-> connector does is **reflect** the outcome onto the order commercetools already created; see
-> [Order payment state](#order-payment-state).
+**This connector never creates orders.** commercetools Checkout owns the cart and creates the order
+itself. The SDK's order service is read-only — it exposes `getOrderByPaymentId()` and no write. What
+the connector does is **reflect** the outcome onto the order commercetools already created; see
+[Order payment state](#order-payment-state).
 
 ### Synchronous confirm gate (`/confirmPayments/:id`)
 
@@ -628,12 +619,7 @@ same three validations for every status — retrieve the PI from Stripe, verify
 ### Enabler behavior
 
 On a `202 pending` response the enabler does **not** signal success, to avoid premature order
-fulfillment (the order is created by the webhook on `succeeded`).
-
-> **Known limitation (follow-up):** the enabler currently surfaces `pending` via
-> `onComplete({ isSuccess: false })`, which the host may render as a *failed* payment rather than
-> *processing*. A dedicated "processing" state on the `PaymentResult` contract is a pending
-> follow-up — the current behavior is safe (no premature fulfillment) but not ideal UX.
+fulfillment.
 
 ### Webhook & dedup
 
@@ -673,9 +659,8 @@ status having completed nothing, so for them it stays a no-op. The predicate is
 Two conditions, both imposed by Stripe, and both easy to lose hours to because Stripe simply omits
 `customer_balance` from `payment_method_types` rather than reporting an error:
 
-- **A customer must be attached to the PaymentIntent.** Verified 2026-08-21 with three otherwise
-  identical PaymentIntents: without a customer, `customer_balance` is absent from
-  `payment_method_types`; with one, it is present.
+- **A customer must be attached to the PaymentIntent** — without a customer, `customer_balance` is
+  absent from `payment_method_types`; with one, it is present.
 - **`setup_future_usage` must be absent.** With `off_session`, Stripe drops `customer_balance` (and
   `bancontact`, `eps`, `mb_way`) because the method cannot be saved. `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`
   has no default, so a one-time cart is normally fine — but **subscription carts set it**, because a
@@ -699,20 +684,14 @@ SEPA.
 | `payment_intent.canceled` (instructions expired) | `Authorization` / `Failure` |
 
 `partially_funded` being a no-op is deliberate rather than an omission: the order already says
-`Pending`, and a partial deposit changes nothing a merchant can act on. Verified end to end — a
-partial deposit lowered `next_action.amount_remaining` and produced no second transaction.
-
-**One silent terminal state to be aware of:** if the shopper never wires the money and the
-instructions expire without Stripe emitting `canceled`, no further event arrives and the order stays
-`Pending` indefinitely. That is the rail's behaviour, not a connector defect, but nothing will correct
-it on its own.
+`Pending`, and a partial deposit changes nothing a merchant can act on. A partial deposit lowers
+`next_action.amount_remaining` and produces no second transaction.
 
 ### Dismissing the instruction sheet is not a failure
 
 Closing the modal surfaces as an **error** from `confirmPayment`, not as a resolved PaymentIntent. The
 enabler re-reads the PaymentIntent on that error path and continues **only** when it is a bank transfer
-awaiting funds; every other `requires_action` still throws. Note the shopper may still land on a
-non-success screen: `PaymentResult` cannot express "pending" — see `context/known-issues.md` KI-027.
+awaiting funds; every other `requires_action` still throws.
 
 ## Order payment state
 
@@ -729,15 +708,11 @@ Two writers fill it, on two different triggers.
 
 ### Why a separate application
 
-For a **card**, commercetools Checkout creates the order **after** the money settles — measured at
-333 ms, 701 ms, 877 ms and 1 160 ms after `Charge/Success` across four real runs. So
+For a **card**, commercetools Checkout creates the order **after** the money settles. So
 `payment_intent.succeeded` reaches the webhook while no order exists; a terminal target gets one lookup
 attempt with no retry, the write is skipped, and **no later event ever arrives**. Adding retry does not
 fix it: the ownership rule correctly declines a card, and retrying would hold the Stripe webhook open
 ~11 s on every card payment, since webhooks here are processed synchronously with no early ack.
-
-A bounded retry was tried first and measured **0/3** at lags of 0.88 s, 3.8 s and 13 s before the
-approach was changed.
 
 ### What the subscriber writes
 
@@ -770,5 +745,4 @@ reaches.
 
 `manage_orders` on the commercetools client, for both the processor and the `order-subscriber`.
 
-Full rules: [`context/business-rules/order-payment-state.md`](../context/business-rules/order-payment-state.md)
-and [ADR-009](../context/decisions/adr-009-order-payment-state-reflection.md).
+Full rules: [`context/business-rules/order-payment-state.md`](../context/business-rules/order-payment-state.md).

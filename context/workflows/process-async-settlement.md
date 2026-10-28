@@ -1,14 +1,45 @@
 # Workflow: Async Settlement (crypto / stablecoin)
 
-**Trigger:** A buyer pays with an asynchronous / redirect payment method (crypto/stablecoin — USDC; **ACH `us_bank_account` — validated E2E 2026-08-27**; EU bank transfers) whose PaymentIntent confirms into `processing` before settling.
+**Trigger:** A buyer pays with an asynchronous / redirect payment method (crypto/stablecoin — USDC; ACH `us_bank_account`; EU bank transfers) whose PaymentIntent confirms into `processing` (or, for a bank transfer, `requires_action` with transfer instructions) before settling.
+**Modules involved:** enabler, processor (the order-subscriber also reads the result — `reflect-payment-state-on-order-created.md`).
 **Actors:** Buyer, Stripe (redirect wallet page + webhooks), Processor, CT API.
-**Outcome:** The CT Payment reflects the in-flight state as `Authorization/Pending`, then resolves to `Authorization/Success` + `Charge/Success` (order created) on settlement, or to `Authorization/Failure` on failure/cancellation.
+**Outcome:** The CT Payment reflects the in-flight state as `Authorization/Pending`, then resolves to `Authorization/Success` + `Charge/Success` on settlement (with `Order.paymentState = Paid` when the connector owns the order and the amount covers it), or to `Authorization/Failure` on failure/cancellation.
 
-> Draft generated from the committed implementation and validated E2E (crypto). Sections marked `[HUMAN REVIEW]` need human confirmation.
+## Happy Path
 
----
+### Webhook-driven (crypto — redirect)
 
-## Flow (crypto — redirect, webhook-driven)
+1. Buyer selects crypto; `stripe.confirmPayment` → PI `requires_action` (`redirect_to_url`); the buyer is redirected to the wallet page and deposits funds — Stripe-side
+2. `payment_intent.processing`: the route first reflects `Order.paymentState → Pending` (best-effort, retried while the order does not exist yet), then dispatches to `processStripeEvent()` — `processor/src/routes/stripe-payment.route.ts:273-279`; `processor/src/services/stripe-payment.service.ts:2409-2449`
+3. Converter maps it to a single `Authorization/Pending`; amount from `data.amount` (not `amount_received`, which is `0` while processing) — `processor/src/services/converters/stripeEventConverter.ts:289-302`
+4. Dedup: `hasTransactionInState()` skips the write if a `Charge/Success` or `Authorization/Pending` already exists (the sync gate may have written it first for non-redirect methods) — `processor/src/services/stripe-payment.service.ts:2040-2045,2134-2157`
+5. `payment_intent.succeeded` (+ `charge.succeeded`): the order axis runs first — ownership (order already `Pending`, or the Payment carries `Authorization/Pending`) and coverage (`amount_received` plus other payments' charges ≥ order gross) gate a `Paid` write — `processor/src/routes/stripe-payment.route.ts:258-272`; `processor/src/services/stripe-payment.service.ts:2307-2371`
+6. Converter emits `Charge/Success` (amount from `amount_received`) — `processor/src/services/converters/stripeEventConverter.ts:280-288`
+7. If an `Authorization/Pending` exists it is transitioned to `Success` (best-effort — a failure is logged and does not block). Log line: `Transitioned pending authorization to Success after payment_intent.succeeded` — `processor/src/services/stripe-payment.service.ts:2085-2087,2198-2228`
+
+### Synchronous gate variant (non-redirect async methods)
+
+8. For methods that confirm synchronously through `POST /confirmPayments/:id`, `updatePaymentIntentStripeSuccessful()` runs the validation (see `business-rules/payment-lifecycle.md` Rules 2 & 8, and `process-standard-payment.md` step 21) and, when the PI is `processing` — or `requires_action` with bank-transfer instructions — writes `Authorization/Pending` only (deduped) and returns `PENDING` (HTTP 202) — `processor/src/services/stripe-payment.service.ts:1596-1608,1653-1656,1755-1780`; `processor/src/routes/stripe-payment.route.ts:121-123`
+9. The drop-in branches on the outcome — a `pending` result calls `onComplete({ isSuccess: false })`, not success (no premature fulfillment) — `enabler/src/dropin/dropin-embedded.ts:257-266`. Express treats the same 202 as success (`process-express-checkout.md`)
+
+### Failure / cancellation
+
+10. `payment_intent.payment_failed` → `Authorization/Failure`; `payment_intent.canceled` → `Authorization/Failure` + `CancelAuthorization/Success`. Expiration without a deposit surfaces as `payment_intent.canceled`. Both also drive `Order.paymentState → Failed` where the connector owns the order — `processor/src/services/converters/stripeEventConverter.ts:265-279,337-345`; `processor/src/utils.ts:117-123`
+
+## Error Paths
+
+| Condition | Behavior | File |
+|---|---|---|
+| CT update fails on `processing` | Rethrown → non-2xx → Stripe retries; dedup prevents a duplicate `Pending` on redelivery | `processor/src/services/stripe-payment.service.ts:2117-2119` |
+| Order not yet created when `processing` / `requires_action` arrives | order lookup retried (500, 1500, 3000, 6000 ms); exhausted → warn, no `Pending` write; the settlement event can still write `Paid` through ownership signal 2 | `processor/src/services/stripe-payment.service.ts:131,2409-2449,2472-2483` |
+| Settled amount does not cover the order gross | `Paid` not written; warn | `processor/src/services/stripe-payment.service.ts:2346-2369` |
+| Pending → Success promotion fails | logged, non-blocking; `Authorization/Pending` remains next to `Charge/Success` | `processor/src/services/stripe-payment.service.ts:2222-2227` |
+| Async ACH debit failure (`insufficient_funds`/`no_account`) | arrives *after* commercetools Checkout has created the order, so `payment_failed`/`canceled` also drives `Order.paymentState → Failed` (ownership-gated) | `processor/src/services/stripe-payment.service.ts:2266-2371` |
+| Synchronous ACH rejection at confirm (`charge_exceeds_source_limit`) | the PI never confirms, so **no order is created** (cart stays `Active`) and only the Payment carries `Authorization/Failure` | — |
+
+## Notes
+
+### Flow (crypto — redirect, webhook-driven)
 
 ```
 Buyer            Enabler           Stripe                     Processor                 CT
@@ -22,66 +53,29 @@ Buyer            Enabler           Stripe                     Processor         
   |   ...deposit funds...             |                           |                       |
   |                 |                 | PI: processing            |                       |
   |                 |                 |--- payment_intent.processing ------------------->  |
+  |                 |                 |                           | order axis: Pending   |
   |                 |                 |                           | processStripeEvent()  |
   |                 |                 |                           | dedup (hasTxnInState) |
   |                 |                 |                           |---- Authorization:PENDING -->|
   |                 |                 | PI: succeeded             |                       |
   |                 |                 |--- payment_intent.succeeded + charge.succeeded --> |
+  |                 |                 |                           | order axis: Paid      |
+  |                 |                 |                           |  (owned + covered)    |
   |                 |                 |                           | Charge:SUCCESS        |
   |                 |                 |                           | transition Pending    |
   |                 |                 |                           |   Authorization→SUCCESS|
-  |                 |                 |                           | Order created         |
   |                 |                 |                           |---------------------->|
 ```
 
-**Note:** For crypto, the buyer is redirected away and the lifecycle is driven entirely by webhooks — the synchronous confirm gate (`/confirmPayments`) is **not** on this path (validated E2E). For non-redirect async methods (ACH / bank transfers), the gate DOES run and returns `PENDING` (202); see the "Synchronous gate variant" below.
+**Note:** For crypto, the buyer is redirected away and the lifecycle is driven entirely by webhooks — the synchronous confirm gate (`/confirmPayments`) is **not** on this path. For non-redirect async methods (ACH / bank transfers), the gate DOES run and returns `PENDING` (202); see the "Synchronous gate variant" above.
 
----
-
-## Steps Detail
-
-### 1. `payment_intent.processing`
-- Dispatched to `processStripeEvent()` (`stripe-payment.route.ts`).
-- Converter (`stripeEventConverter.ts`) maps it to a single `Authorization/Pending` transaction; amount from `data.amount` (not `amount_received`, which is `0` while processing).
-- Dedup: `hasTransactionInState()` skips the write if a `Charge/Success` or `Authorization/Pending` already exists (the sync gate may have written it first for non-redirect methods).
-- Error handling: unlike other webhook events, a write failure on `processing` **rethrows** so Stripe retries (async settlement must not be lost). See `business-rules/webhook-handling.md` Rule 6.
-
-### 2. `payment_intent.succeeded` (+ `charge.succeeded`)
-- Converter emits `Charge/Success` (amount from `data.amount`).
-- If an `Authorization/Pending` exists, it is transitioned to `Success` (best-effort — a failure here is logged and does not block the order). Log line: `Transitioned pending authorization to Success after payment_intent.succeeded`.
-- The CT order is created **only** on `succeeded`.
-
-### 3. Failure / cancellation
-- `payment_intent.payment_failed` → `Authorization/Failure`.
-- `payment_intent.canceled` → `Authorization/Failure` + `CancelAuthorization/Success`. Expiration without a deposit surfaces as `payment_intent.canceled`.
-- **Order axis (ACH, measured 2026-08-27).** An **async** ACH debit failure (`insufficient_funds`/`no_account`) arrives *after* commercetools Checkout already created the order, so `payment_failed`/`canceled` also drives `Order.paymentState → Failed` (ownership-gated). A **synchronous** rejection at confirm (`charge_exceeds_source_limit`) is the opposite case: the PI never confirms, so **no order is created** (cart stays `Active`) and only the Payment carries `Authorization/Failure`.
-
-### Synchronous gate variant (non-redirect async methods)
-- For methods that confirm synchronously through `POST /confirmPayments/:id`, `updatePaymentIntentStripeSuccessful()` runs the 4-point validation (see `business-rules/payment-lifecycle.md` Rules 2 & 8) and, when the PI is `processing`, writes `Authorization/Pending` only and returns `PENDING` (HTTP 202). It never creates an order while processing.
-- The enabler branches on the outcome — a `pending` result does not signal success (no premature fulfillment). See `known-issues.md` KI-027 for the current `isSuccess:false` limitation.
-
----
-
-## Configuration prerequisite
+### Configuration prerequisite
 
 Crypto/stablecoin only appears in the Payment Element when it is enabled on the Stripe account **and** the connector uses automatic capture with saved payment methods NOT forced to `off_session` (`STRIPE_SAVED_PAYMENT_METHODS_CONFIG`). Otherwise Stripe filters non-savable methods and crypto is hidden. See `processor/README.md`.
 
----
+### Other notes
 
-## Error Paths
-
-| Condition | Behavior | File |
-|---|---|---|
-| CT update fails on `processing` | Rethrown → non-2xx → Stripe retries; dedup prevents a duplicate `Pending` on redelivery | `stripe-payment.service.ts` → `processStripeEvent()` |
-| Concurrent `Pending` write (gate ↔ webhook, or double delivery) | One loses on CT optimistic locking (409); recovered by retry + dedup re-check. No double charge/order. | See `known-issues.md` KI-026 |
-| Settlement never resolves (dropped `succeeded`/`failed`/`canceled`) | `[HUMAN REVIEW]` Payment stays `Authorization/Pending`; no automated reconciliation today | — |
-| Long mainnet `processing` window | `[HUMAN REVIEW]` Pending persists for minutes (vs seconds on testnet); confirm downstream UX | — |
-
----
-
-## Notes
-
-- Idempotency: the `Pending` write is deduped but not backed by a deterministic idempotency key — see `known-issues.md` KI-026 and the idempotency follow-up (KI-007).
-- **Corrected 2026-08-13 (SB3-207).** This note used to read "`payment_intent.requires_action` is a deliberate no-op in the converter (returns `[]`); it does not write a CT transaction." That is no longer true. `requires_action` is the **bank transfer** entry into this same flow: for a PaymentIntent carrying `next_action.display_bank_transfer_instructions` it writes `AUTHORIZATION: PENDING` for `pi.amount`, exactly as `processing` does for crypto. Card 3DS, Boleto and redirect methods emit the same event and are filtered out at the route, so for them the old sentence still describes the observable result — no CT transaction — but for a different reason: they never reach the converter at all. See `known-issues.md` KI-017 and `business-rules/webhook-handling.md` Rule 6.
-- `payment_intent.partially_funded` (a bank transfer arriving in instalments) writes **no** transaction and is deliberately excluded from the rethrow set: losing it costs an audit line rather than correctness.
-- **The window here is days, not seconds.** A shopper who receives wire instructions and never sends the money leaves a `Pending` authorization that no terminal event will resolve, and there is no automated reconciliation. The cart is not frozen for that window either — checkout has no freeze capability. See ADR-007's risks section, where this is recorded as an accepted characteristic rather than a bug.
+- The connector does not create orders — commercetools Checkout creates the order. On `payment_intent.succeeded` the connector reflects `Order.paymentState → Paid` onto that order.
+- `requires_action` is the **bank-transfer** entry into this same flow: for a PaymentIntent carrying `next_action.display_bank_transfer_instructions` it writes `Authorization/Pending` for `pi.amount`, exactly as `processing` does for crypto. Card 3DS, Boleto and redirect methods emit the same event and are filtered out at the route — they never reach the converter. See `business-rules/webhook-handling.md` Rule 6. (Anchors: `processor/src/routes/stripe-payment.route.ts:280-331`; `processor/src/services/converters/stripeEventConverter.ts:303-327`.)
+- `payment_intent.partially_funded` (a bank transfer arriving in instalments) writes no transaction — `processor/src/services/stripe-payment.service.ts:84-98`.
+- Order-state rules: `business-rules/order-payment-state.md` Rule 2 "The connector owns the order state only for asynchronous rails", Rule 4 "The webhook always precedes order creation — the lag is variable and the wait is bounded", Rule 5 "`Paid` is authoritative; the transition is monotonic".

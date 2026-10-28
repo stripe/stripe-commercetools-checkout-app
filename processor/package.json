@@ -20,7 +20,7 @@
   "author": "",
   "license": "ISC",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=24.22.1"
   },
   "dependencies": {
     "@commercetools-backend/loggers": "27.9.3",
