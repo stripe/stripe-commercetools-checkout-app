@@ -1,67 +1,33 @@
 # Per-Cart Payment Behavior Rules
 
-How `STRIPE_PAYMENT_BEHAVIOR_RULES` selects per-market overrides, which cart data is allowed to make
-that selection, and what happens when a rule stops applying.
+How `STRIPE_PAYMENT_BEHAVIOR_RULES` selects per-market overrides of flow type, capture method, setup
+future usage, billing address collection and bank transfer country — which cart data selects a rule,
+how the map is validated, and what happens when a rule stops applying.
 
 ## Rule 1: A rule is selected only by merchant-controlled cart data
 
 **What:** The discriminator that selects a `PaymentBehaviorRule` is read from `cart.country`, and
-failing that `cart.store.key`. Never from `cart.billingAddress.country` or
-`cart.shippingAddress.country`.
-
-**Why:** Both address fields are shopper-supplied, and shopper-controlled *inside this connector*
-rather than merely upstream of it — the express enabler writes the shopper's own address to the cart
-(`enabler/src/express/dropin-express.ts`, `handleShippingAddressChange`). A discriminator a shopper can
-set is a configuration switch a shopper can flip.
+failing that `cart.store.key`, never from `cart.billingAddress.country` or
+`cart.shippingAddress.country`. A second resolution that also considers the two address countries is
+computed only to report steering (Rule 4); its value is never applied.
 
 **Invariant:** Every field of `PaymentBehaviorRule` resolves through
-`resolvePaymentBehaviorWithSteeringCheck`, which matches on merchant-controlled data only. There is no
-exported resolver that matches on shopper-supplied data.
+`resolvePaymentBehaviorWithSteeringCheck`, which matches on merchant-controlled data only
+(`extractTrustedDiscriminator` reads only `cart.country` and `cart.store.key`). There is no exported
+resolver that matches on shopper-supplied data, and the untrusted resolution's value is never applied
+to a PaymentIntent or element.
 
-**Implementation:** `processor/src/services/payment-behavior-resolver.ts`
+**Implementation:** `processor/src/services/payment-behavior-resolver.ts` — `extractTrustedDiscriminator`
+(`:133-145`), `resolveTrustedPaymentBehavior` (`:159-171`), the unexported
+`resolveUntrustedBehaviorForComparisonOnly` (`:95-107`), and `resolvePaymentBehaviorWithSteeringCheck`
+(`:242-266`), whose untrusted result feeds only `steeredFields`. Callers:
+`processor/src/services/stripe-payment.service.ts:767-770` (`createPaymentIntentStripe`) and `:1880`
+(`initializeCartPayment`).
 
-**Closure criterion:** `grep -rn "resolveUntrustedBehaviorForComparisonOnly" processor/src/` returns
-hits only inside `payment-behavior-resolver.ts`, and the symbol is not exported. Any consumer outside
-that file means the boundary has been reopened.
+## Rule 2: Both resolution sites resolve the same rule
 
-**What breaks if violated:** Steering `captureMethod` to `manual` in a market whose default is
-`automatic` produces an authorization-only PaymentIntent. commercetools Checkout treats
-`Authorization: Success` as a completed payment, so the order is created and fulfilled while that
-market's operations team has no manual-capture process — the authorization then expires uncaptured.
-Goods shipped against funds never taken. Steering `flowType` to `pi_first` on a recurring cart strips
-the `setup_future_usage` that Priority 1 of `getPaymentIntentSetupFutureUsage` had forced, producing a
-subscription with no saved mandate whose renewals fail later, away from checkout.
-
-### Calibration — how much this boundary is actually worth (added 2026-08-13, SB3-207)
-
-Two corrections, recorded because both errors point in expensive directions: one makes the boundary
-sound stronger than it is and invites over-investment, the other makes it sound safer than it is.
-
-**`euBankTransferCountry` is a treasury boundary, not a fund-diversion one.** Session material
-described it as "selecting a destination account", which reads far stronger than the real exposure.
-Accurately: even with the discriminator **fully compromised**, a shopper can only select among `DE`,
-`FR`, `IE` and `NL` — all of them IBANs on the **merchant's own** Stripe account, all validated
-against `EU_BANK_TRANSFER_COUNTRIES` at startup, so no unvalidated string reaches Stripe and no value
-can name an account outside the merchant's. What actually moves is who absorbs cross-border transfer
-fees, and whether the merchant presents as a local business in that market. Worth having. **Not worth
-hardening further** — and worth saying so, because the stronger framing would justify work that buys
-nothing.
-
-**The discriminator is "not shopper-controlled *by us*", not "not shopper-controlled".**
-`cart.country` and `cart.store.key` are unwritable by this connector — the processor issues only
-custom-type and custom-field actions, verified — which is what Rule 1's invariant rests on. It is not
-a claim about the whole system: **a storefront that exposes a country or store switcher still lets the
-shopper steer which rule matches.** That is outside this connector's control and inside the threat
-model of anyone deploying it. The code-side half of this correction already landed as a docblock on
-`resolvePaymentBehaviorWithSteeringCheck` (`processor/src/services/payment-behavior-resolver.ts`) —
-read it there rather than expecting it restated here.
-
----
-
-## Rule 2: Both resolution sites must agree, always
-
-**What:** `createPaymentIntentStripe` and `initializeCartPayment` must resolve the same rule for the
-same cart, using the same resolver.
+**What:** `createPaymentIntentStripe` and `initializeCartPayment` resolve the same rule for the same
+cart, using the same resolver.
 
 **Why:** The first builds the PaymentIntent; the second tells the enabler how to construct the
 element. Stripe validates deferred element options against the retrieved intent at confirm.
@@ -70,106 +36,116 @@ element. Stripe validates deferred element options against the retrieved intent 
 differently.
 
 **Implementation:** `processor/src/services/stripe-payment.service.ts` — `createPaymentIntentStripe`
-and `initializeCartPayment`
+(`:750-962`, resolution `:767-782`) and `initializeCartPayment` (`:1861-1925`, resolution `:1880-1893`).
 
-**Closure criterion:** the test *"both call sites honour the SAME rule for the same cart, across every
-field"* in `processor/test/services/stripe-payment.service.spec.ts`. It uses a cart the trusted path
-honours and a rule whose fields are all NON-DEFAULT, so "the two sites agree" cannot be satisfied by
-both sites falling back to the same env var. An earlier version of that test did exactly that and
-survived five separate mutations that made one site stop reading a rule field — if you weaken it back
-toward asserting default values, it stops closing this rule.
+## Rule 3: An omitted or non-matching rule field falls back to the flat setting
 
-> The criterion covers `captureMethod`, `collectBillingAddress` and `flowType`. `setupFutureUsage` is
-> asserted only indirectly (via `flowType: 'pi_first'`, which suppresses it), and `euBankTransferCountry`
-> is not read by `initializeCartPayment` at all, so there is no A/B surface for it.
+**What:** Each of `flowType`, `captureMethod`, `setupFutureUsage` and `collectBillingAddress` overrides
+per field. When the rule omits a field, or the field stops applying, the caller falls through to the
+flat environment variable.
 
-**What breaks if violated:** A mismatch on `captureMethod` or `setupFutureUsage` makes Stripe reject
-the confirm — a checkout outage for every cart in that market, failing closed. A mismatch on
-`collectBillingAddress` is directional: an element told to hide the address fields while the processor
-sends no `billing_details` is rejected, whereas the inverse is harmless. A mismatch on `flowType`
-(config-element `pi_first`, PaymentIntent `deferred`) mints the intent *with* `setup_future_usage`,
-which removes `customer_balance` from `payment_method_types` — the bank-transfer tab silently never
-renders.
+**Invariant:** Every effective value is `rule field ?? flat setting`, and no field is read from the
+rule without that fallback.
 
-> **Known exception, not yet closed:** the flat `config()` accessor returns `stripeCaptureMethod`
-> without consulting the rules at all. It backs `POST /express-config` — whose value the enabler feeds
-> into `elements()` for the express-without-session path — and `/operations/config`. That third site
-> already diverges from the other two for any merchant using a `captureMethod` rule. Queued separately.
+**Flat defaults:** `captureMethod` → `automatic`, `collectBillingAddress` → `auto`, `flowType` →
+`deferred`, `setupFutureUsage` → `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE`.
 
----
+**Implementation:** `processor/src/config/config.ts` (the flat defaults: `stripeCaptureMethod` `:255`,
+`stripeCollectBillingAddress` `:262`, `stripePaymentIntentSetupFutureUsage` `:302`, `stripePaymentFlow`
+`:316-327`; field validation `validateBehaviorRule` `:78-175`, drop report `dropField` `:40-47`),
+`processor/src/services/stripe-payment.service.ts` (the fall-throughs: capture `:778`, flow `:781`,
+setup future usage `:689-692` inside `getPaymentIntentSetupFutureUsage`, billing address `:1411`; and in
+`initializeCartPayment` `:1881-1883`, `:1890-1893`).
 
-## Rule 3: Discarding a rule field applies the opposite instruction, not none
+## Rule 4: The resolved rule is logged by field name only
 
-**What:** When a field stops applying, the caller falls through to the flat environment variable. That
-variable is an opinionated instruction, not a neutral default — so the result is frequently the
-*inverse* of what the merchant configured, not the absence of a configuration.
+**What:** `steeredFields` reports, as field names only and never as values, the fields where the
+untrusted resolution would have selected a different value than the merchant-controlled path did. It
+is silent when the trusted path finds a rule the untrusted one did not.
 
-**Why it is a rule and not a footnote:** two independent mechanisms reach this same state, which is
-why it keeps being rediscovered:
+**Invariant:** Field names only, never values.
 
-| Mechanism | How the field is discarded |
-| --- | --- |
-| **Validation drops it** | `validateBehaviorRule` rejects an unusable value (e.g. `'None'`, `' off_session '`) and the field disappears from the rule |
-| **The rule stops matching** | the discriminator no longer selects that rule — including, since 2026-08-13, any rule that was only reachable through shopper-supplied address data |
+**Implementation:** `processor/src/services/payment-behavior-resolver.ts:242-266` —
+`resolvePaymentBehaviorWithSteeringCheck` (silent case `:259-261`, comparison `:263`); field list and its
+compile-time exhaustiveness guard `:182-196`; the log
+`processor/src/services/stripe-payment.service.ts:969-992` → `logResolvedBehaviorRule`.
 
-A third case — the merchant simply not setting the field — is the designed behaviour and is fine. The
-hazard is specific to a field the merchant *did* set and that then went away.
+## Rule 5: A structurally malformed rules value stops the processor at startup
 
-**Invariant:** No code path may treat "the rule field is absent" as equivalent to "no instruction".
+**What:** Invalid JSON, a value that is not a plain object, or a rule that is not a plain object throws
+while loading configuration. A whitespace-only value is treated as absent. Field-level problems never
+abort (Rule 3).
 
-**Implementation:** `processor/src/config/config.ts` (the flat defaults),
-`processor/src/services/stripe-payment.service.ts` (the `?? config.…` fall-throughs)
+**Why:** A rule set that cannot be read as a whole has no per-field fallback
+(`processor/src/config/config.ts:177-187`).
 
-**Closure criterion:** for each row of the table below, the flat default in `config.ts` still differs
-from the value a merchant would plausibly set in a rule — `grep -n "stripeCaptureMethod\|stripeCollectBillingAddress\|stripePaymentFlow\|stripePaymentIntentSetupFutureUsage" processor/src/config/config.ts`.
-This rule is a *hazard statement*, not an invariant a test can hold: there is deliberately no code
-preventing the fall-through, because the fall-through is the designed behaviour when a merchant simply
-omits a field. What must not happen is a change that discards a field the merchant *did* set without
-surfacing it — which is what `steeredFields` covers for the match-loss mechanism, and what
-2026-08-07-010 is open for on the validation-drop mechanism.
+**Invariant:** `getPaymentBehaviorConfig` throws for each of the three structural shapes and for
+nothing else.
 
-**What breaks if violated — the concrete inversions:**
+**Implementation:** `processor/src/config/config.ts:188-222` (trim `:193`, JSON `:196-203`, map shape
+`:205-210`, rule shape `:212-218`).
 
-| Field | Falls back to | What the merchant actually gets |
-| --- | --- | --- |
-| `captureMethod` | `automatic` | funds are captured immediately, without the manual review the rule existed to require |
-| `collectBillingAddress` | `auto` | `billing_details` are collected from the shopper in the element instead of being sent server-side from the cart — so Radar and AVS evaluate a shopper-typed address. The one field where losing the rule *reduces* server authority |
-| `flowType` | `deferred` | Blik stops working, and the bank-transfer rail is suppressed (SB3-207) |
-| `setupFutureUsage` | the flat env var | a market configured to disable the mandate receives it, or the mirror case silently loses it |
+## Rule 6: `euBankTransferCountry` pins the IBAN country of a EUR cart; it does not decide whether bank transfer is offered
 
-**Measured instance:** during SB3-207 Task A, validation dropped `setupFutureUsage` values that had
-always worked. With `STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE=off_session` and a rule of
-`{"MX":{"setupFutureUsage":"None"}}` — a rule whose entire purpose was to disable the mandate for that
-market — every MX shopper would have received the mandate the merchant explicitly turned off.
+**What:** A rule's `euBankTransferCountry` has one effect on the PaymentIntent: for a cart in `eur`, it
+sends `payment_method_options.customer_balance` with `funding_type: bank_transfer` and
+`eu_bank_transfer.country` set to that country; for any other currency, or with no country configured,
+nothing is sent. Whether bank transfer is offered is decided elsewhere: the PaymentIntent uses
+`automatic_payment_methods` and never lists `payment_method_types`, so a EUR cart whose PaymentIntent
+carries a Stripe customer is offered `customer_balance` with or without a rule — with Stripe's
+currency-derived Irish IBAN when no country is configured. A customer is bound when the commercetools
+customer has a stored Stripe customer id and the payment is not Express-without-customer
+(`stripe-payment.service.ts:812`, `:1464-1468`); without one, Stripe omits the rail. Stripe also drops
+it when `setup_future_usage` is binding or capture is `manual` (Rule 8).
 
-**Merchant-facing consequence:** a rule that stops matching is not a no-op. Before narrowing what can
-select a rule, check whether any market depends on a rule keyed to a country that carts do not carry
-in `cart.country` — those markets revert to the table above.
+**Why:** Choosing the IBAN country is a merchant treasury preference — normally the merchant's own
+country, to spare the shopper cross-border fees — not a technical requirement
+(`bank-transfer-mapper.ts:42-45`). Non-EUR carts are left untouched so Stripe picks the local variant
+(e.g. `gb_bank_transfer` for GBP) (`bank-transfer-mapper.ts:47-53`).
 
----
+**Invariant:** `euBankTransferCountry` reaches the PaymentIntent only through `getBankTransferOptions`,
+which returns `undefined` unless the currency is `eur` and a country is configured; the PaymentIntent's
+offered methods are never restricted by it (`automatic_payment_methods: { enabled: true }`, no
+`payment_method_types`).
 
-## Rule 4: The steering signal is one-directional on purpose
+**Implementation:** `processor/src/mappers/bank-transfer-mapper.ts:59-80`;
+`processor/src/services/stripe-payment.service.ts:771` (read from the rule), `:1456-1459` (options built),
+`:1471-1473` (`automatic_payment_methods`), `:1521` (options written as a sibling of `card`).
 
-**What:** `steeredFields` reports only fields where shopper-supplied data *would* have selected a
-different value than the merchant-controlled path did. It stays silent when the trusted path finds a
-rule the untrusted one missed.
+## Rule 7: The bank transfer country is one of DE, FR, IE, NL
 
-**Why:** The two fallback orders differ rather than nest — the untrusted order tries billing/shipping
-*before* `store.key`, the trusted one skips straight to `store.key`. So a shopper address can *shadow*
-a store-key rule on the untrusted path, and the trusted resolver then finds a rule the untrusted one
-missed. That direction is benign: it is the merchant's own configuration working correctly. Under
-express checkout it would be the permanent state for any merchant using store-key rules, so a
-symmetric comparison would sit at 100% true for them and be worthless as a signal.
+**What:** A rule's `euBankTransferCountry` must be `DE`, `FR`, `IE` or `NL` (case-insensitive,
+canonicalised to upper case). Any other value is dropped from the rule and reported at startup; startup
+continues and the market falls back to Stripe's currency-derived IBAN.
 
-**Invariant:** Field names only, never values. A rule can be selected by the shopper's own address, and
-the log line already carries `cartId`, which resolves to an identified customer.
+**Why:** These are the countries Stripe accepts inside `eu_bank_transfer.country`. Stripe types the
+field as a plain `string`, so the union is the only thing between a typo and a 400
+(`processor/src/mappers/bank-transfer-mapper.ts:4-21`). The list is single-sourced in the mapper and
+validated against at config load.
 
-**Implementation:** `processor/src/services/payment-behavior-resolver.ts` —
-`resolvePaymentBehaviorWithSteeringCheck`
+**Invariant:** `validateBehaviorRule` keeps `euBankTransferCountry` only when its canonical form is a
+member of `EU_BANK_TRANSFER_COUNTRIES`.
 
-**Closure criterion:** the tests *"stays SILENT when the trusted path finds a rule the untrusted one
-missed"* and *"logs the rule as field NAMES, never as the rule object"*.
+**Implementation:** `processor/src/mappers/bank-transfer-mapper.ts:22-24`;
+`processor/src/config/config.ts:150-163`.
 
-**What breaks if violated:** a symmetric signal is permanently true for store-key merchants and gets
-ignored, so real steering stops being visible. Logging values instead of names leaks the discriminator
-next to an identified customer, and silently logs every field later added to `PaymentBehaviorRule`.
+## Rule 8: A rule whose bank transfer will not take effect is warned about — at startup and per PaymentIntent
+
+**What:** When a rule sets `euBankTransferCountry` but the effective `setup_future_usage` is binding
+(`off_session`/`on_session`) or `capture_method` is `manual`, `customer_balance` is not offered, and a
+warning is logged at startup (naming the market and the remedy) and again per PaymentIntent for an `eur`
+cart (booleans only, never the market). `automatic_async` does not trigger the warning.
+
+**Why:** The connector does not rewrite the merchant's mandate or capture policy to force the rail back
+on; it warns instead. The startup warning cannot see recurring carts, which force `off_session` per
+cart, so a per-PaymentIntent warning covers that case
+(`processor/src/services/stripe-payment.service.ts:784-803`).
+
+**Invariant:** `findRailSuppressionAtStartup` returns a warning for every market whose effective inputs
+remove the rail, and none for healthy ones; `warnIfRailSuppressed` logs whenever this applies to an
+`eur` cart that resolved an IBAN country.
+
+**Implementation:** `processor/src/mappers/bank-transfer-mapper.ts:134-154` (`resolveRailSuppression`),
+`:285-310` (effective inputs, `pi_first` un-suppresses), `:312-358` (`findRailSuppressionAtStartup`);
+startup call `processor/src/config/config.ts:356-365`; runtime
+`processor/src/services/stripe-payment.service.ts:804-810` → `warnIfRailSuppressed` (`:999-1019`).

@@ -4,6 +4,9 @@
   "description": "Sets Order.paymentState=Pending when commercetools creates an order, closing the timing gap the webhook path cannot.",
   "private": true,
   "main": "dist/main.js",
+  "engines": {
+    "node": ">=24.22.1"
+  },
   "scripts": {
     "start": "node dist/main.js",
     "start:dev": "nodemon -q dist/main.js",

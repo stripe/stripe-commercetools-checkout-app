@@ -70,15 +70,13 @@ either stops fulfillment on a paid order or starts it on an unpaid one.
 
 For a bank transfer, Stripe.js shows its own modal with the IBAN and reference. The shopper closes it
 and goes to their bank — the money is days away. **Stripe.js reports that dismissal as an error from
-`confirmPayment`, not as a resolved PaymentIntent**, so the naive path put the shopper on a "Payment
-Failed" screen while the PaymentIntent was alive and awaiting a wire.
+`confirmPayment`, not as a resolved PaymentIntent**.
 
 On that error path the enabler re-reads the PaymentIntent and continues **only** when it is a bank
 transfer awaiting funds (`status === 'requires_action'` and `next_action.type ===
 'display_bank_transfer_instructions'`). Every other `requires_action` still throws — card 3DS, Boleto
 and redirect-based methods reach the same status having completed nothing, so the host must treat them
-as errors exactly as before. The predicate fails **closed**, so a drift makes bank transfer stop working
-(loud, caught by tests) rather than letting card 3DS through (silent, and far more expensive).
+as errors exactly as before.
 
 The PaymentIntent is re-read rather than taken from `error.payment_intent`, which Stripe populates
 inconsistently; the client secret is already in scope and `retrieve` is authoritative.
@@ -88,14 +86,6 @@ inconsistently; the client secret is already in scope and `retrieve` is authorit
 When the processor answers `202 / pending` (async settlement still in flight), the enabler calls
 `onComplete({ isSuccess: false })`. This is the **safe** choice — it never signals premature success, so
 the merchant does not fulfill before settlement.
-
-> **Known limitation.** The `PaymentResult` contract treats `isSuccess: false` as a genuine failure, so
-> the host may render a "failed / retry" screen for a payment that is settling normally. A dedicated
-> pending/processing state on `PaymentResult` is the proper fix and is not something the connector can
-> work around from this side. Tracked as **KI-027** in `context/known-issues.md`.
->
-> Note also that the host cannot currently tell the two apart from the error alone: the code reported
-> for a dismissed bank transfer is `payment_failed`, the same code a genuine decline produces.
 
 ## Getting Started
 Please run following npm commands under `enabler` folder for development work in local environment.
