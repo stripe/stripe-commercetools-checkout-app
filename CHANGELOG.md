@@ -5,36 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.0] - 2026-10-27
-
-### Added
-
-- Align off-session recurring Transactions to platform contract
-- Add POST /operations/transactions off-session recurring charge
-- Record Paid for card payments at order creation
-- Scaffold order-subscriber to set Pending from OrderCreated
-- Reflect the payment outcome onto Order.paymentState for async rails
-- Register bank transfer webhooks and route requires_action narrowly
-- Wire bank transfer mapper into PaymentIntent creation
-- Add bank transfer config surface with degrading rule validation
-- Support async settlement for crypto/stablecoin payments
-- Add Elements Behavior config and Blik pi_first payment flow
-- Bind customer and setup_future_usage on PI for _Setup path
-- Propagate locale to Stripe Elements in both flows
-- Add STRIPE_EXPRESS_ELEMENT_OPTIONS for ExpressCheckoutElement configuration
-- Remove STRIPE_EXPRESS_MINIMUM_AMOUNT and defer Stripe Elements creation to init()
-- Add STRIPE_EXPRESS_MINIMUM_AMOUNT and force wallet visibility in ExpressCheckoutElement
-- Propagate capture_method and appearance to Express Checkout Elements
-- Align Express Checkout onPayButtonClick with Stripe click event - Handle ExpressCheckoutElement click: fast resolve (lineItems from initialAmount) and background onPayButtonClick when there is no initial session - ensureSessionId waits for the in-flight promise or retries the callback as a fallback - clearExpressSession, generation guard on resets, and safe mount (unmount + bind listeners once) - API: optional clearExpressSession on ExpressComponent; document onPayButtonClick (Stripe + fallback, idempotency) - Jest tests and README for the Express flow
-- Get amount and line items from processor (Adyen-aligned)
-- Add ALLOWED_ORIGINS env for CORS on POST /express-config
-- Add Stripe Express Checkout support in enabler and processor
-- Stripe Express Checkout — full support in Enabler and Processor
-- Add recurring orders support and payment method storage
-- Upgrade Stripe SDK to v20 (Clover API) and expand test coverage
-- Add configurable setup_future_usage for PaymentIntent - Add STRIPE_PAYMENT_INTENT_SETUP_FUTURE_USAGE env variable to decouple   PaymentIntent's setup_future_usage from Customer Session config - Support values: 'off_session', 'on_session', or empty to disable - Maintain backward compatibility when env var is not set - Update unit tests with new config property and fix config endpoint mock
-- Integrate Stripe Tax calculation with PaymentIntent creation - Add constants.ts with CT_CUSTOM_FIELD_TAX_CALCULATIONS field name - Read tax calculation references from commercetools cart custom fields - Attach tax calculation to PaymentIntent hooks when single calculation exists - Add tax calculation info to payment intent creation logs
-- Externalize custom type and product type keys as configurable environment variables
+## [1.5.3] - 2026-10-27
 
 ### Changed
 
@@ -43,40 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Bump vite to 7.3.7 for CVE-2026-112942
-- Under concurrent checkout requests, a reused payment is returned only when it matches the requested checkout flow and is attached to the cart.
-- Concurrent or retried checkout requests on the same cart now reliably reuse the cart's active payment instead of creating additional ones.
-- Payment reuse now also matches the customer and shipping details, so a payment created for one checkout flow is not reused for another.
-- A duplicate express-checkout confirm (Apple Pay or Google Pay) now reuses the cart's existing active payment instead of creating a second one.
-- An order paid with more than one method (such as a gift card plus a card) is now marked Paid once the combined payments cover the order total.
-- Reject Paid when settled charges do not cover the order total
-- Dedup recurring installments by unique Payment.key, not the non-queryable native field
-- Patch high-severity js-yaml ReDoS/CPU advisory in processor, enabler, order-subscriber
-- Patch high-severity fast-uri SSRF advisory in processor, enabler, order-subscriber
-- Patch high-severity browserslist advisory in enabler and processor
-- Record the payment method for asynchronous rails
-- Only write Pending when the payment is actually pending
-- Align the order-subscriber's fastify with the processor's range
-- Declare the order-subscriber's own configuration
-- Widen the order-lookup retry window and warn when it is exhausted
-- Rescue a dismissed bank transfer from the confirmPayment error path
-- Updated third-party dependencies, including upgrading js-yaml to version 4.
-- Stop reporting an awaiting bank transfer as a failed payment
-- Skip webhook events whose PaymentIntent has no ct_payment_id
-- Resolve every behavior-rule field from merchant-controlled cart data
-- Add idempotency key and ct_payment_id metadata to refunds
-- Surface silent suppression of the bank transfer rail
-- Null client_secret on every persisted PaymentIntent
-- Redact all next_action variants via allowlist
-- Clear SCA findings ahead of staging deploy
-- Stop handing whole error objects to the logger
-- Stop logging raw webhook body on signature failure
-- Redact bank transfer details from pspInteraction
-- Propagate expressElementOptions to baseOptions in session flow
-- Read billing/shipping from confirm event instead of internal element properties
-- Align cancel and shipping-unavailable handling with commercetools Connect standard
-- Partial onPaymentSubmit payload to avoid empty cart address updates
-- Guard express callbacks against empty address/email
-- Temporarily disable CORS validation for testing
 
 ## [Unreleased]
 
